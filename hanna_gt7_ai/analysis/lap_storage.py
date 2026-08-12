@@ -24,7 +24,7 @@ DB_PATH = Path.home() / ".hanna_gt7_ai" / "laps.db"
 # incrementar este número e adicionar a migração correspondente em
 # _run_migrations(). Isso evita que o app quebre silenciosamente quando
 # o banco de um usuário foi criado por uma versão anterior do código.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Quantas voltas manter por pista: as N mais rápidas (histórico de recordes)
 # + as N mais recentes (histórico cronológico). Voltas fora dos dois
@@ -191,6 +191,19 @@ def _run_migrations(conn: sqlite3.Connection):
         except sqlite3.OperationalError:
             pass
 
+    if current_version < 5:
+        new_columns_v5 = [
+            "g_lateral", "g_longitudinal",
+            "suspension_fl", "suspension_fr", "suspension_rl", "suspension_rr",
+            "tire_slip_fl", "tire_slip_fr", "tire_slip_rl", "tire_slip_rr",
+            "turbo_boost", "oil_temp", "water_temp",
+        ]
+        for col_name in new_columns_v5:
+            try:
+                conn.execute(f"ALTER TABLE lap_frames ADD COLUMN {col_name} REAL")
+            except sqlite3.OperationalError:
+                pass
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
 
@@ -236,8 +249,26 @@ def init_db():
             gear INTEGER NOT NULL,
             throttle REAL NOT NULL,
             brake REAL NOT NULL,
+            fuel_level REAL,
+            tire_temp_fl REAL,
+            tire_temp_fr REAL,
+            tire_temp_rl REAL,
+            tire_temp_rr REAL,
             position_x REAL,
-            position_z REAL
+            position_z REAL,
+            g_lateral REAL,
+            g_longitudinal REAL,
+            suspension_fl REAL,
+            suspension_fr REAL,
+            suspension_rl REAL,
+            suspension_rr REAL,
+            tire_slip_fl REAL,
+            tire_slip_fr REAL,
+            tire_slip_rl REAL,
+            tire_slip_rr REAL,
+            turbo_boost REAL,
+            oil_temp REAL,
+            water_temp REAL
         )
     """)
     conn.execute("""
@@ -351,14 +382,22 @@ def save_lap(track_id: int, car_id, lap_time_ms: int, frames: list, is_player: b
             """INSERT INTO lap_frames
                (lap_id, seq, elapsed_ms, distance_m, speed_kmh, rpm, gear, throttle, brake,
                 fuel_level, tire_temp_fl, tire_temp_fr, tire_temp_rl, tire_temp_rr,
-                position_x, position_z)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                position_x, position_z,
+                g_lateral, g_longitudinal,
+                suspension_fl, suspension_fr, suspension_rl, suspension_rr,
+                tire_slip_fl, tire_slip_fr, tire_slip_rl, tire_slip_rr,
+                turbo_boost, oil_temp, water_temp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (
                     lap_id, i, f.elapsed_ms, f.distance_m, f.speed_kmh, f.rpm, f.gear,
                     f.throttle, f.brake, f.fuel_level,
                     f.tire_temp_fl, f.tire_temp_fr, f.tire_temp_rl, f.tire_temp_rr,
                     f.position_x, f.position_z,
+                    f.g_lateral, f.g_longitudinal,
+                    f.suspension_fl, f.suspension_fr, f.suspension_rl, f.suspension_rr,
+                    f.tire_slip_fl, f.tire_slip_fr, f.tire_slip_rl, f.tire_slip_rr,
+                    f.turbo_boost, f.oil_temp, f.water_temp,
                 )
                 for i, f in enumerate(frames)
             ],
@@ -434,14 +473,17 @@ def get_top_laps(track_id: int, limit: int = KEEP_BEST_PER_TRACK):
 
 def get_lap_frames(lap_id: int):
     """Retorna todos os frames de uma volta, ordenados (usado na comparação e nos gráficos).
-    Colunas antigas de voltas migradas de versões anteriores do schema podem
-    vir como NULL (fuel_level/tire_temp_*/position_x/position_z não existiam
-    antes) — quem consome este retorno precisa tratar None."""
+    Colunas adicionadas em migrações posteriores podem vir como NULL em voltas
+    antigas — quem consome este retorno precisa tratar None."""
     conn = _connect()
     rows = conn.execute(
         """SELECT elapsed_ms, distance_m, speed_kmh, rpm, gear, throttle, brake,
                   fuel_level, tire_temp_fl, tire_temp_fr, tire_temp_rl, tire_temp_rr,
-                  position_x, position_z
+                  position_x, position_z,
+                  g_lateral, g_longitudinal,
+                  suspension_fl, suspension_fr, suspension_rl, suspension_rr,
+                  tire_slip_fl, tire_slip_fr, tire_slip_rl, tire_slip_rr,
+                  turbo_boost, oil_temp, water_temp
            FROM lap_frames WHERE lap_id = ? ORDER BY seq ASC""",
         (lap_id,),
     ).fetchall()

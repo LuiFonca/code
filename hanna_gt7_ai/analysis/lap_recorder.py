@@ -8,6 +8,7 @@ Roda na thread principal do Qt (junto com a interface) — o trabalho aqui
 diferente da captura de rede.
 """
 
+import math
 from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, Signal
@@ -15,6 +16,9 @@ from PySide6.QtCore import QObject, Signal
 from . import lap_storage
 from .gt7_catalog import guess_track_by_length, get_car_full_name
 from .lap_comparator import LapComparator
+
+GRAVITY = 9.81
+CAR_REEMIT_INTERVAL = 180
 
 
 @dataclass
@@ -33,6 +37,32 @@ class RecordedFrame:
     tire_temp_rr: float
     position_x: float
     position_z: float
+    g_lateral: float
+    g_longitudinal: float
+    suspension_fl: float
+    suspension_fr: float
+    suspension_rl: float
+    suspension_rr: float
+    tire_slip_fl: float
+    tire_slip_fr: float
+    tire_slip_rl: float
+    tire_slip_rr: float
+    turbo_boost: float
+    oil_temp: float
+    water_temp: float
+
+
+def _frame_to_tuple(f: RecordedFrame) -> tuple:
+    return (
+        f.elapsed_ms, f.distance_m, f.speed_kmh, f.rpm, f.gear,
+        f.throttle, f.brake, f.fuel_level,
+        f.tire_temp_fl, f.tire_temp_fr, f.tire_temp_rl, f.tire_temp_rr,
+        f.position_x, f.position_z,
+        f.g_lateral, f.g_longitudinal,
+        f.suspension_fl, f.suspension_fr, f.suspension_rl, f.suspension_rr,
+        f.tire_slip_fl, f.tire_slip_fr, f.tire_slip_rl, f.tire_slip_rr,
+        f.turbo_boost, f.oil_temp, f.water_temp,
+    )
 
 
 class LapRecorder(QObject):
@@ -41,22 +71,13 @@ class LapRecorder(QObject):
     delta_changed = Signal(object)
     delta_previous_changed = Signal(object)
 
-    # Auto-detecção: emitido ao final de uma volta com a lista de nomes
-    # candidatos de pista baseado na distância percorrida. Lista vazia =
-    # nenhuma correspondência encontrada no catálogo.
     track_candidates_detected = Signal(list)
-
-    # Auto-detecção: emitido quando o car_id do protocolo é reconhecido
-    # no catálogo CSV. Emite o nome completo (fabricante + modelo).
-    # Emite string vazia se o car_id não foi encontrado no catálogo.
     car_detected = Signal(str)
 
     def __init__(self, track_id, car_id=None, parent=None):
         """track_id/car_id podem ser None: nesse caso a volta é acumulada
         normalmente (para o delta ao vivo continuar funcionando), mas
-        NUNCA é persistida — 'sem pista válida = sem histórico' (não é
-        um erro, é a regra: uma sessão sem pista escolhida não pode virar
-        registro permanente)."""
+        NUNCA é persistida."""
         super().__init__(parent)
         lap_storage.init_db()
 
@@ -69,46 +90,43 @@ class LapRecorder(QObject):
         self._last_current_lap_ms = None
         self._detected_car_id = None
 
+        self._prev_velocity_x = None
+        self._prev_velocity_z = None
+        self._prev_velocity_ms = None
+        self._car_reemit_counter = 0
+
         self._comparator = LapComparator([])
         self._comparator_prev = LapComparator([])
         self._load_reference()
 
     def set_track(self, track_id):
-        """Troca a pista ativa em tempo real (o PS5 continua conectado —
-        não é preciso reiniciar nem reconectar). Descarta qualquer volta em
-        andamento (ela pertencia à pista anterior e não pode ser atribuída
-        à nova) e recarrega a referência da pista nova."""
         if track_id == self.track_id:
             return
         self.track_id = track_id
-        self._buffer = []
-        self._cumulative_distance = 0.0
-        self._last_lap_count = None
-        self._last_current_lap_ms = None
+        self._reset_lap_state()
         self._comparator_prev = LapComparator([])
         self._load_reference()
 
     def set_car(self, car_id):
-        """Troca o carro ativo em tempo real. Diferente de set_track, não
-        precisa descartar a volta em andamento nem recarregar a referência
-        (a referência é só por pista) — só afeta com qual carro a PRÓXIMA
-        volta finalizada será associada."""
         self.car_id = car_id
 
     def set_player_mode(self, is_player: bool):
-        """Liga/desliga o modo 'jogador'. Quando False (replay/IA marcado
-        manualmente pelo usuário — o GT7 não expõe um flag confiável para
-        detectar isso automaticamente), as voltas continuam sendo calculadas
-        e exibidas ao vivo, mas NUNCA são salvas no histórico nem contam
-        para recordes/setores/ranking."""
         self.is_player_mode = is_player
 
     @property
     def can_persist(self) -> bool:
         return self.track_id is not None and self.is_player_mode
 
+    def _reset_lap_state(self):
+        self._buffer = []
+        self._cumulative_distance = 0.0
+        self._last_lap_count = None
+        self._last_current_lap_ms = None
+        self._prev_velocity_x = None
+        self._prev_velocity_z = None
+        self._prev_velocity_ms = None
+
     def _load_reference(self):
-        """(Re)carrega a volta de referência (a melhor salva até agora) do banco."""
         if self.track_id is None:
             self._comparator = LapComparator([])
             return
@@ -121,10 +139,43 @@ class LapRecorder(QObject):
         self._comparator = LapComparator(frames)
 
     def on_frame(self, frame):
-        """Chamado a cada frame recebido (mesma taxa da rede, ~60/s)."""
+        """Chamado a cada frame recebido (~60/s)."""
 
         if self._last_lap_count is not None and frame.lap_count != self._last_lap_count:
             self._finalize_lap(frame.last_lap_ms)
+
+        if hasattr(frame, 'is_paused') and (frame.is_paused or frame.is_loading):
+            self._last_lap_count = frame.lap_count
+            self._last_current_lap_ms = frame.current_lap_ms
+            return
+
+        g_lateral = 0.0
+        g_longitudinal = 0.0
+
+        if (
+            self._prev_velocity_x is not None
+            and self._prev_velocity_ms is not None
+            and frame.current_lap_ms > self._prev_velocity_ms
+            and frame.speed_kmh > 5.0
+        ):
+            dt = (frame.current_lap_ms - self._prev_velocity_ms) / 1000.0
+            if dt > 0.001:
+                ax = (frame.velocity_x - self._prev_velocity_x) / dt
+                az = (frame.velocity_z - self._prev_velocity_z) / dt
+
+                speed_xz = math.sqrt(frame.velocity_x ** 2 + frame.velocity_z ** 2)
+                if speed_xz > 0.5:
+                    fwd_x = frame.velocity_x / speed_xz
+                    fwd_z = frame.velocity_z / speed_xz
+                    right_x = -fwd_z
+                    right_z = fwd_x
+
+                    g_longitudinal = (ax * fwd_x + az * fwd_z) / GRAVITY
+                    g_lateral = (ax * right_x + az * right_z) / GRAVITY
+
+        self._prev_velocity_x = frame.velocity_x
+        self._prev_velocity_z = frame.velocity_z
+        self._prev_velocity_ms = frame.current_lap_ms
 
         if (
             self._last_current_lap_ms is not None
@@ -148,17 +199,38 @@ class LapRecorder(QObject):
             tire_temp_rr=frame.tire_temp_rr,
             position_x=frame.position_x,
             position_z=frame.position_z,
+            g_lateral=g_lateral,
+            g_longitudinal=g_longitudinal,
+            suspension_fl=frame.suspension_fl,
+            suspension_fr=frame.suspension_fr,
+            suspension_rl=frame.suspension_rl,
+            suspension_rr=frame.suspension_rr,
+            tire_slip_fl=frame.tire_slip_fl,
+            tire_slip_fr=frame.tire_slip_fr,
+            tire_slip_rl=frame.tire_slip_rl,
+            tire_slip_rr=frame.tire_slip_rr,
+            turbo_boost=frame.turbo_boost,
+            oil_temp=frame.oil_temp,
+            water_temp=frame.water_temp,
         ))
 
         self._last_lap_count = frame.lap_count
         self._last_current_lap_ms = frame.current_lap_ms
 
-        # Auto-detecção de carro: emite uma vez por car_id novo detectado.
         proto_car_id = getattr(frame, 'car_id', None)
-        if proto_car_id is not None and proto_car_id > 0 and proto_car_id != self._detected_car_id:
-            self._detected_car_id = proto_car_id
-            full_name = get_car_full_name(proto_car_id) or ""
-            self.car_detected.emit(full_name)
+        if proto_car_id is not None and proto_car_id > 0:
+            if proto_car_id != self._detected_car_id:
+                self._detected_car_id = proto_car_id
+                full_name = get_car_full_name(proto_car_id) or ""
+                self.car_detected.emit(full_name)
+                self._car_reemit_counter = 0
+            else:
+                self._car_reemit_counter += 1
+                if self._car_reemit_counter >= CAR_REEMIT_INTERVAL:
+                    self._car_reemit_counter = 0
+                    full_name = get_car_full_name(proto_car_id) or ""
+                    if full_name:
+                        self.car_detected.emit(full_name)
 
         if self._comparator.has_reference:
             delta_ms = self._comparator.delta_ms_at(self._cumulative_distance, frame.current_lap_ms)
@@ -174,45 +246,23 @@ class LapRecorder(QObject):
 
     def _finalize_lap(self, lap_time_ms: int):
         if not self._buffer or not lap_time_ms or lap_time_ms <= 0:
-            self._buffer = []
-            self._cumulative_distance = 0.0
-            self._last_current_lap_ms = None
+            self._reset_lap_state()
             return
 
-        # Auto-detecção de pista pela distância percorrida na volta.
         if self._cumulative_distance > 100:
             candidates = guess_track_by_length(self._cumulative_distance)
             names = [t.name for t in candidates[:5]]
             self.track_candidates_detected.emit(names)
 
-        # Regra central de item 7/8: sem pista válida OU em modo replay/IA,
-        # a volta NUNCA é persistida (não entra no histórico, não atualiza
-        # recordes/setores/ranking) — mas ainda foi calculada normalmente,
-        # então avisamos a UI (lap_discarded) para feedback opcional, sem
-        # tocar em banco nenhum.
         if not self.can_persist:
             if self._buffer:
                 self._comparator_prev = LapComparator([
-                    (
-                        f.elapsed_ms, f.distance_m, f.speed_kmh, f.rpm, f.gear,
-                        f.throttle, f.brake, f.fuel_level,
-                        f.tire_temp_fl, f.tire_temp_fr, f.tire_temp_rl, f.tire_temp_rr,
-                        f.position_x, f.position_z,
-                    )
-                    for f in self._buffer
+                    _frame_to_tuple(f) for f in self._buffer
                 ])
             self.lap_discarded.emit(lap_time_ms)
-            self._buffer = []
-            self._cumulative_distance = 0.0
-            self._last_current_lap_ms = None
+            self._reset_lap_state()
             return
 
-        # CRÍTICO: independentemente do salvamento funcionar ou não, o
-        # buffer e o estado da volta são resetados no final (bloco finally).
-        # Sem isso, uma falha ao salvar (ex: erro de banco) faz esta mesma
-        # volta ser detectada como "não finalizada" no próximo frame,
-        # tentando salvar de novo a ~60x/s — um loop de erro que trava o
-        # app e satura o banco de conexões.
         try:
             previous_best = lap_storage.get_best_lap_time(self.track_id)
             lap_id = lap_storage.save_lap(self.track_id, self.car_id, lap_time_ms, self._buffer)
@@ -220,26 +270,12 @@ class LapRecorder(QObject):
 
             self.lap_saved.emit(lap_id, lap_time_ms, is_best)
 
-            buffer_as_tuples = [
-                (
-                    f.elapsed_ms, f.distance_m, f.speed_kmh, f.rpm, f.gear,
-                    f.throttle, f.brake, f.fuel_level,
-                    f.tire_temp_fl, f.tire_temp_fr, f.tire_temp_rl, f.tire_temp_rr,
-                    f.position_x, f.position_z,
-                )
-                for f in self._buffer
-            ]
-
+            buffer_as_tuples = [_frame_to_tuple(f) for f in self._buffer]
             self._comparator_prev = LapComparator(buffer_as_tuples)
 
             if is_best:
                 self._comparator = LapComparator(buffer_as_tuples)
         except Exception as e:
-            # Não deixa a exceção subir e travar a thread de UI: registra
-            # no console e segue em frente. A volta em questão é perdida,
-            # mas o app continua funcionando para as próximas voltas.
             print(f"[HANNA GT7 AI] Falha ao salvar volta, dado descartado: {e}")
         finally:
-            self._buffer = []
-            self._cumulative_distance = 0.0
-            self._last_current_lap_ms = None
+            self._reset_lap_state()

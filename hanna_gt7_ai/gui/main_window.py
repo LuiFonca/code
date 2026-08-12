@@ -21,14 +21,9 @@ from gui.tabs.live_tab import LiveDashboardTab
 from gui.tabs.history_tab import HistoryTab
 from gui.tabs.telemetry_tab import TelemetryTab
 
-# A telemetria chega a ~60 pacotes/segundo (necessário para a análise de
-# desvios ser precisa), mas repintar a tela nessa frequência é desperdício
-# na maioria dos casos. 40Hz aqui é um valor confortável: bem mais fluido
-# que o mínimo perceptível, sem chegar nos 60Hz (que raramente trazem
-# ganho visual perceptível e pesam mais em máquinas fracas). Os frames
-# são guardados (só o mais recente importa para exibição) e um timer à
-# parte decide quando repintar.
-UI_REFRESH_HZ = 40
+# A telemetria chega a ~60 pacotes/segundo e a UI repinta na mesma taxa
+# para aproveitar todos os frames recebidos sem atraso perceptível.
+UI_REFRESH_HZ = 60
 UI_REFRESH_INTERVAL_MS = int(1000 / UI_REFRESH_HZ)
 
 # Watchdog de telemetria (item 9): se nenhum frame novo chegar por mais que
@@ -543,7 +538,7 @@ class MainWindow(QMainWindow):
         if not car_name:
             return
         current = self.car_input.currentText().strip()
-        if current:
+        if current and current != lap_storage.UNKNOWN_CAR_NAME:
             return
         self.car_input.setCurrentText(car_name)
         self._on_car_changed()

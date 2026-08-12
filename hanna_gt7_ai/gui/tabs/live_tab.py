@@ -52,21 +52,32 @@ class _RpmBar(QFrame):
 
         self._tracked_max = RPM_MAX_DEFAULT
 
-    def set_rpm(self, rpm: float):
+    def set_rpm(self, rpm: float, flash_min: int = 0, flash_max: int = 0):
         rpm_int = int(rpm)
-        if rpm_int > self._tracked_max:
+        if flash_max > 0:
+            self._tracked_max = flash_max
+            self._bar.setRange(0, flash_max)
+        elif rpm_int > self._tracked_max:
             self._tracked_max = rpm_int + 500
             self._bar.setRange(0, self._tracked_max)
         self._bar.setValue(rpm_int)
         self._value.setText(f"{rpm_int:,}".replace(",", "."))
 
-        ratio = rpm_int / self._tracked_max if self._tracked_max else 0
-        if ratio > 0.85:
-            self._set_bar_color("#ff5c5c")
-        elif ratio > 0.7:
-            self._set_bar_color("#f2c94c")
+        if flash_min > 0 and flash_max > 0:
+            if rpm_int >= flash_max:
+                self._set_bar_color("#ff5c5c")
+            elif rpm_int >= flash_min:
+                self._set_bar_color("#f2c94c")
+            else:
+                self._set_bar_color("#3ddc84")
         else:
-            self._set_bar_color("#3ddc84")
+            ratio = rpm_int / self._tracked_max if self._tracked_max else 0
+            if ratio > 0.85:
+                self._set_bar_color("#ff5c5c")
+            elif ratio > 0.7:
+                self._set_bar_color("#f2c94c")
+            else:
+                self._set_bar_color("#3ddc84")
 
     def _set_bar_color(self, color: str):
         self._bar.setStyleSheet(f"""
@@ -249,11 +260,16 @@ class LiveDashboardTab(QWidget):
 
     def render_frame(self, frame):
         self.card_speed.set_value(f"{frame.speed_kmh:.0f}")
-        self.rpm_bar.set_rpm(frame.rpm)
+        self.rpm_bar.set_rpm(frame.rpm, frame.rpm_flashing_min, frame.rpm_flashing_max)
         self.card_gear.set_value("N" if frame.gear == 0 else frame.gear)
         self.card_lap.set_value(f"{frame.lap_count}/{frame.total_laps}")
         self.card_laptime.set_value(format_ms(frame.current_lap_ms))
-        self.card_fuel.set_value(f"{frame.fuel:.0f}")
+
+        if hasattr(frame, 'fuel_capacity') and frame.fuel_capacity > 0:
+            fuel_pct = (frame.fuel / frame.fuel_capacity) * 100
+            self.card_fuel.set_value(f"{fuel_pct:.0f}")
+        else:
+            self.card_fuel.set_value(f"{frame.fuel:.0f}")
 
         self.pedal_throttle.set_value(frame.throttle)
         self.pedal_brake.set_value(frame.brake)

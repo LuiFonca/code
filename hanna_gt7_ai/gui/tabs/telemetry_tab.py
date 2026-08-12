@@ -26,6 +26,14 @@ COLOR_B = "#ff9f4f"
 COLOR_DELTA = "#f2c94c"
 COLOR_MARKER_A = "#8fb0ff"
 COLOR_MARKER_B = "#ffc48f"
+COLOR_FL = "#3ddc84"
+COLOR_FR = "#4f7cff"
+COLOR_RL = "#f2c94c"
+COLOR_RR = "#ff5c5c"
+COLOR_G_LAT = "#ff9f4f"
+COLOR_G_LONG = "#3ddc84"
+COLOR_OIL = "#f2c94c"
+COLOR_WATER = "#4f7cff"
 NUM_SECTORS = 3
 
 
@@ -70,10 +78,17 @@ class TelemetryTab(QWidget):
         self.chart_brake = SyncedMiniChart("Freio (%)")
         self.chart_tires = SyncedMiniChart("Temperatura média dos pneus (°C)")
         self.chart_fuel = SyncedMiniChart("Combustível (L)")
+        self.chart_gforce = SyncedMiniChart("Força G (lateral / longitudinal)")
+        self.chart_suspension = SyncedMiniChart("Suspensão (mm)")
+        self.chart_tire_slip = SyncedMiniChart("Derrapagem de pneus")
+        self.chart_turbo = SyncedMiniChart("Turbo (bar)")
+        self.chart_temps = SyncedMiniChart("Temperatura motor (°C)")
 
         self.all_charts = [
             self.chart_speed, self.chart_delta, self.chart_gear,
             self.chart_throttle, self.chart_brake, self.chart_tires, self.chart_fuel,
+            self.chart_gforce, self.chart_suspension, self.chart_tire_slip,
+            self.chart_turbo, self.chart_temps,
         ]
         for chart in self.all_charts:
             charts_layout.addWidget(chart)
@@ -149,6 +164,11 @@ class TelemetryTab(QWidget):
             ("brake", "Freio"),
             ("tires", "Temp. pneus"),
             ("fuel_level", "Combustível"),
+            ("g_lateral", "Força G lat."),
+            ("g_longitudinal", "Força G long."),
+            ("turbo_boost", "Turbo"),
+            ("oil_temp", "Temp. óleo"),
+            ("water_temp", "Temp. água"),
         ]
         for row, (key, label) in enumerate(channels, start=1):
             name_lbl = QLabel(label)
@@ -338,6 +358,49 @@ class TelemetryTab(QWidget):
                 ("Volta", COLOR_A, self._average_tire_points(self.series_a)),
             ])
 
+        has_gforce = self.series_a.has_channel("g_lateral")
+        self.chart_gforce.setVisible(has_gforce)
+        if has_gforce:
+            self.chart_gforce.set_series([
+                ("Lateral", COLOR_G_LAT, self.series_a.points("g_lateral")),
+                ("Longitudinal", COLOR_G_LONG, self.series_a.points("g_longitudinal")),
+            ])
+
+        has_suspension = self.series_a.has_channel("suspension_fl")
+        self.chart_suspension.setVisible(has_suspension)
+        if has_suspension:
+            self.chart_suspension.set_series([
+                ("FL", COLOR_FL, self.series_a.points("suspension_fl")),
+                ("FR", COLOR_FR, self.series_a.points("suspension_fr")),
+                ("RL", COLOR_RL, self.series_a.points("suspension_rl")),
+                ("RR", COLOR_RR, self.series_a.points("suspension_rr")),
+            ])
+
+        has_slip = self.series_a.has_channel("tire_slip_fl")
+        self.chart_tire_slip.setVisible(has_slip)
+        if has_slip:
+            self.chart_tire_slip.set_series([
+                ("FL", COLOR_FL, self.series_a.points("tire_slip_fl")),
+                ("FR", COLOR_FR, self.series_a.points("tire_slip_fr")),
+                ("RL", COLOR_RL, self.series_a.points("tire_slip_rl")),
+                ("RR", COLOR_RR, self.series_a.points("tire_slip_rr")),
+            ])
+
+        has_turbo = self.series_a.has_channel("turbo_boost")
+        self.chart_turbo.setVisible(has_turbo)
+        if has_turbo:
+            self.chart_turbo.set_series([
+                ("Volta", COLOR_A, self.series_a.points("turbo_boost")),
+            ])
+
+        has_temps = self.series_a.has_channel("oil_temp")
+        self.chart_temps.setVisible(has_temps)
+        if has_temps:
+            series_list = [("Óleo", COLOR_OIL, self.series_a.points("oil_temp"))]
+            if self.series_a.has_channel("water_temp"):
+                series_list.append(("Água", COLOR_WATER, self.series_a.points("water_temp")))
+            self.chart_temps.set_series(series_list)
+
         has_position = self.series_a.has_channel("position_x")
         self.track_map.setVisible(has_position)
         if has_position:
@@ -408,6 +471,46 @@ class TelemetryTab(QWidget):
                 ("Volta B", COLOR_B, self._average_tire_points(self.series_b)),
             ])
 
+        has_gforce = self.series_a.has_channel("g_lateral") or self.series_b.has_channel("g_lateral")
+        self.chart_gforce.setVisible(has_gforce)
+        if has_gforce:
+            self.chart_gforce.set_series([
+                ("G Lat A", COLOR_A, self.series_a.points("g_lateral")),
+                ("G Lat B", COLOR_B, self.series_b.points("g_lateral")),
+            ])
+
+        has_suspension = self.series_a.has_channel("suspension_fl") or self.series_b.has_channel("suspension_fl")
+        self.chart_suspension.setVisible(has_suspension)
+        if has_suspension:
+            self.chart_suspension.set_series([
+                ("A", COLOR_A, self._average_4wheel_points(self.series_a, "suspension")),
+                ("B", COLOR_B, self._average_4wheel_points(self.series_b, "suspension")),
+            ])
+
+        has_slip = self.series_a.has_channel("tire_slip_fl") or self.series_b.has_channel("tire_slip_fl")
+        self.chart_tire_slip.setVisible(has_slip)
+        if has_slip:
+            self.chart_tire_slip.set_series([
+                ("A", COLOR_A, self._average_4wheel_points(self.series_a, "tire_slip")),
+                ("B", COLOR_B, self._average_4wheel_points(self.series_b, "tire_slip")),
+            ])
+
+        has_turbo = self.series_a.has_channel("turbo_boost") or self.series_b.has_channel("turbo_boost")
+        self.chart_turbo.setVisible(has_turbo)
+        if has_turbo:
+            self.chart_turbo.set_series([
+                ("A", COLOR_A, self.series_a.points("turbo_boost")),
+                ("B", COLOR_B, self.series_b.points("turbo_boost")),
+            ])
+
+        has_temps = self.series_a.has_channel("oil_temp") or self.series_b.has_channel("oil_temp")
+        self.chart_temps.setVisible(has_temps)
+        if has_temps:
+            self.chart_temps.set_series([
+                ("Óleo A", COLOR_A, self.series_a.points("oil_temp")),
+                ("Óleo B", COLOR_B, self.series_b.points("oil_temp")),
+            ])
+
         has_position = self.series_a.has_channel("position_x") or self.series_b.has_channel("position_x")
         self.track_map.setVisible(has_position)
         if has_position:
@@ -449,6 +552,18 @@ class TelemetryTab(QWidget):
         fr = series.points("tire_temp_fr")
         rl = series.points("tire_temp_rl")
         rr = series.points("tire_temp_rr")
+        n = min(len(fl), len(fr), len(rl), len(rr))
+        return [
+            (fl[i][0], (fl[i][1] + fr[i][1] + rl[i][1] + rr[i][1]) / 4)
+            for i in range(n)
+        ]
+
+    @staticmethod
+    def _average_4wheel_points(series: LapSeries, prefix: str):
+        fl = series.points(f"{prefix}_fl")
+        fr = series.points(f"{prefix}_fr")
+        rl = series.points(f"{prefix}_rl")
+        rr = series.points(f"{prefix}_rr")
         n = min(len(fl), len(fr), len(rl), len(rr))
         return [
             (fl[i][0], (fl[i][1] + fr[i][1] + rl[i][1] + rr[i][1]) / 4)
@@ -627,6 +742,26 @@ class TelemetryTab(QWidget):
         tire_a = self._tire_avg_at(self.series_a, distance_m)
         tire_b = self._tire_avg_at(self.series_b, distance_m) if self.series_b else None
         set_row("tires", tire_a, tire_b, unit="°C")
+        set_row("g_lateral",
+                self.series_a.value_at(distance_m, "g_lateral"),
+                self.series_b.value_at(distance_m, "g_lateral") if self.series_b else None,
+                fmt="{:.2f}", unit="G")
+        set_row("g_longitudinal",
+                self.series_a.value_at(distance_m, "g_longitudinal"),
+                self.series_b.value_at(distance_m, "g_longitudinal") if self.series_b else None,
+                fmt="{:.2f}", unit="G")
+        set_row("turbo_boost",
+                self.series_a.value_at(distance_m, "turbo_boost"),
+                self.series_b.value_at(distance_m, "turbo_boost") if self.series_b else None,
+                fmt="{:.2f}", unit=" bar")
+        set_row("oil_temp",
+                self.series_a.value_at(distance_m, "oil_temp"),
+                self.series_b.value_at(distance_m, "oil_temp") if self.series_b else None,
+                unit="°C")
+        set_row("water_temp",
+                self.series_a.value_at(distance_m, "water_temp"),
+                self.series_b.value_at(distance_m, "water_temp") if self.series_b else None,
+                unit="°C")
 
     @staticmethod
     def _tire_avg_at(series: LapSeries, distance_m: float):

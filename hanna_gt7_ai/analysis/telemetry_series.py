@@ -18,10 +18,6 @@ buraco de amostragem entre canais com frequências diferentes.
 
 import bisect
 
-# Índices das colunas retornadas por lap_storage.get_lap_frames():
-# (elapsed_ms, distance_m, speed_kmh, rpm, gear, throttle, brake,
-#  fuel_level, tire_temp_fl, tire_temp_fr, tire_temp_rl, tire_temp_rr,
-#  position_x, position_z)
 CHANNELS = {
     "elapsed_ms": 0,
     "distance_m": 1,
@@ -37,6 +33,19 @@ CHANNELS = {
     "tire_temp_rr": 11,
     "position_x": 12,
     "position_z": 13,
+    "g_lateral": 14,
+    "g_longitudinal": 15,
+    "suspension_fl": 16,
+    "suspension_fr": 17,
+    "suspension_rl": 18,
+    "suspension_rr": 19,
+    "tire_slip_fl": 20,
+    "tire_slip_fr": 21,
+    "tire_slip_rl": 22,
+    "tire_slip_rr": 23,
+    "turbo_boost": 24,
+    "oil_temp": 25,
+    "water_temp": 26,
 }
 
 
