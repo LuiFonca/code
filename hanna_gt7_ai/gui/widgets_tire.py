@@ -32,7 +32,8 @@ class TireTempWidget(QFrame):
     def __init__(self, label: str):
         super().__init__()
         self.setObjectName("tireCard")
-        self.setFixedSize(110, 80)
+        self.setMinimumSize(80, 60)
+        self.setMaximumSize(140, 100)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)

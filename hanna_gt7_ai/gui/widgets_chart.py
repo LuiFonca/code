@@ -1,13 +1,17 @@
 """
 Um gráfico compacto (velocidade, marcha, freio, etc.) que sabe desenhar uma
 linha vertical de cursor numa posição de distância arbitrária, e que avisa
-quando o mouse se move sobre ele — usado pela aba de Comparação para
+quando o mouse se move sobre ele — usado pela aba de Telemetria para
 sincronizar vários gráficos empilhados pelo mesmo ponto da pista.
+
+Suporta zoom (roda do mouse no eixo X), pan (arrastar com botão esquerdo),
+reset (duplo-clique) e tooltip sobreposto com os valores de cada série no
+ponto do cursor.
 """
 
-from PySide6.QtCore import Qt, Signal, QPointF
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush
-from PySide6.QtWidgets import QGraphicsLineItem, QWidget
+from PySide6.QtCore import Qt, Signal, QPointF, QRectF
+from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont
+from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QWidget
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 
 GRID_COLOR = QColor("#23262f")
@@ -16,8 +20,6 @@ CROSSHAIR_COLOR = QColor("#ffffff")
 
 
 class SyncedMiniChart(QChartView):
-    # Emitido quando o mouse se move sobre este gráfico, com a distância
-    # (em metros) correspondente à posição horizontal do cursor.
     hovered_at_distance = Signal(float)
     hover_left = Signal()
 
@@ -32,7 +34,7 @@ class SyncedMiniChart(QChartView):
 
         super().__init__(chart)
         self.setRenderHint(QPainter.Antialiasing)
-        self.setFixedHeight(height)
+        self.setMinimumHeight(90)
         self.setMouseTracking(True)
         self.setStyleSheet("background: transparent; border: none;")
 
@@ -57,10 +59,32 @@ class SyncedMiniChart(QChartView):
         self.scene().addItem(self._crosshair)
         self._crosshair.hide()
 
+        self._tooltip_bg = QGraphicsRectItem()
+        self._tooltip_bg.setBrush(QBrush(QColor(26, 29, 37, 220)))
+        self._tooltip_bg.setPen(QPen(QColor("#454a58"), 1))
+        self._tooltip_bg.setZValue(1001)
+        self.scene().addItem(self._tooltip_bg)
+        self._tooltip_bg.hide()
+
+        self._tooltip_text = QGraphicsSimpleTextItem()
+        self._tooltip_text.setBrush(QColor("#e8e8ec"))
+        tooltip_font = QFont()
+        tooltip_font.setPixelSize(11)
+        self._tooltip_text.setFont(tooltip_font)
+        self._tooltip_text.setZValue(1002)
+        self.scene().addItem(self._tooltip_text)
+        self._tooltip_text.hide()
+
         self._sector_items = []
         self._last_sectors = []
 
         self._max_distance = 1.0
+        self._full_x_min = 0.0
+        self._full_x_max = 1.0
+        self._series_data: list[tuple[str, str, list]] = []
+
+        self._drag_start_pos = None
+        self._drag_start_range = None
 
     def set_sector_lines(self, sectors):
         """sectors: lista de (distance_m, label) — desenha linhas tracejadas
@@ -108,6 +132,7 @@ class SyncedMiniChart(QChartView):
     def set_series(self, series_defs, y_range=None):
         """series_defs: lista de (nome, cor, pontos[(distance_m, valor)])."""
         self.chart().removeAllSeries()
+        self._series_data = list(series_defs)
 
         max_distance = 1.0
         y_min, y_max = None, None
@@ -131,6 +156,8 @@ class SyncedMiniChart(QChartView):
             series.attachAxis(self._axis_y)
 
         self._max_distance = max_distance
+        self._full_x_min = 0.0
+        self._full_x_max = max_distance
         self._axis_x.setRange(0, max_distance)
 
         if y_range:
@@ -148,18 +175,150 @@ class SyncedMiniChart(QChartView):
         bottom = self.chart().mapToPosition(QPointF(distance_m, y_min), series)
         self._crosshair.setLine(top.x(), top.y(), bottom.x(), bottom.y())
         self._crosshair.show()
+        self._show_tooltip(distance_m, top)
 
     def hide_crosshair(self):
         self._crosshair.hide()
+        self._tooltip_bg.hide()
+        self._tooltip_text.hide()
+
+    def _show_tooltip(self, distance_m: float, anchor: QPointF):
+        if not self._series_data:
+            self._tooltip_bg.hide()
+            self._tooltip_text.hide()
+            return
+
+        import bisect
+        lines = [f"{distance_m:.0f}m"]
+        for name, color, points in self._series_data:
+            if not points:
+                continue
+            distances = [p[0] for p in points]
+            idx = bisect.bisect_left(distances, distance_m)
+            if idx == 0:
+                val = points[0][1]
+            elif idx >= len(points):
+                val = points[-1][1]
+            else:
+                d0, v0 = points[idx - 1]
+                d1, v1 = points[idx]
+                ratio = (distance_m - d0) / (d1 - d0) if d1 != d0 else 0
+                val = v0 + ratio * (v1 - v0)
+            label = name if len(self._series_data) > 1 else ""
+            if label:
+                lines.append(f"{label}: {val:.1f}")
+            else:
+                lines.append(f"{val:.1f}")
+
+        text = "\n".join(lines)
+        self._tooltip_text.setText(text)
+        self._tooltip_text.show()
+
+        tr = self._tooltip_text.boundingRect()
+        pad = 6
+        bg_w = tr.width() + pad * 2
+        bg_h = tr.height() + pad * 2
+
+        tx = anchor.x() + 10
+        ty = anchor.y() + 4
+        scene_rect = self.sceneRect()
+        if tx + bg_w > scene_rect.right() - 4:
+            tx = anchor.x() - bg_w - 10
+
+        self._tooltip_bg.setRect(QRectF(tx, ty, bg_w, bg_h))
+        self._tooltip_text.setPos(tx + pad, ty + pad)
+        self._tooltip_bg.show()
+
+    # --- zoom / pan ---
+
+    def wheelEvent(self, event):
+        if not self.chart().series():
+            super().wheelEvent(event)
+            return
+
+        pos = event.position() if hasattr(event, "position") else event.pos()
+        series = self.chart().series()[0]
+        val = self.chart().mapToValue(pos, series)
+        center_x = val.x()
+
+        cur_min = self._axis_x.min()
+        cur_max = self._axis_x.max()
+        span = cur_max - cur_min
+
+        delta = event.angleDelta().y()
+        factor = 0.85 if delta > 0 else 1.0 / 0.85
+        new_span = span * factor
+
+        full_span = self._full_x_max - self._full_x_min
+        new_span = max(full_span * 0.02, min(full_span, new_span))
+
+        ratio = (center_x - cur_min) / span if span > 0 else 0.5
+        new_min = center_x - new_span * ratio
+        new_max = center_x + new_span * (1 - ratio)
+
+        new_min = max(self._full_x_min, new_min)
+        new_max = min(self._full_x_max, new_max)
+
+        self._axis_x.setRange(new_min, new_max)
+        if self._last_sectors:
+            self.set_sector_lines(self._last_sectors)
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.chart().series():
+            self._drag_start_pos = event.position() if hasattr(event, "position") else event.pos()
+            self._drag_start_range = (self._axis_x.min(), self._axis_x.max())
+            event.accept()
+        else:
+            super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        pos = event.position() if hasattr(event, "position") else event.pos()
+
+        if self._drag_start_pos is not None and self.chart().series():
+            series = self.chart().series()[0]
+            start_val = self.chart().mapToValue(self._drag_start_pos, series).x()
+            cur_val = self.chart().mapToValue(pos, series).x()
+            dx = start_val - cur_val
+
+            old_min, old_max = self._drag_start_range
+            new_min = old_min + dx
+            new_max = old_max + dx
+
+            span = new_max - new_min
+            if new_min < self._full_x_min:
+                new_min = self._full_x_min
+                new_max = new_min + span
+            if new_max > self._full_x_max:
+                new_max = self._full_x_max
+                new_min = new_max - span
+
+            self._axis_x.setRange(new_min, new_max)
+            if self._last_sectors:
+                self.set_sector_lines(self._last_sectors)
+            event.accept()
+            return
+
         if self.chart().series():
             series = self.chart().series()[0]
-            pos = event.position() if hasattr(event, "position") else event.pos()
             value = self.chart().mapToValue(pos, series)
             distance = max(0.0, min(self._max_distance, value.x()))
             self.hovered_at_distance.emit(distance)
         super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_start_pos is not None:
+            self._drag_start_pos = None
+            self._drag_start_range = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        self._axis_x.setRange(self._full_x_min, self._full_x_max)
+        if self._last_sectors:
+            self.set_sector_lines(self._last_sectors)
+        event.accept()
 
     def leaveEvent(self, event):
         self.hover_left.emit()
@@ -180,7 +339,8 @@ class LiveStripChart(QChartView):
 
         super().__init__(chart)
         self.setRenderHint(QPainter.Antialiasing)
-        self.setFixedHeight(height)
+        self.setMinimumHeight(60)
+        self.setMaximumHeight(height + 40)
         self.setStyleSheet("background: transparent; border: none;")
 
         self._series = QLineSeries()
@@ -231,7 +391,8 @@ class LiveDualStripChart(QChartView):
 
         super().__init__(chart)
         self.setRenderHint(QPainter.Antialiasing)
-        self.setFixedHeight(height)
+        self.setMinimumHeight(70)
+        self.setMaximumHeight(height + 40)
         self.setStyleSheet("background: transparent; border: none;")
 
         self._series_a = QLineSeries()
@@ -300,7 +461,7 @@ class TrackMapWidget(QWidget):
       com um marcador sincronizado ao hover dos outros gráficos.
     """
 
-    def __init__(self, title: str = "Traçado (posição X-Z)", height: int = 220):
+    def __init__(self, title: str = "Traçado (posição X-Z)", height: int = 220, show_controls: bool = True):
         super().__init__()
         self._title = title
         self.setMinimumHeight(height)
@@ -308,12 +469,86 @@ class TrackMapWidget(QWidget):
         self._paths: list[tuple[str, str, list]] = []
         self._markers: list[tuple[float, float, str]] = []
         self._min_x = self._max_x = self._min_z = self._max_z = None
+        self._zoom_level = 1.0
+        self._pan_offset_x = 0.0
+        self._pan_offset_z = 0.0
+        self._drag_start = None
+        self._drag_pan_start = (0.0, 0.0)
+        self._show_controls = show_controls
 
     def clear(self):
         self._paths = []
         self._markers = []
         self._min_x = self._max_x = self._min_z = self._max_z = None
+        self._zoom_level = 1.0
+        self._pan_offset_x = 0.0
+        self._pan_offset_z = 0.0
         self.update()
+
+    def zoom_in(self):
+        self._zoom_level = min(self._zoom_level * 1.3, 10.0)
+        self.update()
+
+    def zoom_out(self):
+        self._zoom_level = max(self._zoom_level / 1.3, 0.5)
+        self.update()
+
+    def zoom_reset(self):
+        self._zoom_level = 1.0
+        self._pan_offset_x = 0.0
+        self._pan_offset_z = 0.0
+        self.update()
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self._zoom_level = min(self._zoom_level * 1.15, 10.0)
+        elif delta < 0:
+            self._zoom_level = max(self._zoom_level / 1.15, 0.5)
+        self.update()
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._show_controls:
+            pos = event.position() if hasattr(event, 'position') else event.pos()
+            action = self._hit_zoom_button(pos)
+            if action == "in":
+                self.zoom_in()
+                event.accept()
+                return
+            elif action == "out":
+                self.zoom_out()
+                event.accept()
+                return
+            elif action == "reset":
+                self.zoom_reset()
+                event.accept()
+                return
+        if event.button() == Qt.MiddleButton or (event.button() == Qt.LeftButton and event.modifiers() & Qt.ShiftModifier):
+            self._drag_start = event.position() if hasattr(event, 'position') else event.pos()
+            self._drag_pan_start = (self._pan_offset_x, self._pan_offset_z)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is not None:
+            pos = event.position() if hasattr(event, 'position') else event.pos()
+            dx = pos.x() - self._drag_start.x()
+            dy = pos.y() - self._drag_start.y()
+            self._pan_offset_x = self._drag_pan_start[0] + dx
+            self._pan_offset_z = self._drag_pan_start[1] + dy
+            self.update()
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._drag_start is not None:
+            self._drag_start = None
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
     def set_paths(self, paths):
         """paths: lista de (nome, cor_hex, pontos[(x, z)]). Substitui
@@ -375,11 +610,12 @@ class TrackMapWidget(QWidget):
         span_x = max(self._max_x - self._min_x, 1.0)
         span_z = max(self._max_z - self._min_z, 1.0)
         padding = 1.15
-        scale = min(rect.width() / (span_x * padding), rect.height() / (span_z * padding))
+        base_scale = min(rect.width() / (span_x * padding), rect.height() / (span_z * padding))
+        scale = base_scale * self._zoom_level
         center_x = (self._min_x + self._max_x) / 2
         center_z = (self._min_z + self._max_z) / 2
-        wx = rect.center().x() + (x - center_x) * scale
-        wy = rect.center().y() + (z - center_z) * scale
+        wx = rect.center().x() + (x - center_x) * scale + self._pan_offset_x
+        wy = rect.center().y() + (z - center_z) * scale + self._pan_offset_z
         return wx, wy
 
     def paintEvent(self, event):
@@ -395,8 +631,11 @@ class TrackMapWidget(QWidget):
         if self._min_x is None or plot_rect.width() <= 0 or plot_rect.height() <= 0:
             painter.setPen(QColor("#454a58"))
             painter.drawText(self.rect(), Qt.AlignCenter, "Sem dados de posição para esta volta.")
+            self._draw_zoom_controls(painter)
             painter.end()
             return
+
+        painter.setClipRect(plot_rect)
 
         for name, color, points in self._paths:
             if len(points) < 2:
@@ -419,4 +658,50 @@ class TrackMapWidget(QWidget):
             painter.setBrush(QBrush(QColor(color)))
             painter.drawEllipse(QPointF(*point), 5, 5)
 
+        painter.setClipping(False)
+        self._draw_zoom_controls(painter)
         painter.end()
+
+    def _draw_zoom_controls(self, painter: QPainter):
+        if not self._show_controls:
+            return
+        btn_size = 22
+        margin = 8
+        x = self.rect().right() - margin - btn_size
+        y = self.rect().top() + margin
+
+        for i, label in enumerate(["+", "-", "R"]):
+            by = y + i * (btn_size + 4)
+            rect = self.rect().__class__(x, by, btn_size, btn_size)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor("#2a2e3a")))
+            painter.drawRoundedRect(rect, 4, 4)
+            painter.setPen(QColor("#c8cad0"))
+            from PySide6.QtGui import QFont
+            font = QFont()
+            font.setPixelSize(13)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.drawText(rect, Qt.AlignCenter, label)
+
+        if self._zoom_level != 1.0:
+            painter.setPen(QColor("#6b6f7a"))
+            font = QFont()
+            font.setPixelSize(10)
+            painter.setFont(font)
+            painter.drawText(x - 20, y + 3 * (btn_size + 4), f"{self._zoom_level:.1f}x")
+
+    def mouseDoubleClickEvent(self, event):
+        self.zoom_reset()
+        event.accept()
+
+    def _hit_zoom_button(self, pos) -> str | None:
+        btn_size = 22
+        margin = 8
+        x = self.rect().right() - margin - btn_size
+        y = self.rect().top() + margin
+        for i, action in enumerate(["in", "out", "reset"]):
+            by = y + i * (btn_size + 4)
+            if x <= pos.x() <= x + btn_size and by <= pos.y() <= by + btn_size:
+                return action
+        return None

@@ -7,6 +7,7 @@ da pista ao centro e traçado com ghost da volta anterior.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QProgressBar,
+    QScrollArea,
 )
 from PySide6.QtCore import Qt
 
@@ -121,7 +122,8 @@ class _PedalBar(QFrame):
         self._label.setStyleSheet(
             "color: #c8cad0; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
         )
-        self._label.setFixedWidth(90)
+        self._label.setMinimumWidth(60)
+        self._label.setMaximumWidth(100)
 
         self._bar = QProgressBar()
         self._bar.setRange(0, 100)
@@ -161,13 +163,25 @@ class LiveDashboardTab(QWidget):
         self._last_lap_count = None
         self._ghost_points = []
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(4, 6, 4, 4)
         root.setSpacing(6)
 
-        # --- Delta ---
-        self.card_delta = DeltaCard()
-        root.addWidget(self.card_delta)
+        # --- Delta (best + previous) ---
+        self.card_delta = DeltaCard("DELTA VS MELHOR VOLTA")
+        self.card_delta_prev = DeltaCard("DELTA VS VOLTA ANTERIOR")
+        delta_row = QHBoxLayout()
+        delta_row.setSpacing(8)
+        delta_row.addWidget(self.card_delta, stretch=1)
+        delta_row.addWidget(self.card_delta_prev, stretch=1)
+        root.addLayout(delta_row)
 
         # --- Velocidade + Marcha ---
         speed_gear_row = QHBoxLayout()
@@ -228,6 +242,9 @@ class LiveDashboardTab(QWidget):
         map_layout.addWidget(self.track_map)
         root.addWidget(self.tire_panel)
 
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
     # --- API pública ---
 
     def render_frame(self, frame):
@@ -259,6 +276,9 @@ class LiveDashboardTab(QWidget):
     def render_delta(self, delta_seconds):
         self.card_delta.set_delta(delta_seconds)
 
+    def render_delta_previous(self, delta_seconds):
+        self.card_delta_prev.set_delta(delta_seconds)
+
     def render_stale(self):
         self.card_speed.set_value("0")
         self.rpm_bar.set_rpm(0)
@@ -268,6 +288,7 @@ class LiveDashboardTab(QWidget):
         self.card_fuel.set_value("0")
         self.pedal_throttle.set_value(0)
         self.pedal_brake.set_value(0)
+        self.card_delta_prev.set_delta(None)
 
     def _save_ghost(self):
         for name, color, points in self.track_map._paths:

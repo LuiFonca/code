@@ -48,7 +48,8 @@ class HistoryTab(QWidget):
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Buscar por carro ou nº da volta...")
-        self.search_input.setFixedWidth(220)
+        self.search_input.setMinimumWidth(140)
+        self.search_input.setMaximumWidth(260)
         self.search_input.textChanged.connect(self._apply_filter)
 
         refresh_button = QPushButton("Atualizar")

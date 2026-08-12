@@ -47,15 +47,14 @@ class TelemetryFrame:
     best_lap_ms: int
     last_lap_ms: int
     current_lap_ms: int
-    # Temperatura de cada pneu em °C. Ordem: dianteiro-esq, dianteiro-dir,
-    # traseiro-esq, traseiro-dir. Offset cruzado com implementações públicas
-    # da comunidade (MacManley/gt7-udp) e consistente com os offsets já
-    # validados nesta aplicação (fica exatamente entre oilTemp e best_lap_ms,
-    # dois campos que já confirmamos corretos com dados reais).
     tire_temp_fl: float
     tire_temp_fr: float
     tire_temp_rl: float
     tire_temp_rr: float
+    # Offset 0x124: car_id documentado pela comunidade (ex: gt7-udp, pdtools).
+    # Valor int32 que mapeia para o catálogo de carros em data/cars.csv.
+    # Pode ser -1 ou 0 em menus/loading — tratar como "desconhecido".
+    car_id: int
 
     @staticmethod
     def from_bytes(d: bytes) -> "TelemetryFrame":
@@ -73,6 +72,7 @@ class TelemetryFrame:
         lap_count = struct.unpack("<h", d[0x74:0x76])[0]
         total_laps = struct.unpack("<h", d[0x76:0x78])[0]
         tire_temp_fl, tire_temp_fr, tire_temp_rl, tire_temp_rr = struct.unpack("<ffff", d[0x60:0x70])
+        car_id = struct.unpack("<i", d[0x124:0x128])[0]
 
         return TelemetryFrame(
             speed_kmh=speed_ms * 3.6,
@@ -93,4 +93,5 @@ class TelemetryFrame:
             tire_temp_fr=tire_temp_fr,
             tire_temp_rl=tire_temp_rl,
             tire_temp_rr=tire_temp_rr,
+            car_id=car_id,
         )

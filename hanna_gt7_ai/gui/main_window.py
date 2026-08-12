@@ -19,7 +19,7 @@ from analysis.lap_recorder import LapRecorder
 from gui.widgets import format_ms
 from gui.tabs.live_tab import LiveDashboardTab
 from gui.tabs.history_tab import HistoryTab
-from gui.tabs.comparison_tab import ComparisonTab
+from gui.tabs.telemetry_tab import TelemetryTab
 
 # A telemetria chega a ~60 pacotes/segundo (necessário para a análise de
 # desvios ser precisa), mas repintar a tela nessa frequência é desperdício
@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         self.lap_recorder: LapRecorder | None = None
         self._latest_frame = None  # sempre guarda só o frame mais recente
         self._latest_delta = None
+        self._latest_delta_prev = None
         self._last_frame_monotonic = None  # relógio monotônico do último frame recebido
         self._is_stale = False
 
@@ -201,11 +202,11 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.live_tab = LiveDashboardTab()
         self.history_tab = HistoryTab(track_id=None)
-        self.comparison_tab = ComparisonTab(track_id=None)
+        self.telemetry_tab = TelemetryTab(track_id=None)
 
         self.tabs.addTab(self.live_tab, "Ao Vivo")
         self.tabs.addTab(self.history_tab, "Histórico")
-        self.tabs.addTab(self.comparison_tab, "Comparação")
+        self.tabs.addTab(self.telemetry_tab, "Telemetria")
         root.addWidget(self.tabs, stretch=1)
 
         # rodapé de status/alertas
@@ -229,7 +230,8 @@ class MainWindow(QMainWindow):
         self.ip_input = QLineEdit()
         self.ip_input.setPlaceholderText("IP do PlayStation (ex: 192.168.1.50)")
         self.ip_input.setText(DEFAULT_PS_IP)
-        self.ip_input.setFixedWidth(220)
+        self.ip_input.setMinimumWidth(140)
+        self.ip_input.setMaximumWidth(240)
 
         # Seletor de pista: o GT7 não informa qual pista está sendo usada
         # via telemetria, então quem diz é o usuário. Editável para digitar
@@ -390,12 +392,15 @@ class MainWindow(QMainWindow):
             self.lap_recorder.lap_saved.connect(self._on_lap_saved)
             self.lap_recorder.lap_discarded.connect(self._on_lap_discarded)
             self.lap_recorder.delta_changed.connect(self._on_delta_changed)
+            self.lap_recorder.delta_previous_changed.connect(self._on_delta_previous_changed)
+            self.lap_recorder.car_detected.connect(self._on_car_detected)
+            self.lap_recorder.track_candidates_detected.connect(self._on_track_candidates)
         else:
             self.lap_recorder.set_track(track_id)
             self.lap_recorder.set_car(car_id)
 
         self.history_tab.set_track(track_id)
-        self.comparison_tab.set_track(track_id)
+        self.telemetry_tab.set_track(track_id)
 
         self.connect_button.setEnabled(False)
         self.ip_input.setEnabled(False)
@@ -430,9 +435,11 @@ class MainWindow(QMainWindow):
         self._is_stale = False
         self._latest_frame = None
         self._set_status_pill("desconectado")
-        self.log_label.setText("Desconectado.")
+        self.log_label.setText("Desconectado. Todos os dados coletados permanecem disponíveis.")
         self._reload_track_list()
         self._reload_car_list()
+        self.history_tab.refresh()
+        self.telemetry_tab.refresh_lap_list()
 
     # ---------- troca de pista/carro/modo em tempo real (item 5) ----------
     # Todos estes handlers funcionam com o PS5 conectado ou não: se houver
@@ -445,7 +452,7 @@ class MainWindow(QMainWindow):
         if self.lap_recorder is not None:
             self.lap_recorder.set_track(track_id)
         self.history_tab.set_track(track_id)
-        self.comparison_tab.set_track(track_id)
+        self.telemetry_tab.set_track(track_id)
         self._reload_track_list()
 
         if track_id is None:
@@ -506,7 +513,7 @@ class MainWindow(QMainWindow):
         # Mantém o histórico e a lista de voltas da aba de comparação
         # sempre atualizados, sem precisar clicar em nada manualmente.
         self.history_tab.refresh()
-        self.comparison_tab.refresh_lap_list()
+        self.telemetry_tab.refresh_lap_list()
 
     def _on_lap_discarded(self, lap_time_ms: int):
         formatted = format_ms(lap_time_ms)
@@ -529,6 +536,33 @@ class MainWindow(QMainWindow):
     def _on_delta_changed(self, delta_seconds):
         self._latest_delta = delta_seconds
 
+    def _on_delta_previous_changed(self, delta_seconds):
+        self._latest_delta_prev = delta_seconds
+
+    def _on_car_detected(self, car_name: str):
+        if not car_name:
+            return
+        current = self.car_input.currentText().strip()
+        if current:
+            return
+        self.car_input.setCurrentText(car_name)
+        self._on_car_changed()
+        self.log_label.setText(f"Carro detectado automaticamente: {car_name}")
+
+    def _on_track_candidates(self, names: list):
+        if not names:
+            return
+        current = self._resolve_track_name()
+        if current:
+            return
+        if len(names) == 1:
+            self.track_input.setCurrentText(names[0])
+            self._on_track_changed()
+            self.log_label.setText(f"Pista detectada automaticamente: {names[0]}")
+        else:
+            suggestion = ", ".join(names[:3])
+            self.log_label.setText(f"Pistas possíveis detectadas: {suggestion}. Selecione a correta no campo acima.")
+
     def _check_stale(self):
         """Watchdog do item 9: sem um listener ativo que já tenha recebido
         ao menos um frame, não há o que verificar. Uma vez sem novo frame
@@ -544,6 +578,7 @@ class MainWindow(QMainWindow):
             self.log_label.setText("Sem dados de telemetria — verifique a conexão com o PS5.")
             self.live_tab.render_stale()
             self.live_tab.render_delta(None)
+            self.live_tab.render_delta_previous(None)
 
     def _render_latest_frame(self):
         if self._is_stale:
@@ -556,6 +591,7 @@ class MainWindow(QMainWindow):
             return
         self.live_tab.render_frame(frame)
         self.live_tab.render_delta(self._latest_delta)
+        self.live_tab.render_delta_previous(self._latest_delta_prev)
 
     def closeEvent(self, event):
         if self.listener_thread:

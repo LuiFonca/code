@@ -55,21 +55,21 @@ class BarCard(QFrame):
 
 
 class DeltaCard(QFrame):
-    """Card grande mostrando o delta ao vivo contra a volta de referência
-    (a melhor volta salva). Verde = mais rápido que a referência nesse
-    ponto da pista; vermelho = mais devagar."""
+    """Card grande mostrando o delta ao vivo contra uma volta de referência.
+    Verde = mais rápido que a referência nesse ponto da pista;
+    vermelho = mais devagar."""
 
-    def __init__(self):
+    def __init__(self, label: str = "DELTA VS MELHOR VOLTA"):
         super().__init__()
         self.setObjectName("card")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 10, 18, 10)
         layout.setAlignment(Qt.AlignCenter)
 
-        self.label_widget = QLabel("DELTA VS MELHOR VOLTA")
+        self.label_widget = QLabel(label)
         self.label_widget.setAlignment(Qt.AlignCenter)
         self.label_widget.setStyleSheet(
-            "color: #c8cad0; font-size: 13px; font-weight: 700; letter-spacing: 1px;"
+            "color: #c8cad0; font-size: 12px; font-weight: 700; letter-spacing: 1px;"
         )
 
         self.value_widget = QLabel("--")

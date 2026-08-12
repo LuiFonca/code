@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QObject, Signal
 
 from . import lap_storage
+from .gt7_catalog import guess_track_by_length, get_car_full_name
 from .lap_comparator import LapComparator
 
 
@@ -35,19 +36,20 @@ class RecordedFrame:
 
 
 class LapRecorder(QObject):
-    # Emitido sempre que uma volta de jogador é salva: (lap_id, tempo_ms, é_melhor_volta)
     lap_saved = Signal(int, int, bool)
-
-    # Emitido quando uma volta termina mas NÃO foi persistida (sem pista
-    # válida, ou modo replay/IA ativo): (tempo_ms). Só informativo para a
-    # UI — não deve alimentar histórico, recordes ou ranking.
     lap_discarded = Signal(int)
-
-    # Emitido a cada frame com referência disponível: delta em segundos
-    # (positivo = mais devagar que a referência, negativo = mais rápido).
-    # Emite None quando não há referência ainda, ou quando já passamos do
-    # fim da volta de referência.
     delta_changed = Signal(object)
+    delta_previous_changed = Signal(object)
+
+    # Auto-detecção: emitido ao final de uma volta com a lista de nomes
+    # candidatos de pista baseado na distância percorrida. Lista vazia =
+    # nenhuma correspondência encontrada no catálogo.
+    track_candidates_detected = Signal(list)
+
+    # Auto-detecção: emitido quando o car_id do protocolo é reconhecido
+    # no catálogo CSV. Emite o nome completo (fabricante + modelo).
+    # Emite string vazia se o car_id não foi encontrado no catálogo.
+    car_detected = Signal(str)
 
     def __init__(self, track_id, car_id=None, parent=None):
         """track_id/car_id podem ser None: nesse caso a volta é acumulada
@@ -60,13 +62,15 @@ class LapRecorder(QObject):
 
         self.track_id = track_id
         self.car_id = car_id
-        self.is_player_mode = True  # ver set_player_mode()
+        self.is_player_mode = True
         self._buffer: list[RecordedFrame] = []
         self._cumulative_distance = 0.0
         self._last_lap_count = None
         self._last_current_lap_ms = None
+        self._detected_car_id = None
 
         self._comparator = LapComparator([])
+        self._comparator_prev = LapComparator([])
         self._load_reference()
 
     def set_track(self, track_id):
@@ -81,6 +85,7 @@ class LapRecorder(QObject):
         self._cumulative_distance = 0.0
         self._last_lap_count = None
         self._last_current_lap_ms = None
+        self._comparator_prev = LapComparator([])
         self._load_reference()
 
     def set_car(self, car_id):
@@ -118,16 +123,9 @@ class LapRecorder(QObject):
     def on_frame(self, frame):
         """Chamado a cada frame recebido (mesma taxa da rede, ~60/s)."""
 
-        # Detecta troca de volta: lap_count incrementa toda vez que uma
-        # volta é cruzada. Nesse momento, last_lap_ms já traz o tempo total
-        # da volta que acabou de ser completada — não precisamos somar nada
-        # manualmente.
         if self._last_lap_count is not None and frame.lap_count != self._last_lap_count:
             self._finalize_lap(frame.last_lap_ms)
 
-        # Estima a distância percorrida integrando velocidade pelo tempo de
-        # jogo decorrido entre frames (current_lap_ms). Preferimos o relógio
-        # do jogo ao relógio de parede porque não sofre variação de rede.
         if (
             self._last_current_lap_ms is not None
             and frame.current_lap_ms >= self._last_current_lap_ms
@@ -155,20 +153,37 @@ class LapRecorder(QObject):
         self._last_lap_count = frame.lap_count
         self._last_current_lap_ms = frame.current_lap_ms
 
+        # Auto-detecção de carro: emite uma vez por car_id novo detectado.
+        proto_car_id = getattr(frame, 'car_id', None)
+        if proto_car_id is not None and proto_car_id > 0 and proto_car_id != self._detected_car_id:
+            self._detected_car_id = proto_car_id
+            full_name = get_car_full_name(proto_car_id) or ""
+            self.car_detected.emit(full_name)
+
         if self._comparator.has_reference:
             delta_ms = self._comparator.delta_ms_at(self._cumulative_distance, frame.current_lap_ms)
             self.delta_changed.emit(None if delta_ms is None else delta_ms / 1000)
         else:
             self.delta_changed.emit(None)
 
+        if self._comparator_prev.has_reference:
+            delta_prev_ms = self._comparator_prev.delta_ms_at(self._cumulative_distance, frame.current_lap_ms)
+            self.delta_previous_changed.emit(None if delta_prev_ms is None else delta_prev_ms / 1000)
+        else:
+            self.delta_previous_changed.emit(None)
+
     def _finalize_lap(self, lap_time_ms: int):
-        # Ignora voltas inválidas (buffer vazio ou tempo zerado/negativo,
-        # que pode acontecer na primeira volta detectada após conectar).
         if not self._buffer or not lap_time_ms or lap_time_ms <= 0:
             self._buffer = []
             self._cumulative_distance = 0.0
             self._last_current_lap_ms = None
             return
+
+        # Auto-detecção de pista pela distância percorrida na volta.
+        if self._cumulative_distance > 100:
+            candidates = guess_track_by_length(self._cumulative_distance)
+            names = [t.name for t in candidates[:5]]
+            self.track_candidates_detected.emit(names)
 
         # Regra central de item 7/8: sem pista válida OU em modo replay/IA,
         # a volta NUNCA é persistida (não entra no histórico, não atualiza
@@ -176,6 +191,16 @@ class LapRecorder(QObject):
         # então avisamos a UI (lap_discarded) para feedback opcional, sem
         # tocar em banco nenhum.
         if not self.can_persist:
+            if self._buffer:
+                self._comparator_prev = LapComparator([
+                    (
+                        f.elapsed_ms, f.distance_m, f.speed_kmh, f.rpm, f.gear,
+                        f.throttle, f.brake, f.fuel_level,
+                        f.tire_temp_fl, f.tire_temp_fr, f.tire_temp_rl, f.tire_temp_rr,
+                        f.position_x, f.position_z,
+                    )
+                    for f in self._buffer
+                ])
             self.lap_discarded.emit(lap_time_ms)
             self._buffer = []
             self._cumulative_distance = 0.0
@@ -195,19 +220,20 @@ class LapRecorder(QObject):
 
             self.lap_saved.emit(lap_id, lap_time_ms, is_best)
 
+            buffer_as_tuples = [
+                (
+                    f.elapsed_ms, f.distance_m, f.speed_kmh, f.rpm, f.gear,
+                    f.throttle, f.brake, f.fuel_level,
+                    f.tire_temp_fl, f.tire_temp_fr, f.tire_temp_rl, f.tire_temp_rr,
+                    f.position_x, f.position_z,
+                )
+                for f in self._buffer
+            ]
+
+            self._comparator_prev = LapComparator(buffer_as_tuples)
+
             if is_best:
-                # A volta que acabou de terminar virou a nova referência —
-                # recarrega direto do buffer que já temos em memória, sem
-                # precisar ir ao banco de novo.
-                self._comparator = LapComparator([
-                    (
-                        f.elapsed_ms, f.distance_m, f.speed_kmh, f.rpm, f.gear,
-                        f.throttle, f.brake, f.fuel_level,
-                        f.tire_temp_fl, f.tire_temp_fr, f.tire_temp_rl, f.tire_temp_rr,
-                        f.position_x, f.position_z,
-                    )
-                    for f in self._buffer
-                ])
+                self._comparator = LapComparator(buffer_as_tuples)
         except Exception as e:
             # Não deixa a exceção subir e travar a thread de UI: registra
             # no console e segue em frente. A volta em questão é perdida,
