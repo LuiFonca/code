@@ -89,6 +89,24 @@ class LapSeries:
         coluna) são simplesmente omitidas em vez de quebrar o gráfico."""
         return self._valid_points(channel)
 
+    def points_by_time(self, channel: str):
+        """Retorna pares (elapsed_seconds, valor) para plotar no eixo temporal."""
+        idx_ch = CHANNELS[channel]
+        idx_t = CHANNELS["elapsed_ms"]
+        return [
+            (row[idx_t] / 1000.0, row[idx_ch])
+            for row in self._frames
+            if row[idx_ch] is not None and row[idx_t] is not None
+        ]
+
+    @property
+    def max_time(self) -> float:
+        idx_t = CHANNELS["elapsed_ms"]
+        if not self._frames:
+            return 0.0
+        last = self._frames[-1][idx_t]
+        return (last / 1000.0) if last is not None else 0.0
+
     def value_at(self, distance_m: float, channel: str):
         """Valor interpolado do canal na distância informada. Retorna None
         se a distância estiver fora do intervalo coberto pela volta ou se o

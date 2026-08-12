@@ -3,13 +3,15 @@ Aba "Telemetria" — modo padrão: análise de uma única volta com todos os
 canais de telemetria. Modo comparação: sobreposição de múltiplas voltas.
 Arquitetura única que suporta ambos os modos sem duplicação de código.
 
-Gráficos sincronizados pelo eixo de distância, com crosshair, tooltips,
-zoom/pan via mouse, e painel de valores no hover.
+Gráficos sincronizados pelo eixo de distância (ou tempo, selecionável),
+com crosshair, tooltips, zoom/pan via mouse, e painel de valores no hover.
+Inclui mosaico de pneus (temperatura e derrapagem por roda) e análise
+de slip angle com normalização 0-100%.
 """
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
-    QScrollArea, QGridLayout, QFrame, QCheckBox
+    QScrollArea, QGridLayout, QFrame, QCheckBox, QButtonGroup, QRadioButton
 )
 from PySide6.QtCore import Qt
 
@@ -37,6 +39,16 @@ COLOR_WATER = "#4f7cff"
 COLOR_RPM = "#e06cff"
 NUM_SECTORS = 3
 
+SLIP_ANGLE_MAX_DEG = 12.0
+
+
+def _estimate_slip_angle_deg(slip_value: float) -> float:
+    return min(abs(slip_value) * SLIP_ANGLE_MAX_DEG, SLIP_ANGLE_MAX_DEG)
+
+
+def _normalize_slip_pct(slip_value: float) -> float:
+    return min(abs(slip_value) * 100.0, 100.0)
+
 
 class TelemetryTab(QWidget):
     def __init__(self, track_id):
@@ -47,6 +59,7 @@ class TelemetryTab(QWidget):
         self.lap_id_a = None
         self.lap_id_b = None
         self._comparison_mode = False
+        self._use_time_axis = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 16, 4, 4)
@@ -78,22 +91,140 @@ class TelemetryTab(QWidget):
         self.chart_gear = SyncedMiniChart("Marcha")
         self.chart_throttle = SyncedMiniChart("Acelerador (%)")
         self.chart_brake = SyncedMiniChart("Freio (%)")
-        self.chart_tires = SyncedMiniChart("Temperatura média dos pneus (°C)")
         self.chart_fuel = SyncedMiniChart("Combustível (L)")
         self.chart_gforce = SyncedMiniChart("Força G (lateral / longitudinal)")
-        self.chart_suspension = SyncedMiniChart("Suspensão (mm)")
-        self.chart_tire_slip = SyncedMiniChart("Derrapagem de pneus")
         self.chart_turbo = SyncedMiniChart("Turbo (bar)")
         self.chart_temps = SyncedMiniChart("Temperatura motor (°C)")
 
         self.all_charts = [
             self.chart_speed, self.chart_delta, self.chart_rpm, self.chart_gear,
-            self.chart_throttle, self.chart_brake, self.chart_tires, self.chart_fuel,
-            self.chart_gforce, self.chart_suspension, self.chart_tire_slip,
-            self.chart_turbo, self.chart_temps,
+            self.chart_throttle, self.chart_brake, self.chart_fuel,
+            self.chart_gforce, self.chart_turbo, self.chart_temps,
         ]
         for chart in self.all_charts:
             charts_layout.addWidget(chart)
+            chart.hovered_at_distance.connect(self._on_hover)
+            chart.hover_left.connect(self._on_hover_leave)
+
+        # --- Mosaico de pneus: temperatura por roda ---
+        self._tire_temp_label = QLabel("TEMPERATURA DE PNEUS POR RODA")
+        self._tire_temp_label.setStyleSheet(
+            "color: #c8cad0; font-size: 12px; font-weight: 700; letter-spacing: 1px;"
+        )
+        charts_layout.addWidget(self._tire_temp_label)
+
+        tire_temp_grid = QHBoxLayout()
+        tire_temp_grid.setSpacing(6)
+        self.chart_tire_fl = SyncedMiniChart("Temp. DE (°C)", height=100)
+        self.chart_tire_fr = SyncedMiniChart("Temp. DD (°C)", height=100)
+        self.chart_tire_rl = SyncedMiniChart("Temp. TE (°C)", height=100)
+        self.chart_tire_rr = SyncedMiniChart("Temp. TD (°C)", height=100)
+        self._tire_temp_charts = [self.chart_tire_fl, self.chart_tire_fr, self.chart_tire_rl, self.chart_tire_rr]
+
+        tire_top = QHBoxLayout()
+        tire_top.setSpacing(6)
+        tire_top.addWidget(self.chart_tire_fl, stretch=1)
+        tire_top.addWidget(self.chart_tire_fr, stretch=1)
+
+        tire_bottom = QHBoxLayout()
+        tire_bottom.setSpacing(6)
+        tire_bottom.addWidget(self.chart_tire_rl, stretch=1)
+        tire_bottom.addWidget(self.chart_tire_rr, stretch=1)
+
+        tire_mosaic = QVBoxLayout()
+        tire_mosaic.setSpacing(4)
+        tire_mosaic.addLayout(tire_top)
+        tire_mosaic.addLayout(tire_bottom)
+
+        tire_wrapper = QWidget()
+        tire_wrapper.setLayout(tire_mosaic)
+        charts_layout.addWidget(tire_wrapper)
+        self._tire_temp_wrapper = tire_wrapper
+
+        for chart in self._tire_temp_charts:
+            chart.hovered_at_distance.connect(self._on_hover)
+            chart.hover_left.connect(self._on_hover_leave)
+
+        # --- Suspensão por roda ---
+        self._suspension_label = QLabel("SUSPENSÃO POR RODA")
+        self._suspension_label.setStyleSheet(
+            "color: #c8cad0; font-size: 12px; font-weight: 700; letter-spacing: 1px;"
+        )
+        charts_layout.addWidget(self._suspension_label)
+
+        self.chart_susp_fl = SyncedMiniChart("Susp. DE (mm)", height=100)
+        self.chart_susp_fr = SyncedMiniChart("Susp. DD (mm)", height=100)
+        self.chart_susp_rl = SyncedMiniChart("Susp. TE (mm)", height=100)
+        self.chart_susp_rr = SyncedMiniChart("Susp. TD (mm)", height=100)
+        self._suspension_charts = [self.chart_susp_fl, self.chart_susp_fr, self.chart_susp_rl, self.chart_susp_rr]
+
+        susp_top = QHBoxLayout()
+        susp_top.setSpacing(6)
+        susp_top.addWidget(self.chart_susp_fl, stretch=1)
+        susp_top.addWidget(self.chart_susp_fr, stretch=1)
+        susp_bottom = QHBoxLayout()
+        susp_bottom.setSpacing(6)
+        susp_bottom.addWidget(self.chart_susp_rl, stretch=1)
+        susp_bottom.addWidget(self.chart_susp_rr, stretch=1)
+        susp_mosaic = QVBoxLayout()
+        susp_mosaic.setSpacing(4)
+        susp_mosaic.addLayout(susp_top)
+        susp_mosaic.addLayout(susp_bottom)
+        susp_wrapper = QWidget()
+        susp_wrapper.setLayout(susp_mosaic)
+        charts_layout.addWidget(susp_wrapper)
+        self._suspension_wrapper = susp_wrapper
+
+        for chart in self._suspension_charts:
+            chart.hovered_at_distance.connect(self._on_hover)
+            chart.hover_left.connect(self._on_hover_leave)
+
+        # --- Mosaico de Slip Angle (#26-#31) ---
+        self._slip_label = QLabel("SLIP ANGLE / DERRAPAGEM POR RODA")
+        self._slip_label.setStyleSheet(
+            "color: #c8cad0; font-size: 12px; font-weight: 700; letter-spacing: 1px;"
+        )
+        charts_layout.addWidget(self._slip_label)
+
+        self.chart_slip_fl = SyncedMiniChart("Slip DE (°/100%)", height=100)
+        self.chart_slip_fr = SyncedMiniChart("Slip DD (°/100%)", height=100)
+        self.chart_slip_rl = SyncedMiniChart("Slip TE (°/100%)", height=100)
+        self.chart_slip_rr = SyncedMiniChart("Slip TD (°/100%)", height=100)
+        self._slip_charts = [self.chart_slip_fl, self.chart_slip_fr, self.chart_slip_rl, self.chart_slip_rr]
+
+        self._slip_indicator = QLabel("")
+        self._slip_indicator.setAlignment(Qt.AlignCenter)
+        self._slip_indicator.setMinimumSize(120, 50)
+        self._slip_indicator.setStyleSheet(
+            "background-color: #1a1d25; border: 1px solid #23262f; "
+            "border-radius: 8px; color: #e8e8ec; font-size: 14px; font-weight: 700;"
+        )
+
+        slip_top = QHBoxLayout()
+        slip_top.setSpacing(6)
+        slip_top.addWidget(self.chart_slip_fl, stretch=1)
+        slip_top.addWidget(self.chart_slip_fr, stretch=1)
+        slip_middle = QHBoxLayout()
+        slip_middle.addStretch()
+        slip_middle.addWidget(self._slip_indicator)
+        slip_middle.addStretch()
+        slip_bottom = QHBoxLayout()
+        slip_bottom.setSpacing(6)
+        slip_bottom.addWidget(self.chart_slip_rl, stretch=1)
+        slip_bottom.addWidget(self.chart_slip_rr, stretch=1)
+
+        slip_mosaic = QVBoxLayout()
+        slip_mosaic.setSpacing(4)
+        slip_mosaic.addLayout(slip_top)
+        slip_mosaic.addLayout(slip_middle)
+        slip_mosaic.addLayout(slip_bottom)
+
+        slip_wrapper = QWidget()
+        slip_wrapper.setLayout(slip_mosaic)
+        charts_layout.addWidget(slip_wrapper)
+        self._slip_wrapper = slip_wrapper
+
+        for chart in self._slip_charts:
             chart.hovered_at_distance.connect(self._on_hover)
             chart.hover_left.connect(self._on_hover_leave)
 
@@ -127,6 +258,18 @@ class TelemetryTab(QWidget):
         )
         self.combo_b.setEnabled(False)
 
+        axis_label = QLabel("Eixo:")
+        axis_label.setStyleSheet("color: #c8cad0; font-size: 12px; font-weight: 600;")
+        self._radio_distance = QRadioButton("Distância")
+        self._radio_distance.setChecked(True)
+        self._radio_distance.setStyleSheet("color: #e8e8ec; font-size: 12px;")
+        self._radio_time = QRadioButton("Tempo")
+        self._radio_time.setStyleSheet("color: #e8e8ec; font-size: 12px;")
+        self._axis_group = QButtonGroup(self)
+        self._axis_group.addButton(self._radio_distance, 0)
+        self._axis_group.addButton(self._radio_time, 1)
+        self._axis_group.idClicked.connect(self._on_axis_changed)
+
         refresh_button = QPushButton("Atualizar")
         refresh_button.clicked.connect(self.refresh_lap_list)
 
@@ -138,6 +281,10 @@ class TelemetryTab(QWidget):
         controls.addSpacing(12)
         controls.addWidget(self.compare_check)
         controls.addWidget(self.combo_b)
+        controls.addSpacing(12)
+        controls.addWidget(axis_label)
+        controls.addWidget(self._radio_distance)
+        controls.addWidget(self._radio_time)
         controls.addStretch()
         controls.addWidget(refresh_button)
         controls.addWidget(self.plot_button)
@@ -147,6 +294,14 @@ class TelemetryTab(QWidget):
         self._comparison_mode = checked
         self.combo_b.setEnabled(checked)
         self.plot_button.setText("Comparar" if checked else "Analisar")
+
+    def _on_axis_changed(self, btn_id: int):
+        self._use_time_axis = (btn_id == 1)
+
+    def _get_points(self, series: LapSeries, channel: str):
+        if self._use_time_axis:
+            return series.points_by_time(channel)
+        return series.points(channel)
 
     def _build_readout_panel(self) -> QWidget:
         frame = QFrame()
@@ -175,6 +330,7 @@ class TelemetryTab(QWidget):
             ("fuel_level", "Combustível"),
             ("g_lateral", "Força G lat."),
             ("g_longitudinal", "Força G long."),
+            ("slip_angle", "Slip Angle"),
             ("turbo_boost", "Turbo"),
             ("oil_temp", "Temp. óleo"),
             ("water_temp", "Temp. água"),
@@ -339,19 +495,19 @@ class TelemetryTab(QWidget):
         self._update_panel_headers()
 
         self.chart_speed.set_series([
-            ("Volta", COLOR_A, self.series_a.points("speed_kmh")),
+            ("Volta", COLOR_A, self._get_points(self.series_a, "speed_kmh")),
         ])
         self.chart_rpm.set_series([
-            ("Volta", COLOR_RPM, self.series_a.points("rpm")),
+            ("Volta", COLOR_RPM, self._get_points(self.series_a, "rpm")),
         ])
         self.chart_gear.set_series([
-            ("Volta", COLOR_A, self.series_a.points("gear")),
+            ("Volta", COLOR_A, self._get_points(self.series_a, "gear")),
         ], y_range=(0, 8))
         self.chart_throttle.set_series([
-            ("Volta", COLOR_A, self.series_a.points("throttle")),
+            ("Volta", COLOR_A, self._get_points(self.series_a, "throttle")),
         ], y_range=(0, 100))
         self.chart_brake.set_series([
-            ("Volta", COLOR_A, self._to_binary_step(self.series_a.points("brake"))),
+            ("Volta", COLOR_A, self._to_binary_step(self._get_points(self.series_a, "brake"))),
         ], y_range=(-0.1, 1.1))
 
         self.chart_delta.setVisible(False)
@@ -360,57 +516,66 @@ class TelemetryTab(QWidget):
         self.chart_fuel.setVisible(has_fuel)
         if has_fuel:
             self.chart_fuel.set_series([
-                ("Volta", COLOR_A, self.series_a.points("fuel_level")),
+                ("Volta", COLOR_A, self._get_points(self.series_a, "fuel_level")),
             ])
 
         has_tires = self.series_a.has_channel("tire_temp_fl")
-        self.chart_tires.setVisible(has_tires)
+        self._tire_temp_wrapper.setVisible(has_tires)
+        self._tire_temp_label.setVisible(has_tires)
         if has_tires:
-            self.chart_tires.set_series([
-                ("Volta", COLOR_A, self._average_tire_points(self.series_a)),
-            ])
+            self.chart_tire_fl.set_series([("DE", COLOR_FL, self._get_points(self.series_a, "tire_temp_fl"))])
+            self.chart_tire_fr.set_series([("DD", COLOR_FR, self._get_points(self.series_a, "tire_temp_fr"))])
+            self.chart_tire_rl.set_series([("TE", COLOR_RL, self._get_points(self.series_a, "tire_temp_rl"))])
+            self.chart_tire_rr.set_series([("TD", COLOR_RR, self._get_points(self.series_a, "tire_temp_rr"))])
 
         has_gforce = self.series_a.has_channel("g_lateral")
         self.chart_gforce.setVisible(has_gforce)
         if has_gforce:
             self.chart_gforce.set_series([
-                ("Lateral", COLOR_G_LAT, self.series_a.points("g_lateral")),
-                ("Longitudinal", COLOR_G_LONG, self.series_a.points("g_longitudinal")),
+                ("Lateral", COLOR_G_LAT, self._get_points(self.series_a, "g_lateral")),
+                ("Longitudinal", COLOR_G_LONG, self._get_points(self.series_a, "g_longitudinal")),
             ])
 
         has_suspension = self.series_a.has_channel("suspension_fl")
-        self.chart_suspension.setVisible(has_suspension)
+        self._suspension_wrapper.setVisible(has_suspension)
+        self._suspension_label.setVisible(has_suspension)
         if has_suspension:
-            self.chart_suspension.set_series([
-                ("FL", COLOR_FL, self.series_a.points("suspension_fl")),
-                ("FR", COLOR_FR, self.series_a.points("suspension_fr")),
-                ("RL", COLOR_RL, self.series_a.points("suspension_rl")),
-                ("RR", COLOR_RR, self.series_a.points("suspension_rr")),
-            ])
+            self.chart_susp_fl.set_series([("DE", COLOR_FL, self._get_points(self.series_a, "suspension_fl"))])
+            self.chart_susp_fr.set_series([("DD", COLOR_FR, self._get_points(self.series_a, "suspension_fr"))])
+            self.chart_susp_rl.set_series([("TE", COLOR_RL, self._get_points(self.series_a, "suspension_rl"))])
+            self.chart_susp_rr.set_series([("TD", COLOR_RR, self._get_points(self.series_a, "suspension_rr"))])
 
         has_slip = self.series_a.has_channel("tire_slip_fl")
-        self.chart_tire_slip.setVisible(has_slip)
+        self._slip_wrapper.setVisible(has_slip)
+        self._slip_label.setVisible(has_slip)
         if has_slip:
-            self.chart_tire_slip.set_series([
-                ("FL", COLOR_FL, self.series_a.points("tire_slip_fl")),
-                ("FR", COLOR_FR, self.series_a.points("tire_slip_fr")),
-                ("RL", COLOR_RL, self.series_a.points("tire_slip_rl")),
-                ("RR", COLOR_RR, self.series_a.points("tire_slip_rr")),
-            ])
+            self.chart_slip_fl.set_series([
+                ("DE °", COLOR_FL, self._slip_angle_points(self.series_a, "tire_slip_fl")),
+            ], y_range=(0, SLIP_ANGLE_MAX_DEG))
+            self.chart_slip_fr.set_series([
+                ("DD °", COLOR_FR, self._slip_angle_points(self.series_a, "tire_slip_fr")),
+            ], y_range=(0, SLIP_ANGLE_MAX_DEG))
+            self.chart_slip_rl.set_series([
+                ("TE °", COLOR_RL, self._slip_angle_points(self.series_a, "tire_slip_rl")),
+            ], y_range=(0, SLIP_ANGLE_MAX_DEG))
+            self.chart_slip_rr.set_series([
+                ("TD °", COLOR_RR, self._slip_angle_points(self.series_a, "tire_slip_rr")),
+            ], y_range=(0, SLIP_ANGLE_MAX_DEG))
+            self._update_slip_indicator(self.series_a)
 
         has_turbo = self.series_a.has_channel("turbo_boost")
         self.chart_turbo.setVisible(has_turbo)
         if has_turbo:
             self.chart_turbo.set_series([
-                ("Volta", COLOR_A, self.series_a.points("turbo_boost")),
+                ("Volta", COLOR_A, self._get_points(self.series_a, "turbo_boost")),
             ])
 
         has_temps = self.series_a.has_channel("oil_temp")
         self.chart_temps.setVisible(has_temps)
         if has_temps:
-            series_list = [("Óleo", COLOR_OIL, self.series_a.points("oil_temp"))]
+            series_list = [("Óleo", COLOR_OIL, self._get_points(self.series_a, "oil_temp"))]
             if self.series_a.has_channel("water_temp"):
-                series_list.append(("Água", COLOR_WATER, self.series_a.points("water_temp")))
+                series_list.append(("Água", COLOR_WATER, self._get_points(self.series_a, "water_temp")))
             self.chart_temps.set_series(series_list)
 
         has_position = self.series_a.has_channel("position_x")
@@ -424,12 +589,14 @@ class TelemetryTab(QWidget):
         self._build_single_summary()
         self._build_single_sectors()
 
-        reference_distance = self.series_a.max_distance
-        bounds = sector_boundaries_m(reference_distance, NUM_SECTORS)
-        sector_defs = [(d, f"S{i + 2}") for i, d in enumerate(bounds[:-1])]
-        for chart in self.all_charts:
-            if chart.isVisible():
-                chart.set_sector_lines(sector_defs)
+        if not self._use_time_axis:
+            reference_distance = self.series_a.max_distance
+            bounds = sector_boundaries_m(reference_distance, NUM_SECTORS)
+            sector_defs = [(d, f"S{i + 2}") for i, d in enumerate(bounds[:-1])]
+            all_visible = self.all_charts + self._tire_temp_charts + self._suspension_charts + self._slip_charts
+            for chart in all_visible:
+                if chart.isVisible():
+                    chart.set_sector_lines(sector_defs)
 
     def _plot_comparison(self):
         self.lap_id_a = self.combo_a.currentData()
@@ -451,80 +618,87 @@ class TelemetryTab(QWidget):
         self._update_panel_headers()
 
         self.chart_speed.set_series([
-            ("Volta A", COLOR_A, self.series_a.points("speed_kmh")),
-            ("Volta B", COLOR_B, self.series_b.points("speed_kmh")),
+            ("Volta A", COLOR_A, self._get_points(self.series_a, "speed_kmh")),
+            ("Volta B", COLOR_B, self._get_points(self.series_b, "speed_kmh")),
         ])
         self.chart_rpm.set_series([
-            ("Volta A", COLOR_RPM, self.series_a.points("rpm")),
-            ("Volta B", COLOR_B, self.series_b.points("rpm")),
+            ("Volta A", COLOR_RPM, self._get_points(self.series_a, "rpm")),
+            ("Volta B", COLOR_B, self._get_points(self.series_b, "rpm")),
         ])
         self.chart_gear.set_series([
-            ("Volta A", COLOR_A, self.series_a.points("gear")),
-            ("Volta B", COLOR_B, self.series_b.points("gear")),
+            ("Volta A", COLOR_A, self._get_points(self.series_a, "gear")),
+            ("Volta B", COLOR_B, self._get_points(self.series_b, "gear")),
         ], y_range=(0, 8))
         self.chart_throttle.set_series([
-            ("Volta A", COLOR_A, self.series_a.points("throttle")),
-            ("Volta B", COLOR_B, self.series_b.points("throttle")),
+            ("Volta A", COLOR_A, self._get_points(self.series_a, "throttle")),
+            ("Volta B", COLOR_B, self._get_points(self.series_b, "throttle")),
         ], y_range=(0, 100))
         self.chart_brake.set_series([
-            ("Volta A", COLOR_A, self._to_binary_step(self.series_a.points("brake"))),
-            ("Volta B", COLOR_B, self._to_binary_step(self.series_b.points("brake"))),
+            ("Volta A", COLOR_A, self._to_binary_step(self._get_points(self.series_a, "brake"))),
+            ("Volta B", COLOR_B, self._to_binary_step(self._get_points(self.series_b, "brake"))),
         ], y_range=(-0.1, 1.1))
 
         has_fuel = self.series_a.has_channel("fuel_level") or self.series_b.has_channel("fuel_level")
         self.chart_fuel.setVisible(has_fuel)
         if has_fuel:
             self.chart_fuel.set_series([
-                ("Volta A", COLOR_A, self.series_a.points("fuel_level")),
-                ("Volta B", COLOR_B, self.series_b.points("fuel_level")),
+                ("Volta A", COLOR_A, self._get_points(self.series_a, "fuel_level")),
+                ("Volta B", COLOR_B, self._get_points(self.series_b, "fuel_level")),
             ])
 
         has_tires = self.series_a.has_channel("tire_temp_fl") or self.series_b.has_channel("tire_temp_fl")
-        self.chart_tires.setVisible(has_tires)
+        self._tire_temp_wrapper.setVisible(has_tires)
+        self._tire_temp_label.setVisible(has_tires)
         if has_tires:
-            self.chart_tires.set_series([
-                ("Volta A", COLOR_A, self._average_tire_points(self.series_a)),
-                ("Volta B", COLOR_B, self._average_tire_points(self.series_b)),
-            ])
+            for chart, ch in zip(self._tire_temp_charts, ["tire_temp_fl", "tire_temp_fr", "tire_temp_rl", "tire_temp_rr"]):
+                chart.set_series([
+                    ("A", COLOR_A, self._get_points(self.series_a, ch)),
+                    ("B", COLOR_B, self._get_points(self.series_b, ch)),
+                ])
 
         has_gforce = self.series_a.has_channel("g_lateral") or self.series_b.has_channel("g_lateral")
         self.chart_gforce.setVisible(has_gforce)
         if has_gforce:
             self.chart_gforce.set_series([
-                ("G Lat A", COLOR_A, self.series_a.points("g_lateral")),
-                ("G Lat B", COLOR_B, self.series_b.points("g_lateral")),
+                ("G Lat A", COLOR_A, self._get_points(self.series_a, "g_lateral")),
+                ("G Lat B", COLOR_B, self._get_points(self.series_b, "g_lateral")),
             ])
 
         has_suspension = self.series_a.has_channel("suspension_fl") or self.series_b.has_channel("suspension_fl")
-        self.chart_suspension.setVisible(has_suspension)
+        self._suspension_wrapper.setVisible(has_suspension)
+        self._suspension_label.setVisible(has_suspension)
         if has_suspension:
-            self.chart_suspension.set_series([
-                ("A", COLOR_A, self._average_4wheel_points(self.series_a, "suspension")),
-                ("B", COLOR_B, self._average_4wheel_points(self.series_b, "suspension")),
-            ])
+            for chart, ch in zip(self._suspension_charts, ["suspension_fl", "suspension_fr", "suspension_rl", "suspension_rr"]):
+                chart.set_series([
+                    ("A", COLOR_A, self._get_points(self.series_a, ch)),
+                    ("B", COLOR_B, self._get_points(self.series_b, ch)),
+                ])
 
         has_slip = self.series_a.has_channel("tire_slip_fl") or self.series_b.has_channel("tire_slip_fl")
-        self.chart_tire_slip.setVisible(has_slip)
+        self._slip_wrapper.setVisible(has_slip)
+        self._slip_label.setVisible(has_slip)
         if has_slip:
-            self.chart_tire_slip.set_series([
-                ("A", COLOR_A, self._average_4wheel_points(self.series_a, "tire_slip")),
-                ("B", COLOR_B, self._average_4wheel_points(self.series_b, "tire_slip")),
-            ])
+            for chart, ch in zip(self._slip_charts, ["tire_slip_fl", "tire_slip_fr", "tire_slip_rl", "tire_slip_rr"]):
+                chart.set_series([
+                    ("A", COLOR_A, self._slip_angle_points(self.series_a, ch)),
+                    ("B", COLOR_B, self._slip_angle_points(self.series_b, ch)),
+                ], y_range=(0, SLIP_ANGLE_MAX_DEG))
+            self._update_slip_indicator(self.series_a)
 
         has_turbo = self.series_a.has_channel("turbo_boost") or self.series_b.has_channel("turbo_boost")
         self.chart_turbo.setVisible(has_turbo)
         if has_turbo:
             self.chart_turbo.set_series([
-                ("A", COLOR_A, self.series_a.points("turbo_boost")),
-                ("B", COLOR_B, self.series_b.points("turbo_boost")),
+                ("A", COLOR_A, self._get_points(self.series_a, "turbo_boost")),
+                ("B", COLOR_B, self._get_points(self.series_b, "turbo_boost")),
             ])
 
         has_temps = self.series_a.has_channel("oil_temp") or self.series_b.has_channel("oil_temp")
         self.chart_temps.setVisible(has_temps)
         if has_temps:
             self.chart_temps.set_series([
-                ("Óleo A", COLOR_A, self.series_a.points("oil_temp")),
-                ("Óleo B", COLOR_B, self.series_b.points("oil_temp")),
+                ("Óleo A", COLOR_A, self._get_points(self.series_a, "oil_temp")),
+                ("Óleo B", COLOR_B, self._get_points(self.series_b, "oil_temp")),
             ])
 
         has_position = self.series_a.has_channel("position_x") or self.series_b.has_channel("position_x")
@@ -543,12 +717,47 @@ class TelemetryTab(QWidget):
         self._build_comparison_summary(delta_points)
         self._build_sector_comparison()
 
-        reference_distance = max(self.series_a.max_distance, self.series_b.max_distance)
-        bounds = sector_boundaries_m(reference_distance, NUM_SECTORS)
-        sector_defs = [(d, f"S{i + 2}") for i, d in enumerate(bounds[:-1])]
-        for chart in self.all_charts:
-            if chart.isVisible():
-                chart.set_sector_lines(sector_defs)
+        if not self._use_time_axis:
+            reference_distance = max(self.series_a.max_distance, self.series_b.max_distance)
+            bounds = sector_boundaries_m(reference_distance, NUM_SECTORS)
+            sector_defs = [(d, f"S{i + 2}") for i, d in enumerate(bounds[:-1])]
+            all_visible = self.all_charts + self._tire_temp_charts + self._suspension_charts + self._slip_charts
+            for chart in all_visible:
+                if chart.isVisible():
+                    chart.set_sector_lines(sector_defs)
+
+    # ---------- helpers ----------
+
+    def _slip_angle_points(self, series: LapSeries, channel: str):
+        raw = self._get_points(series, channel)
+        return [(x, _estimate_slip_angle_deg(v)) for x, v in raw]
+
+    def _update_slip_indicator(self, series: LapSeries):
+        channels = ["tire_slip_fl", "tire_slip_fr", "tire_slip_rl", "tire_slip_rr"]
+        avgs = []
+        for ch in channels:
+            pts = series.points(ch)
+            if pts:
+                avg = sum(_normalize_slip_pct(v) for _, v in pts) / len(pts)
+                avgs.append(avg)
+        if not avgs:
+            self._slip_indicator.setText("Slip: N/D")
+            return
+        overall = sum(avgs) / len(avgs)
+        if overall < 15:
+            color = "#3ddc84"
+            level = "Baixo"
+        elif overall < 40:
+            color = "#f2c94c"
+            level = "Moderado"
+        else:
+            color = "#ff5c5c"
+            level = "Alto"
+        self._slip_indicator.setText(f"Slip médio: {overall:.0f}%\n{level}")
+        self._slip_indicator.setStyleSheet(
+            f"background-color: #1a1d25; border: 2px solid {color}; "
+            f"border-radius: 8px; color: {color}; font-size: 14px; font-weight: 700; padding: 8px;"
+        )
 
     @staticmethod
     def _to_binary_step(points, threshold: float = 5.0):
@@ -563,30 +772,6 @@ class TelemetryTab(QWidget):
         return stepped
 
     @staticmethod
-    def _average_tire_points(series: LapSeries):
-        fl = series.points("tire_temp_fl")
-        fr = series.points("tire_temp_fr")
-        rl = series.points("tire_temp_rl")
-        rr = series.points("tire_temp_rr")
-        n = min(len(fl), len(fr), len(rl), len(rr))
-        return [
-            (fl[i][0], (fl[i][1] + fr[i][1] + rl[i][1] + rr[i][1]) / 4)
-            for i in range(n)
-        ]
-
-    @staticmethod
-    def _average_4wheel_points(series: LapSeries, prefix: str):
-        fl = series.points(f"{prefix}_fl")
-        fr = series.points(f"{prefix}_fr")
-        rl = series.points(f"{prefix}_rl")
-        rr = series.points(f"{prefix}_rr")
-        n = min(len(fl), len(fr), len(rl), len(rr))
-        return [
-            (fl[i][0], (fl[i][1] + fr[i][1] + rl[i][1] + rr[i][1]) / 4)
-            for i in range(n)
-        ]
-
-    @staticmethod
     def _fuel_used(series: LapSeries):
         points = series.points("fuel_level")
         if len(points) < 2:
@@ -597,10 +782,11 @@ class TelemetryTab(QWidget):
         if self.series_a is None or self.series_a.is_empty:
             return
         text = f"Analisando volta #{self.lap_id_a}. "
-        text += f"Distância total: {self.series_a.max_distance:.0f}m."
+        text += f"Distância total: {self.series_a.max_distance:.0f}m. "
+        text += f"Tempo: {format_ms(int(self.series_a.max_time * 1000))}."
         fuel = self._fuel_used(self.series_a)
         if fuel is not None:
-            text += f" Combustível consumido: {fuel:.1f}L."
+            text += f" Combustível consumido: {fuel:.2f}L."
         self.summary_label.setText(text)
 
     def _build_single_sectors(self):
@@ -634,14 +820,14 @@ class TelemetryTab(QWidget):
 
         text = (
             f"Volta {faster} foi {diff_abs:.3f}s mais rápida no trecho comparado. "
-            f"Maior ganho de B em relação a A: {abs(biggest_gain[1]):.2f}s perto de {biggest_gain[0]:.0f}m. "
-            f"Maior perda de B em relação a A: {biggest_loss[1]:.2f}s perto de {biggest_loss[0]:.0f}m."
+            f"Maior ganho de B em relação a A: {abs(biggest_gain[1]):.3f}s perto de {biggest_gain[0]:.0f}m. "
+            f"Maior perda de B em relação a A: {biggest_loss[1]:.3f}s perto de {biggest_loss[0]:.0f}m."
         )
 
         fuel_a_used = self._fuel_used(self.series_a)
         fuel_b_used = self._fuel_used(self.series_b)
         if fuel_a_used is not None and fuel_b_used is not None:
-            text += f" Combustível consumido — A: {fuel_a_used:.1f}L, B: {fuel_b_used:.1f}L."
+            text += f" Combustível consumido — A: {fuel_a_used:.2f}L, B: {fuel_b_used:.2f}L."
 
         self.summary_label.setText(text)
 
@@ -682,14 +868,17 @@ class TelemetryTab(QWidget):
     # ---------- cursor sincronizado ----------
 
     def _on_hover(self, distance_m: float):
-        for chart in self.all_charts:
+        all_visible = self.all_charts + self._tire_temp_charts + self._suspension_charts + self._slip_charts
+        for chart in all_visible:
             if chart.isVisible():
                 chart.show_crosshair(distance_m)
         self._update_readout(distance_m)
-        self._update_track_map_markers(distance_m)
+        if not self._use_time_axis:
+            self._update_track_map_markers(distance_m)
 
     def _on_hover_leave(self):
-        for chart in self.all_charts:
+        all_visible = self.all_charts + self._tire_temp_charts + self._suspension_charts + self._slip_charts
+        for chart in all_visible:
             chart.hide_crosshair()
         self.track_map.clear_markers()
 
@@ -749,27 +938,32 @@ class TelemetryTab(QWidget):
         set_row("throttle",
                 self.series_a.value_at(distance_m, "throttle"),
                 self.series_b.value_at(distance_m, "throttle") if self.series_b else None,
-                unit="%")
+                fmt="{:.1f}", unit="%")
         set_row("brake",
                 self.series_a.value_at(distance_m, "brake"),
                 self.series_b.value_at(distance_m, "brake") if self.series_b else None,
-                unit="%")
+                fmt="{:.1f}", unit="%")
         set_row("fuel_level",
                 self.series_a.value_at(distance_m, "fuel_level"),
                 self.series_b.value_at(distance_m, "fuel_level") if self.series_b else None,
-                unit="L")
+                fmt="{:.2f}", unit=" L")
 
         tire_a = self._tire_avg_at(self.series_a, distance_m)
         tire_b = self._tire_avg_at(self.series_b, distance_m) if self.series_b else None
-        set_row("tires", tire_a, tire_b, unit="°C")
+        set_row("tires", tire_a, tire_b, fmt="{:.1f}", unit="°C")
         set_row("g_lateral",
                 self.series_a.value_at(distance_m, "g_lateral"),
                 self.series_b.value_at(distance_m, "g_lateral") if self.series_b else None,
-                fmt="{:.2f}", unit="G")
+                fmt="{:.2f}", unit=" G")
         set_row("g_longitudinal",
                 self.series_a.value_at(distance_m, "g_longitudinal"),
                 self.series_b.value_at(distance_m, "g_longitudinal") if self.series_b else None,
-                fmt="{:.2f}", unit="G")
+                fmt="{:.2f}", unit=" G")
+
+        slip_a = self._avg_slip_angle_at(self.series_a, distance_m)
+        slip_b = self._avg_slip_angle_at(self.series_b, distance_m) if self.series_b else None
+        set_row("slip_angle", slip_a, slip_b, fmt="{:.1f}", unit="°")
+
         set_row("turbo_boost",
                 self.series_a.value_at(distance_m, "turbo_boost"),
                 self.series_b.value_at(distance_m, "turbo_boost") if self.series_b else None,
@@ -777,11 +971,11 @@ class TelemetryTab(QWidget):
         set_row("oil_temp",
                 self.series_a.value_at(distance_m, "oil_temp"),
                 self.series_b.value_at(distance_m, "oil_temp") if self.series_b else None,
-                unit="°C")
+                fmt="{:.1f}", unit="°C")
         set_row("water_temp",
                 self.series_a.value_at(distance_m, "water_temp"),
                 self.series_b.value_at(distance_m, "water_temp") if self.series_b else None,
-                unit="°C")
+                fmt="{:.1f}", unit="°C")
 
     @staticmethod
     def _tire_avg_at(series: LapSeries, distance_m: float):
@@ -792,3 +986,13 @@ class TelemetryTab(QWidget):
         if any(v is None for v in values):
             return None
         return sum(values) / len(values)
+
+    @staticmethod
+    def _avg_slip_angle_at(series: LapSeries, distance_m: float):
+        values = [
+            series.value_at(distance_m, ch)
+            for ch in ("tire_slip_fl", "tire_slip_fr", "tire_slip_rl", "tire_slip_rr")
+        ]
+        if any(v is None for v in values):
+            return None
+        return sum(_estimate_slip_angle_deg(v) for v in values) / len(values)
