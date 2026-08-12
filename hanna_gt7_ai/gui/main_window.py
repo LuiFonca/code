@@ -100,14 +100,14 @@ QPushButton#stopButton:hover {
     border: 1px solid #23262f;
 }
 #metricValue {
-    font-size: 32px;
+    font-size: 28px;
     font-weight: 700;
     color: #ffffff;
 }
 #metricLabel {
-    font-size: 12px;
-    color: #8a8e99;
-    font-weight: 600;
+    font-size: 13px;
+    color: #c8cad0;
+    font-weight: 700;
     letter-spacing: 1px;
 }
 QProgressBar {
@@ -125,10 +125,10 @@ QTabWidget::pane {
 }
 QTabBar::tab {
     background-color: transparent;
-    color: #8a8e99;
+    color: #b0b3bc;
     padding: 10px 18px;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 14px;
+    font-weight: 700;
     border-bottom: 2px solid transparent;
 }
 QTabBar::tab:selected {

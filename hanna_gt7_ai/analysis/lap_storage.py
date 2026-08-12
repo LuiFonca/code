@@ -200,6 +200,13 @@ def init_db():
     Seguro de chamar toda vez que o app inicia."""
     conn = _connect()
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            created_at REAL NOT NULL
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS cars (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
@@ -231,6 +238,14 @@ def init_db():
             brake REAL NOT NULL,
             position_x REAL,
             position_z REAL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sector_times (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lap_id INTEGER NOT NULL REFERENCES laps(id) ON DELETE CASCADE,
+            sector_index INTEGER NOT NULL,
+            time_ms INTEGER NOT NULL
         )
     """)
     conn.commit()
@@ -474,7 +489,7 @@ def _reference_lap_distance(conn: sqlite3.Connection, track_id, exclude_lap_id=N
         row = conn.execute(
             "SELECT MAX(distance_m) FROM lap_frames WHERE lap_id = ?", (other_lap_id,)
         ).fetchone()
-        if row and row[0]:
+        if row and row[0] and row[0] > 50:
             totals.append(row[0])
 
     if not totals:
@@ -507,6 +522,8 @@ def _compute_sector_times(conn: sqlite3.Connection, lap_id: int, num_sectors: in
         return []
 
     reference_distance = _reference_lap_distance(conn, track_id, exclude_lap_id=lap_id)
+    if reference_distance and reference_distance < lap_total_distance * 0.3:
+        reference_distance = None
     total_distance = reference_distance if reference_distance else lap_total_distance
 
     boundaries_distance = [total_distance * (i / num_sectors) for i in range(1, num_sectors + 1)]
@@ -523,9 +540,8 @@ def _compute_sector_times(conn: sqlite3.Connection, lap_id: int, num_sectors: in
             last_boundary_ms = elapsed_ms
             boundary_index += 1
 
-    while len(sector_times) < num_sectors:
+    if len(sector_times) < num_sectors:
         sector_times.append(rows[-1][0] - last_boundary_ms)
-        last_boundary_ms = rows[-1][0]
 
     return sector_times
 

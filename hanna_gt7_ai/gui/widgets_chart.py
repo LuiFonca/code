@@ -217,6 +217,74 @@ class LiveStripChart(QChartView):
         self._axis_x.setRange(0, max(self._max_points - 1, 1))
 
 
+class LiveDualStripChart(QChartView):
+    """Gráfico rolante com duas séries sobrepostas (acelerador + freio)."""
+
+    def __init__(self, title: str, color_a: str, color_b: str,
+                 max_points: int = 150, y_range=(0, 100), height: int = 120):
+        chart = QChart()
+        chart.legend().hide()
+        chart.setTitle(title)
+        chart.setTitleBrush(QColor("#c8cad0"))
+        chart.setBackgroundBrush(QColor("#1a1d25"))
+        chart.setMargins(chart.margins().__class__(6, 2, 6, 2))
+
+        super().__init__(chart)
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setFixedHeight(height)
+        self.setStyleSheet("background: transparent; border: none;")
+
+        self._series_a = QLineSeries()
+        pen_a = QPen(QColor(color_a))
+        pen_a.setWidth(2)
+        self._series_a.setPen(pen_a)
+
+        self._series_b = QLineSeries()
+        pen_b = QPen(QColor(color_b))
+        pen_b.setWidth(2)
+        self._series_b.setPen(pen_b)
+
+        self.chart().addSeries(self._series_a)
+        self.chart().addSeries(self._series_b)
+
+        self._axis_x = QValueAxis()
+        self._axis_x.setLabelsVisible(False)
+        self._axis_x.setGridLineColor(GRID_COLOR)
+
+        self._axis_y = QValueAxis()
+        self._axis_y.setRange(*y_range)
+        self._axis_y.setLabelsColor(QColor("#c8cad0"))
+        self._axis_y.setGridLineColor(GRID_COLOR)
+        self._axis_y.setTickCount(3)
+
+        self.chart().addAxis(self._axis_x, Qt.AlignBottom)
+        self.chart().addAxis(self._axis_y, Qt.AlignLeft)
+        self._series_a.attachAxis(self._axis_x)
+        self._series_a.attachAxis(self._axis_y)
+        self._series_b.attachAxis(self._axis_x)
+        self._series_b.attachAxis(self._axis_y)
+
+        self._max_points = max_points
+        self._values_a = []
+        self._values_b = []
+
+    def push(self, value_a: float, value_b: float):
+        self._values_a.append(value_a)
+        self._values_b.append(value_b)
+        if len(self._values_a) > self._max_points:
+            self._values_a.pop(0)
+        if len(self._values_b) > self._max_points:
+            self._values_b.pop(0)
+
+        self._series_a.clear()
+        self._series_b.clear()
+        for i, v in enumerate(self._values_a):
+            self._series_a.append(i, v)
+        for i, v in enumerate(self._values_b):
+            self._series_b.append(i, v)
+        self._axis_x.setRange(0, max(self._max_points - 1, 1))
+
+
 class TrackMapWidget(QWidget):
     """Traçado da pista visto de cima (plano X-Z), desenhado a partir da
     posição de mundo real que o GT7 já envia em todo pacote de telemetria

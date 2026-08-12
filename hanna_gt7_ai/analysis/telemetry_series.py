@@ -177,12 +177,16 @@ def sector_times_from_series(series: LapSeries, boundaries_m: list):
     times = []
     previous_ms = series.elapsed_ms_at(0.0)
     for boundary in boundaries_m:
+        if boundary > series.max_distance * 1.05:
+            times.append(None)
+            continue
         d = min(boundary, series.max_distance)
         current_ms = series.elapsed_ms_at(d)
         if previous_ms is None or current_ms is None:
             times.append(None)
         else:
-            times.append(current_ms - previous_ms)
+            sector_ms = current_ms - previous_ms
+            times.append(sector_ms if sector_ms > 0 else None)
         previous_ms = current_ms
     return times
 

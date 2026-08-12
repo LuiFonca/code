@@ -167,6 +167,7 @@ class LapRecorder(QObject):
         if not self._buffer or not lap_time_ms or lap_time_ms <= 0:
             self._buffer = []
             self._cumulative_distance = 0.0
+            self._last_current_lap_ms = None
             return
 
         # Regra central de item 7/8: sem pista válida OU em modo replay/IA,
@@ -178,6 +179,7 @@ class LapRecorder(QObject):
             self.lap_discarded.emit(lap_time_ms)
             self._buffer = []
             self._cumulative_distance = 0.0
+            self._last_current_lap_ms = None
             return
 
         # CRÍTICO: independentemente do salvamento funcionar ou não, o
@@ -214,3 +216,4 @@ class LapRecorder(QObject):
         finally:
             self._buffer = []
             self._cumulative_distance = 0.0
+            self._last_current_lap_ms = None
