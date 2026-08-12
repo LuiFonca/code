@@ -194,6 +194,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(14)
 
         root.addWidget(self._build_connection_bar())
+        root.addWidget(self._build_info_bar())
 
         self.tabs = QTabWidget()
         self.live_tab = LiveDashboardTab()
@@ -293,6 +294,33 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.status_pill)
 
         return frame
+
+    def _build_info_bar(self) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("card")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(18, 8, 18, 8)
+        layout.setSpacing(16)
+
+        self._info_track_label = QLabel("Pista: --")
+        self._info_track_label.setStyleSheet(
+            "color: #4f7cff; font-size: 15px; font-weight: 700;"
+        )
+        self._info_car_label = QLabel("Carro: --")
+        self._info_car_label.setStyleSheet(
+            "color: #c8cad0; font-size: 15px; font-weight: 700;"
+        )
+
+        layout.addWidget(self._info_track_label)
+        layout.addWidget(self._info_car_label)
+        layout.addStretch()
+        return frame
+
+    def _update_info_bar(self):
+        track = self._resolve_track_name()
+        car = self._resolve_car_name()
+        self._info_track_label.setText(f"Pista: {track}" if track else "Pista: --")
+        self._info_car_label.setText(f"Carro: {car}" if car else "Carro: --")
 
     def _reload_track_list(self):
         """Repopula o combo de pistas com as já usadas (topo) + todas as
@@ -424,6 +452,8 @@ class MainWindow(QMainWindow):
         else:
             self.log_label.setText(f"Conectando em {ip} (pista: {self._resolve_track_name()}) ...")
 
+        self._update_info_bar()
+
         self.listener_thread = TelemetryListenerThread(ip)
         self.listener_thread.frame_received.connect(self._on_frame)
         self.listener_thread.frame_received.connect(self.lap_recorder.on_frame)
@@ -462,6 +492,7 @@ class MainWindow(QMainWindow):
         self.history_tab.set_track(track_id)
         self.telemetry_tab.set_track(track_id)
         self._reload_track_list()
+        self._update_info_bar()
 
         if track_id is None:
             self.log_label.setText(f"{NO_TRACK_TEXT} — voltas não serão salvas até você definir uma pista.")
@@ -473,6 +504,7 @@ class MainWindow(QMainWindow):
         if self.lap_recorder is not None:
             self.lap_recorder.set_car(car_id)
         self._reload_car_list()
+        self._update_info_bar()
 
     def _on_player_mode_toggled(self, is_replay_checked: bool):
         if self.lap_recorder is not None:
@@ -559,6 +591,7 @@ class MainWindow(QMainWindow):
             return
         self.car_input.setCurrentText(car_name)
         self._on_car_changed()
+        self._update_info_bar()
         self.log_label.setText(f"Carro detectado automaticamente: {car_name}")
 
     def _on_track_candidates(self, names: list):
@@ -570,6 +603,7 @@ class MainWindow(QMainWindow):
         if len(names) == 1:
             self.track_input.setCurrentText(names[0])
             self._on_track_changed()
+            self._update_info_bar()
             self.log_label.setText(f"Pista detectada automaticamente: {names[0]}")
         else:
             suggestion = ", ".join(names[:3])
