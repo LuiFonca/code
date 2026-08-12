@@ -307,10 +307,9 @@ class LiveDashboardTab(QWidget):
         self.card_delta_prev.set_delta(None)
 
     def _save_ghost(self):
-        for name, color, points in self.track_map._paths:
-            if name == "atual" and len(points) > 10:
-                self._ghost_points = list(points)
-                return
+        points = self.track_map.get_trail_points("atual")
+        if len(points) > 10:
+            self._ghost_points = points
 
     def _draw_ghost(self):
         if self._ghost_points:

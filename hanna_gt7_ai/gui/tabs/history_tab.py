@@ -9,7 +9,7 @@ coluna e buscar por carro/id.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox
 )
 from PySide6.QtCore import Qt
 
@@ -19,9 +19,7 @@ from gui.widgets import format_ms
 
 class _SortableItem(QTableWidgetItem):
     """QTableWidgetItem que ordena por uma chave numérica própria
-    (`sort_key`) em vez do texto exibido — necessário porque o texto
-    formatado (ex: "1:05.000") ordena errado como string ("1:28.000" viria
-    antes de "1:5.000" alfabeticamente)."""
+    (`sort_key`) em vez do texto exibido."""
 
     def __init__(self, text: str, sort_key):
         super().__init__(text)
@@ -47,10 +45,18 @@ class HistoryTab(QWidget):
         self.title_label.setStyleSheet("font-size: 15px; font-weight: 600;")
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Buscar por carro ou nº da volta...")
+        self.search_input.setPlaceholderText("Buscar por carro, nº da volta ou tempo...")
         self.search_input.setMinimumWidth(140)
-        self.search_input.setMaximumWidth(260)
+        self.search_input.setMaximumWidth(300)
         self.search_input.textChanged.connect(self._apply_filter)
+
+        self.clear_button = QPushButton("Limpar dados")
+        self.clear_button.setStyleSheet(
+            "QPushButton { background-color: #3a1414; color: #ff5c5c; }"
+            "QPushButton:hover { background-color: #4a1a1a; }"
+        )
+        self.clear_button.setToolTip("Remove todas as voltas salvas desta pista.")
+        self.clear_button.clicked.connect(self._on_clear_clicked)
 
         refresh_button = QPushButton("Atualizar")
         refresh_button.clicked.connect(self.refresh)
@@ -58,6 +64,7 @@ class HistoryTab(QWidget):
         header.addStretch()
         header.addWidget(self.search_input)
         header.addWidget(refresh_button)
+        header.addWidget(self.clear_button)
         layout.addLayout(header)
 
         self.podium_label = QLabel("")
@@ -73,10 +80,6 @@ class HistoryTab(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        # Ordenação por coluna (item 10): usa o valor numérico/timestamp
-        # guardado em Qt.UserRole (ver _numeric_item), não o texto formatado
-        # — senão "1:05.000" ficaria "antes" de "1:28.000" só por comparação
-        # de string, e a coluna de tempo ordenaria errado.
         self.table.setSortingEnabled(True)
         self.table.setStyleSheet("""
             QTableWidget {
@@ -116,6 +119,8 @@ class HistoryTab(QWidget):
         self.refresh()
 
     def refresh(self):
+        self.clear_button.setEnabled(self.track_id is not None)
+
         if self.track_id is None:
             self.table.setRowCount(0)
             self.table.setVisible(False)
@@ -125,7 +130,7 @@ class HistoryTab(QWidget):
             return
 
         laps = lap_storage.list_laps(self.track_id)
-        self.table.setSortingEnabled(False)  # evita reordenar durante o preenchimento
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(0)
         self.empty_label.setVisible(len(laps) == 0)
         self.table.setVisible(len(laps) > 0)
@@ -142,6 +147,9 @@ class HistoryTab(QWidget):
             self.podium_label.setText("")
 
         best_time = top_laps[0][1] if top_laps else None
+
+        lap_ids = [lap_id for lap_id, *_ in laps]
+        all_sectors = lap_storage.get_sector_times_batch(lap_ids)
 
         for row_index, (lap_id, lap_time_ms, recorded_at, car_name) in enumerate(laps):
             self.table.insertRow(row_index)
@@ -160,7 +168,7 @@ class HistoryTab(QWidget):
             self.table.setItem(row_index, 2, date_item)
             self.table.setItem(row_index, 3, time_item)
 
-            sector_times = lap_storage.get_sector_times(lap_id)
+            sector_times = all_sectors.get(lap_id, [])
             for sector_index in range(3):
                 sector_ms = sector_times[sector_index] if sector_index < len(sector_times) else None
                 sort_key = sector_ms if sector_ms is not None else -1
@@ -172,9 +180,25 @@ class HistoryTab(QWidget):
         self.table.setSortingEnabled(True)
         self._apply_filter(self.search_input.text())
 
+    def _on_clear_clicked(self):
+        if self.track_id is None:
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Limpar dados da pista",
+            "Tem certeza que deseja remover TODAS as voltas salvas desta pista?\n\n"
+            "Esta ação não pode ser desfeita.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        lap_storage.delete_track_data(self.track_id)
+        self.refresh()
+
     def _apply_filter(self, text: str):
-        """Busca simples (item 10): esconde linhas cujo nº da volta ou
-        nome do carro não contenham o texto digitado."""
         needle = text.strip().lower()
         for row in range(self.table.rowCount()):
             if not needle:
@@ -182,7 +206,9 @@ class HistoryTab(QWidget):
                 continue
             id_text = self.table.item(row, 0).text().lower()
             car_text = self.table.item(row, 1).text().lower()
-            self.table.setRowHidden(row, needle not in id_text and needle not in car_text)
+            time_text = self.table.item(row, 3).text().lower()
+            match = needle in id_text or needle in car_text or needle in time_text
+            self.table.setRowHidden(row, not match)
 
     @staticmethod
     def _format_date(timestamp: float) -> str:

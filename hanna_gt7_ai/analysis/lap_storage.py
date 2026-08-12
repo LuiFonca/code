@@ -402,7 +402,6 @@ def save_lap(track_id: int, car_id, lap_time_ms: int, frames: list, is_player: b
                 for i, f in enumerate(frames)
             ],
         )
-        conn.commit()
 
         sectors = _compute_sector_times(conn, lap_id, num_sectors, track_id=track_id)
         cur.executemany(
@@ -600,3 +599,48 @@ def list_laps(track_id: int, limit: int = KEEP_RECENT_PER_TRACK):
     """, (track_id, limit)).fetchall()
     conn.close()
     return rows
+
+
+def get_sector_times_batch(lap_ids: list) -> dict:
+    """Retorna um dict {lap_id: [time_ms_s1, time_ms_s2, ...]} para todos
+    os lap_ids informados, em uma única query — evita o padrão N+1."""
+    if not lap_ids:
+        return {}
+    conn = _connect()
+    placeholders = ",".join("?" * len(lap_ids))
+    rows = conn.execute(
+        f"SELECT lap_id, sector_index, time_ms FROM sector_times "
+        f"WHERE lap_id IN ({placeholders}) ORDER BY lap_id, sector_index ASC",
+        lap_ids,
+    ).fetchall()
+    conn.close()
+    result: dict[int, list] = {lid: [] for lid in lap_ids}
+    for lap_id, _sector_index, time_ms in rows:
+        result[lap_id].append(time_ms)
+    return result
+
+
+def delete_lap(lap_id: int):
+    """Remove uma volta específica (frames e setores em cascata)."""
+    conn = _connect()
+    conn.execute("DELETE FROM laps WHERE id = ?", (lap_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_track_data(track_id: int):
+    """Remove TODAS as voltas (e frames/setores em cascata) de uma pista,
+    mas mantém a pista no cadastro. Usado pelo botão 'Limpar dados'."""
+    conn = _connect()
+    conn.execute("DELETE FROM laps WHERE track_id = ?", (track_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_track_completely(track_id: int):
+    """Remove a pista E todas as suas voltas/frames/setores."""
+    conn = _connect()
+    conn.execute("DELETE FROM laps WHERE track_id = ?", (track_id,))
+    conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+    conn.commit()
+    conn.close()

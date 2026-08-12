@@ -16,6 +16,7 @@ from PySide6.QtGui import QFont
 from telemetry.listener_thread import TelemetryListenerThread
 from analysis import lap_storage
 from analysis.lap_recorder import LapRecorder
+from analysis.gt7_catalog import all_tracks as catalog_all_tracks
 from gui.widgets import format_ms
 from gui.tabs.live_tab import LiveDashboardTab
 from gui.tabs.history_tab import HistoryTab
@@ -294,15 +295,26 @@ class MainWindow(QMainWindow):
         return frame
 
     def _reload_track_list(self):
-        """Repopula o combo de pistas com as já usadas, preservando o
-        texto digitado atualmente (se houver)."""
+        """Repopula o combo de pistas com as já usadas (topo) + todas as
+        pistas do catálogo CSV (fallback), preservando o texto atual."""
         current_text = self.track_input.currentText()
         self.track_input.blockSignals(True)
         self.track_input.clear()
-        tracks = lap_storage.list_tracks()
-        for track_id, name, lap_count in tracks:
+
+        db_tracks = lap_storage.list_tracks()
+        db_names = set()
+        for track_id, name, lap_count in db_tracks:
             label = f"{name} ({lap_count} voltas)" if lap_count else name
             self.track_input.addItem(label, (track_id, name))
+            db_names.add(name)
+
+        catalog_tracks = catalog_all_tracks()
+        if catalog_tracks and db_names:
+            self.track_input.insertSeparator(self.track_input.count())
+        for t in catalog_tracks:
+            if t.name not in db_names:
+                self.track_input.addItem(t.name, (None, t.name))
+
         self.track_input.setCurrentText(current_text)
         self.track_input.blockSignals(False)
 
@@ -386,6 +398,7 @@ class MainWindow(QMainWindow):
             self.lap_recorder = LapRecorder(track_id, car_id)
             self.lap_recorder.lap_saved.connect(self._on_lap_saved)
             self.lap_recorder.lap_discarded.connect(self._on_lap_discarded)
+            self.lap_recorder.lap_save_error.connect(self._on_save_error)
             self.lap_recorder.delta_changed.connect(self._on_delta_changed)
             self.lap_recorder.delta_previous_changed.connect(self._on_delta_previous_changed)
             self.lap_recorder.car_detected.connect(self._on_car_detected)
@@ -509,6 +522,10 @@ class MainWindow(QMainWindow):
         # sempre atualizados, sem precisar clicar em nada manualmente.
         self.history_tab.refresh()
         self.telemetry_tab.refresh_lap_list()
+
+    def _on_save_error(self, message: str):
+        self.log_label.setText(f"⚠ {message}")
+        self.log_label.setStyleSheet("color: #ff5c5c; font-size: 12px;")
 
     def _on_lap_discarded(self, lap_time_ms: int):
         formatted = format_ms(lap_time_ms)

@@ -604,13 +604,21 @@ class TrackMapWidget(QWidget):
             for x, z in points:
                 self._grow_bounds(x, z)
 
+    def get_trail_points(self, name: str) -> list:
+        """Retorna a lista de pontos (x, z) da trilha com o nome informado."""
+        for n, _c, points in self._paths:
+            if n == name:
+                return list(points)
+        return []
+
     def _to_widget_xy(self, x: float, z: float, rect):
         if self._min_x is None:
             return None
         span_x = max(self._max_x - self._min_x, 1.0)
         span_z = max(self._max_z - self._min_z, 1.0)
+        span = max(span_x, span_z)
         padding = 1.15
-        base_scale = min(rect.width() / (span_x * padding), rect.height() / (span_z * padding))
+        base_scale = min(rect.width(), rect.height()) / (span * padding)
         scale = base_scale * self._zoom_level
         center_x = (self._min_x + self._max_x) / 2
         center_z = (self._min_z + self._max_z) / 2

@@ -68,6 +68,7 @@ def _frame_to_tuple(f: RecordedFrame) -> tuple:
 class LapRecorder(QObject):
     lap_saved = Signal(int, int, bool)
     lap_discarded = Signal(int)
+    lap_save_error = Signal(str)
     delta_changed = Signal(object)
     delta_previous_changed = Signal(object)
 
@@ -276,6 +277,6 @@ class LapRecorder(QObject):
             if is_best:
                 self._comparator = LapComparator(buffer_as_tuples)
         except Exception as e:
-            print(f"[HANNA GT7 AI] Falha ao salvar volta, dado descartado: {e}")
+            self.lap_save_error.emit(f"Falha ao salvar volta: {e}")
         finally:
             self._reset_lap_state()

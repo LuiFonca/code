@@ -34,6 +34,7 @@ COLOR_G_LAT = "#ff9f4f"
 COLOR_G_LONG = "#3ddc84"
 COLOR_OIL = "#f2c94c"
 COLOR_WATER = "#4f7cff"
+COLOR_RPM = "#e06cff"
 NUM_SECTORS = 3
 
 
@@ -73,6 +74,7 @@ class TelemetryTab(QWidget):
 
         self.chart_speed = SyncedMiniChart("Velocidade (km/h)")
         self.chart_delta = SyncedMiniChart("Delta acumulado (s)")
+        self.chart_rpm = SyncedMiniChart("RPM")
         self.chart_gear = SyncedMiniChart("Marcha")
         self.chart_throttle = SyncedMiniChart("Acelerador (%)")
         self.chart_brake = SyncedMiniChart("Freio (%)")
@@ -85,7 +87,7 @@ class TelemetryTab(QWidget):
         self.chart_temps = SyncedMiniChart("Temperatura motor (°C)")
 
         self.all_charts = [
-            self.chart_speed, self.chart_delta, self.chart_gear,
+            self.chart_speed, self.chart_delta, self.chart_rpm, self.chart_gear,
             self.chart_throttle, self.chart_brake, self.chart_tires, self.chart_fuel,
             self.chart_gforce, self.chart_suspension, self.chart_tire_slip,
             self.chart_turbo, self.chart_temps,
@@ -106,17 +108,23 @@ class TelemetryTab(QWidget):
         controls = QHBoxLayout()
 
         label_a = QLabel("Volta:")
+        label_a.setStyleSheet("color: #e8e8ec; font-size: 13px; font-weight: 600;")
         self.combo_a = QComboBox()
-        self.combo_a.setStyleSheet(f"QComboBox {{ border-left: 3px solid {COLOR_A}; padding-left: 6px; }}")
-        self.combo_a.setMinimumWidth(120)
+        self.combo_a.setStyleSheet(
+            f"QComboBox {{ border-left: 3px solid {COLOR_A}; padding-left: 6px; "
+            f"color: #e8e8ec; background-color: #1c1f27; min-width: 180px; }}"
+        )
 
         self.compare_check = QCheckBox("Comparar com:")
+        self.compare_check.setStyleSheet("QCheckBox { color: #e8e8ec; font-size: 13px; font-weight: 600; }")
         self.compare_check.setToolTip("Ative para sobrepor uma segunda volta aos gráficos.")
         self.compare_check.toggled.connect(self._on_compare_toggled)
 
         self.combo_b = QComboBox()
-        self.combo_b.setStyleSheet(f"QComboBox {{ border-left: 3px solid {COLOR_B}; padding-left: 6px; }}")
-        self.combo_b.setMinimumWidth(120)
+        self.combo_b.setStyleSheet(
+            f"QComboBox {{ border-left: 3px solid {COLOR_B}; padding-left: 6px; "
+            f"color: #e8e8ec; background-color: #1c1f27; min-width: 180px; }}"
+        )
         self.combo_b.setEnabled(False)
 
         refresh_button = QPushButton("Atualizar")
@@ -159,6 +167,7 @@ class TelemetryTab(QWidget):
         channels = [
             ("distance", "Distância"),
             ("speed_kmh", "Velocidade"),
+            ("rpm", "RPM"),
             ("gear", "Marcha"),
             ("throttle", "Acelerador"),
             ("brake", "Freio"),
@@ -332,6 +341,9 @@ class TelemetryTab(QWidget):
         self.chart_speed.set_series([
             ("Volta", COLOR_A, self.series_a.points("speed_kmh")),
         ])
+        self.chart_rpm.set_series([
+            ("Volta", COLOR_RPM, self.series_a.points("rpm")),
+        ])
         self.chart_gear.set_series([
             ("Volta", COLOR_A, self.series_a.points("gear")),
         ], y_range=(0, 8))
@@ -441,6 +453,10 @@ class TelemetryTab(QWidget):
         self.chart_speed.set_series([
             ("Volta A", COLOR_A, self.series_a.points("speed_kmh")),
             ("Volta B", COLOR_B, self.series_b.points("speed_kmh")),
+        ])
+        self.chart_rpm.set_series([
+            ("Volta A", COLOR_RPM, self.series_a.points("rpm")),
+            ("Volta B", COLOR_B, self.series_b.points("rpm")),
         ])
         self.chart_gear.set_series([
             ("Volta A", COLOR_A, self.series_a.points("gear")),
@@ -722,6 +738,10 @@ class TelemetryTab(QWidget):
                 self.series_a.value_at(distance_m, "speed_kmh"),
                 self.series_b.value_at(distance_m, "speed_kmh") if self.series_b else None,
                 unit=" km/h")
+        set_row("rpm",
+                self.series_a.value_at(distance_m, "rpm"),
+                self.series_b.value_at(distance_m, "rpm") if self.series_b else None,
+                fmt="{:.0f}")
         set_row("gear",
                 self.series_a.value_at(distance_m, "gear"),
                 self.series_b.value_at(distance_m, "gear") if self.series_b else None,

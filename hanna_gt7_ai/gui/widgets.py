@@ -86,7 +86,7 @@ class DeltaCard(QFrame):
             return
 
         sign = "+" if delta_seconds >= 0 else ""
-        self.value_widget.setText(f"{sign}{delta_seconds:.2f}s")
+        self.value_widget.setText(f"{sign}{delta_seconds:.3f}s")
 
         if delta_seconds > 0.02:
             self._set_color("#ff5c5c", "#3a1414")
