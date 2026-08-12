@@ -1,0 +1,104 @@
+"""
+Widgets pequenos e reutilizáveis, usados em mais de uma aba da interface.
+"""
+
+from PySide6.QtWidgets import QVBoxLayout, QLabel, QFrame, QProgressBar
+
+
+class MetricCard(QFrame):
+    """Card simples exibindo um rótulo e um valor grande (ex: velocidade, RPM)."""
+
+    def __init__(self, label: str, unit: str = ""):
+        super().__init__()
+        self.setObjectName("card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
+
+        self.label_widget = QLabel(label.upper())
+        self.label_widget.setObjectName("metricLabel")
+
+        self.value_widget = QLabel("--")
+        self.value_widget.setObjectName("metricValue")
+
+        self.unit = unit
+
+        layout.addWidget(self.label_widget)
+        layout.addWidget(self.value_widget)
+
+    def set_value(self, value):
+        self.value_widget.setText(f"{value}{self.unit}")
+
+
+class BarCard(QFrame):
+    """Card com barra de progresso (throttle / freio)."""
+
+    def __init__(self, label: str, color: str):
+        super().__init__()
+        self.setObjectName("card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
+
+        self.label_widget = QLabel(label.upper())
+        self.label_widget.setObjectName("metricLabel")
+
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setValue(0)
+        self.bar.setStyleSheet(f"QProgressBar::chunk {{ background-color: {color}; }}")
+
+        layout.addWidget(self.label_widget)
+        layout.addWidget(self.bar)
+
+    def set_value(self, percent: float):
+        self.bar.setValue(int(max(0, min(100, percent))))
+
+
+class DeltaCard(QFrame):
+    """Card grande mostrando o delta ao vivo contra a volta de referência
+    (a melhor volta salva). Verde = mais rápido que a referência nesse
+    ponto da pista; vermelho = mais devagar."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 14, 18, 14)
+
+        self.label_widget = QLabel("DELTA VS MELHOR VOLTA")
+        self.label_widget.setObjectName("metricLabel")
+
+        self.value_widget = QLabel("--")
+        self.value_widget.setObjectName("deltaValue")
+        self._set_neutral()
+
+        layout.addWidget(self.label_widget)
+        layout.addWidget(self.value_widget)
+
+    def set_delta(self, delta_seconds):
+        if delta_seconds is None:
+            self.value_widget.setText("--")
+            self._set_neutral()
+            return
+
+        sign = "+" if delta_seconds >= 0 else ""
+        self.value_widget.setText(f"{sign}{delta_seconds:.2f}s")
+
+        if delta_seconds > 0.02:
+            self.value_widget.setStyleSheet("color: #ff5c5c; font-size: 32px; font-weight: 700;")
+        elif delta_seconds < -0.02:
+            self.value_widget.setStyleSheet("color: #3ddc84; font-size: 32px; font-weight: 700;")
+        else:
+            self._set_neutral()
+
+    def _set_neutral(self):
+        self.value_widget.setStyleSheet("color: #ffffff; font-size: 32px; font-weight: 700;")
+
+
+def format_ms(ms) -> str:
+    """Formata milissegundos como tempo de volta legível (ex: 1:28.450)."""
+    if ms is None or ms < 0:
+        return "--:--.---"
+    total_seconds = ms / 1000
+    minutes = int(total_seconds // 60)
+    seconds = total_seconds % 60
+    return f"{minutes}:{seconds:06.3f}"
