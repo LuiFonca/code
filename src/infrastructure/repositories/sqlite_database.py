@@ -28,7 +28,7 @@ DEFAULT_DB_PATH = Path.home() / ".hanna_gt7_ai" / "laps.db"
 # Incrementar sempre que uma coluna/tabela nova for necessária, adicionando a
 # migração correspondente em `_run_migrations`. Sem isso, o app quebra em
 # silêncio no banco de quem já usava a versão anterior.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Retenção por pista: as N mais rápidas (recordes) + as N mais recentes
 # (histórico cronológico). O resto é descartado ao salvar, para o banco não
@@ -100,6 +100,7 @@ class SqliteDatabase:
             "car_id": "INTEGER REFERENCES cars(id)",
             "is_player": "INTEGER NOT NULL DEFAULT 1",
             "is_complete": "INTEGER NOT NULL DEFAULT 1",
+            "is_valid": "INTEGER NOT NULL DEFAULT 1",
         }
         existing = {
             r[1] for r in self._conn.execute("PRAGMA table_info(laps)").fetchall()
@@ -153,6 +154,7 @@ class SqliteDatabase:
                 car_id INTEGER REFERENCES cars(id),
                 is_player INTEGER NOT NULL DEFAULT 1,
                 is_complete INTEGER NOT NULL DEFAULT 1,
+                is_valid INTEGER NOT NULL DEFAULT 1,
                 lap_time_ms INTEGER NOT NULL,
                 recorded_at REAL NOT NULL,
                 frame_count INTEGER NOT NULL
@@ -345,6 +347,13 @@ class SqliteDatabase:
 
         if current_version < 6:
             self._migrate_to_v6()
+
+        if current_version < 7:
+            # 6 → 7: marca de volta válida. O pacote do GT7 não informa
+            # invalidação (corte de pista, contato, reset), então a marcação é
+            # manual — mesmo caminho já usado para replay/IA. Voltas existentes
+            # nascem válidas: presumir o contrário apagaria recordes legítimos.
+            self._try_alter("laps", "is_valid INTEGER NOT NULL DEFAULT 1")
 
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()

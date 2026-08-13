@@ -122,6 +122,9 @@ class TelemetryService:
         # mudança que você acabou de fazer funcionou.
         self._comparator_best = LapComparator([])
         self._comparator_previous = LapComparator([])
+        # Melhor tempo conhecido da pista, mantido em memória para não
+        # depender de leitura do banco no fechamento da volta (ver _finalize_lap).
+        self._best_lap_time_ms: int | None = None
 
         # Gravação fora da thread da interface: ao cruzar a linha de chegada,
         # escrever milhares de amostras no SQLite segurava a tela por dezenas
@@ -181,14 +184,23 @@ class TelemetryService:
         self._load_best_reference()
 
     def _load_best_reference(self) -> None:
+        """Recarrega a referência do delta a partir do banco.
+
+        É também onde o melhor tempo em memória é semeado — chamado ao iniciar,
+        ao trocar de pista e quando uma volta sai da disputa (exclusão ou
+        marcação de inválida).
+        """
         track_id = self._session.track_id
         if track_id is None:
             self._comparator_best = LapComparator([])
+            self._best_lap_time_ms = None
             return
         best = self._laps.get_best(track_id)
         if best is None or best.id is None:
             self._comparator_best = LapComparator([])
+            self._best_lap_time_ms = None
             return
+        self._best_lap_time_ms = best.lap_time_ms
         self._comparator_best = LapComparator(self._laps.load_points(best.id))
 
     def _reset_lap_state(self, observed_from_start: bool = False) -> None:
@@ -442,17 +454,20 @@ class TelemetryService:
             return
 
         try:
-            # Leitura é barata e precisa do estado de agora; a escrita é que
-            # sai do caminho quente.
-            previous_best = self._laps.get_best(self._session.track_id)
-
-            # Volta incompleta nunca é recorde: o tempo é o oficial da volta
-            # inteira, mas as amostras cobrem só o pedaço observado. Ela é
-            # gravada (o tempo em si é verdadeiro e vale no histórico), porém
-            # não vira referência de nada.
+            # O melhor tempo é mantido em memória, não relido do banco.
+            #
+            # Consultar o banco aqui seria uma corrida: a gravação é assíncrona,
+            # e duas voltas em sequência rápida fariam a segunda ler um estado
+            # em que a primeira ainda não entrou — e se declarar recorde
+            # indevidamente. Em pista real as voltas ficam minutos apart e o
+            # problema não apareceria, o que o torna pior: seria um bug raro,
+            # dependente de tempo, impossível de reproduzir sob demanda.
             is_best = is_complete and (
-                previous_best is None or lap_time_ms < previous_best.lap_time_ms
+                self._best_lap_time_ms is None
+                or lap_time_ms < self._best_lap_time_ms
             )
+            if is_best:
+                self._best_lap_time_ms = lap_time_ms
 
             # Os comparadores só dependem das amostras que já estão em memória,
             # então o delta da próxima volta fica correto imediatamente, sem

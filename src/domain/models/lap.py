@@ -33,6 +33,11 @@ class Lap:
     # por isso uma volta incompleta nunca pode virar recorde nem referência de
     # delta, ainda que seu tempo seja o menor.
     is_complete: bool = True
+    # False quando o piloto marca a volta como inválida — corte de pista,
+    # contato, reset. O GT7 não transmite essa informação, então a marcação é
+    # manual. Volta inválida continua no histórico (o tempo aconteceu) mas sai
+    # da disputa de recorde, exatamente como a incompleta.
+    is_valid: bool = True
     points: list[TelemetryPoint] = field(default_factory=list)
 
     @property

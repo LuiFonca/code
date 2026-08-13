@@ -51,6 +51,7 @@ class HistoryTab(QWidget):
     def __init__(self, view_model: HistoryViewModel):
         super().__init__()
         self._vm = view_model
+        self._rows: list[LapRow] = []
         self._build_ui()
 
         self._vm.laps_changed.connect(self._render)
@@ -76,6 +77,14 @@ class HistoryTab(QWidget):
         self._clear_button.setObjectName("dangerButton")
         self._clear_button.clicked.connect(self._on_clear_clicked)
 
+        self._invalidate_button = QPushButton("Marcar inválida")
+        self._invalidate_button.setObjectName("stopButton")
+        self._invalidate_button.setToolTip(
+            "O GT7 não informa corte de pista ou contato. Marque aqui a volta "
+            "que não deve contar como recorde — ela permanece no histórico."
+        )
+        self._invalidate_button.clicked.connect(self._on_toggle_valid_clicked)
+
         self._delete_button = QPushButton("Excluir volta")
         self._delete_button.setObjectName("stopButton")
         self._delete_button.clicked.connect(self._on_delete_clicked)
@@ -83,6 +92,7 @@ class HistoryTab(QWidget):
         controls.addWidget(self._search)
         controls.addWidget(self._count_label)
         controls.addStretch()
+        controls.addWidget(self._invalidate_button)
         controls.addWidget(self._delete_button)
         controls.addWidget(self._clear_button)
         root.addLayout(controls)
@@ -111,6 +121,8 @@ class HistoryTab(QWidget):
     # ---------- renderização ----------
 
     def _render(self, rows: list[LapRow]):
+        # Guardado para o botão de validade saber o estado atual da linha.
+        self._rows = rows
         self._empty_label.setVisible(not rows)
         self._table.setVisible(bool(rows))
         self._count_label.setText(f"{len(rows)} volta(s)" if rows else "")
@@ -127,6 +139,8 @@ class HistoryTab(QWidget):
             # acharia que o app perdeu o recorde dele.
             if row.is_best:
                 mark, mark_sort = "🏆", 0
+            elif not row.is_valid:
+                mark, mark_sort = "✕", 3
             elif not row.is_complete:
                 mark, mark_sort = "⚠", 2
             else:
@@ -156,6 +170,12 @@ class HistoryTab(QWidget):
             for c, item in enumerate(cells):
                 if row.is_best:
                     item.setForeground(Qt.green)
+                elif not row.is_valid:
+                    item.setForeground(Qt.darkGray)
+                    item.setToolTip(
+                        "Volta marcada como inválida. Continua no histórico, mas "
+                        "não disputa recorde nem serve de referência para o delta."
+                    )
                 elif not row.is_complete:
                     item.setForeground(Qt.gray)
                     item.setToolTip(
@@ -196,6 +216,19 @@ class HistoryTab(QWidget):
         )
         if confirm == QMessageBox.Yes:
             self._vm.delete_lap(lap_id)
+
+    def _on_toggle_valid_clicked(self):
+        lap_id = self._selected_lap_id()
+        if lap_id is None:
+            QMessageBox.information(
+                self, "Nenhuma volta selecionada",
+                "Selecione uma volta na tabela para marcar.",
+            )
+            return
+        linha = next((r for r in self._rows if r.lap.id == lap_id), None)
+        if linha is None:
+            return
+        self._vm.set_lap_valid(lap_id, not linha.is_valid)
 
     def _on_clear_clicked(self):
         if self._vm.track_id is None:

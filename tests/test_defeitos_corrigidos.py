@@ -462,3 +462,86 @@ def test_extra_amostras_sobrevivem_ida_e_volta(laps, tracks, make_lap):
     lidos = laps.load_points(lap_id)
 
     assert lidos == originais
+
+
+# ================= Fase 2 — pré-modificação (comportamento atual) ============
+def test_pre_fase2_toda_volta_completa_disputa_recorde(laps, tracks, make_lap):
+    """Hoje não há como excluir uma volta da disputa a não ser marcá-la parcial.
+
+    Este teste documenta o estado ANTES da Fase 2 e deve continuar valendo
+    depois: o que muda é a existência de um segundo motivo de exclusão, não o
+    comportamento das voltas normais.
+    """
+    track_id = tracks.get_or_create("T")
+    rapida = laps.save(make_lap(track_id=track_id, lap_time_ms=85000, samples=50))
+    laps.save(make_lap(track_id=track_id, lap_time_ms=90000, samples=50))
+
+    assert laps.get_best(track_id).id == rapida
+
+
+# ================= Fase 2 — pós-modificação ==================================
+def test_fase2_volta_invalida_sai_da_disputa(laps, tracks, make_lap):
+    """Marcar inválida tira do recorde sem apagar do histórico."""
+    track_id = tracks.get_or_create("T")
+    rapida = laps.save(make_lap(track_id=track_id, lap_time_ms=85000, samples=50))
+    lenta = laps.save(make_lap(track_id=track_id, lap_time_ms=90000, samples=50))
+
+    assert laps.get_best(track_id).id == rapida
+
+    laps.set_valid(rapida, False)
+    assert laps.get_best(track_id).id == lenta, "inválida não pode ser recorde"
+    assert len(laps.get_by_track(track_id)) == 2, "a volta continua no histórico"
+    assert laps.get_by_id(rapida).is_valid is False
+
+    laps.set_valid(rapida, True)
+    assert laps.get_best(track_id).id == rapida, "desmarcar devolve à disputa"
+
+
+def test_fase2_invalidar_recarrega_delta(service, source, laps, bus, on_track, flush):
+    """A volta invalidada pode ser a referência ativa do delta."""
+    track_id, _ = on_track
+    service.start()
+    source.feed_lap(lap_no=1, lap_ms=90000)
+    source.feed_lap(lap_no=2, lap_ms=88000, speed_kmh=200.0)
+    source.feed_lap(lap_no=3, lap_ms=92000, speed_kmh=100.0)
+    flush()
+
+    melhor = laps.get_best(track_id)
+    distancia_antes = service._comparator_best._distances[-1]
+
+    history = HistoryViewModel(laps, bus)
+    history.set_track(track_id)
+    history.set_lap_valid(melhor.id, False)
+    flush()
+
+    assert laps.get_best(track_id).id != melhor.id
+    assert service._comparator_best._distances[-1] != pytest.approx(distancia_antes)
+
+
+def test_fase2_migracao_v7_voltas_antigas_nascem_validas(tmp_path, make_lap):
+    """Presumir inválido apagaria recordes legítimos de quem já usava o app."""
+    from src.infrastructure.repositories.sqlite_database import SqliteDatabase
+    from src.infrastructure.repositories.sqlite_lap_repository import (
+        SqliteLapRepository,
+    )
+    from src.infrastructure.repositories.sqlite_track_repository import (
+        SqliteTrackRepository,
+    )
+
+    caminho = tmp_path / "v6.db"
+    db = SqliteDatabase(caminho)
+    tracks_repo = SqliteTrackRepository(db)
+    laps_repo = SqliteLapRepository(db)
+    track_id = tracks_repo.get_or_create("T")
+    lap_id = laps_repo.save(make_lap(track_id=track_id, lap_time_ms=88000, samples=20))
+    # Simula banco anterior à v7 removendo a coluna do controle de versão.
+    db.connection.execute("PRAGMA user_version = 6")
+    db.connection.commit()
+    db.close()
+
+    db2 = SqliteDatabase(caminho)
+    laps2 = SqliteLapRepository(db2)
+    assert db2.connection.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert laps2.get_by_id(lap_id).is_valid is True
+    assert laps2.get_best(track_id).id == lap_id
+    db2.close()

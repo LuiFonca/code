@@ -30,6 +30,8 @@ class LapRow:
     # é recorde, e a tabela precisa dizer isso em vez de deixar o usuário
     # achar que o app perdeu o recorde dele.
     is_complete: bool = True
+    # False quando o piloto marcou a volta como inválida (corte, contato).
+    is_valid: bool = True
 
 
 class HistoryViewModel(QObject):
@@ -120,6 +122,7 @@ class HistoryViewModel(QObject):
                 sector_times=sectors.get(lap.id, []),
                 is_best=(lap.id == best_id),
                 is_complete=lap.is_complete,
+                is_valid=lap.is_valid,
             )
             for lap in laps
         ]
@@ -135,6 +138,23 @@ class HistoryViewModel(QObject):
             self.refresh()
         except Exception as exc:  # noqa: BLE001
             self.error.emit(f"Não foi possível excluir a volta: {exc}")
+
+    def set_lap_valid(self, lap_id: int, is_valid: bool) -> None:
+        """Marca a volta como válida ou inválida.
+
+        Publica `LapDeleted` mesmo sem apagar nada: a volta pode ter sido o
+        recorde, e a referência do delta precisa ser recarregada. O nome do
+        evento fala de "sumiu da disputa", não de "sumiu do banco".
+        """
+        if not hasattr(self._laps, "set_valid"):
+            self.error.emit("Este repositório não suporta marcar validade.")
+            return
+        try:
+            self._laps.set_valid(lap_id, is_valid)
+            self._bus.publish(LapDeleted(lap_id=lap_id, track_id=self._track_id))
+            self.refresh()
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(f"Não foi possível alterar a volta: {exc}")
 
     def clear_track(self) -> None:
         """Apaga todas as voltas da pista. A confirmação é da View — o
