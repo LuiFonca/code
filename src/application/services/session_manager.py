@@ -139,7 +139,10 @@ class SessionManager:
             SessionEnded(session_id=self._session.id, lap_count=self._session.lap_count)
         )
 
-    def register_lap(self, lap: Lap) -> None:
-        """Adiciona a volta à sessão. Chamado depois de gravada com sucesso —
-        a sessão reflete o que foi de fato persistido."""
-        self._session.add_lap(lap)
+    def register_lap(self, lap: Lap) -> Lap:
+        """Adiciona a volta à sessão e devolve o registro guardado.
+
+        O registro não carrega as amostras (ver `Session.add_lap`); o `id`
+        fica em aberto até a gravação terminar, e quem chamou preenche.
+        """
+        return self._session.add_lap(lap)

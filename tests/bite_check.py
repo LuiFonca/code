@@ -39,8 +39,8 @@ MUTACOES = [
      "test_05_comparacao_usa_cache_de_arrays"),
 
     ("06 gravacao assincrona", "src/application/services/telemetry_service.py",
-     "self._writer.submit(lap, context=is_best)",
-     "self._on_lap_written(lap, self._laps.save(lap), 0, is_best)",
+     "self._writer.submit(lap, context=(is_best, registro))",
+     "self._on_lap_written(lap, self._laps.save(lap), 0, (is_best, registro))",
      "test_06_gravacao_fora_da_thread_da_interface"),
 
     ("07 teto de forca G", "src/application/services/telemetry_service.py",
@@ -133,6 +133,12 @@ MUTACOES = [
     ("F6 quaternion nulo", "src/domain/services/slip_angle.py",
      "    if norma < 0.5:\n        return None", "    if False:\n        return None",
      "test_quaternion_degenerado_devolve_none"),
+
+    # A sessao guardava a volta inteira, amostras inclusive. So aparece em
+    # sessao longa: a memoria cresce com o numero de voltas e nunca cai.
+    ("F7 sessao segura amostras", "src/domain/models/session.py",
+     "registro = replace(lap, points=[])", "registro = lap",
+     "test_sessao_longa_nao_acumula_amostras_na_memoria"),
 ]
 
 

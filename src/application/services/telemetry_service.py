@@ -560,8 +560,11 @@ class TelemetryService:
                 if is_best:
                     self._comparator_best = LapComparator(points)
 
-            self._session.register_lap(lap)
-            self._writer.submit(lap, context=is_best)
+            # O registro da sessão viaja junto no contexto para que o `id`
+            # atribuído pelo banco chegue nele — sem isso a sessão ficaria com
+            # voltas anônimas, impossíveis de casar com o histórico.
+            registro = self._session.register_lap(lap)
+            self._writer.submit(lap, context=(is_best, registro))
         except Exception as exc:  # noqa: BLE001
             self._bus.publish(
                 LapSaveFailed(
@@ -574,10 +577,19 @@ class TelemetryService:
 
     # ---------- retorno da gravação (thread do gravador) ----------
 
-    def _on_lap_written(self, lap: Lap, lap_id: int, purged: int, is_best) -> None:
+    def _on_lap_written(self, lap: Lap, lap_id: int, purged: int, context) -> None:
         """Chamado na thread de gravação. Só publica eventos — o barramento faz
         a troca de thread, e a interface recebe já na thread dela."""
+        # O contexto pode ser só o `is_best` (caminhos de teste que chamam
+        # direto) ou o par com o registro da sessão.
+        if isinstance(context, tuple):
+            is_best, registro = context
+        else:
+            is_best, registro = context, None
+
         lap.id = lap_id
+        if registro is not None:
+            registro.id = lap_id
         if purged:
             self._bus.publish(LapsPurged(count=purged, track_id=lap.track_id))
         self._bus.publish(

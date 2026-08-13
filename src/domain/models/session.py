@@ -1,6 +1,6 @@
 """Sessão de pilotagem — agrupa as voltas rodadas com um mesmo carro/pista."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from .car import Car
@@ -52,5 +52,23 @@ class Session:
             return None
         return (self.end - self.start).total_seconds()
 
-    def add_lap(self, lap: Lap) -> None:
-        self.laps.append(lap)
+    def add_lap(self, lap: Lap) -> Lap:
+        """Registra a volta na sessão e devolve o registro guardado.
+
+        O registro é uma cópia **sem as amostras**. A sessão precisa saber
+        quais voltas foram rodadas e em que tempo; as amostras pertencem ao
+        repositório, e quem as quer em memória (os comparadores de delta) já
+        guarda a sua própria referência.
+
+        Guardar as amostras aqui fazia a memória crescer com o tempo de
+        sessão e nunca cair: cada volta de 90 s a 60 Hz são ~5.400
+        `TelemetryPoint`, e uma sessão de duas horas segurava todas elas até
+        o app fechar. Numa sessão curta o efeito é invisível — foi preciso
+        simular uma sessão longa para o problema aparecer.
+
+        Devolver o registro permite a quem chamou completar o `id` quando a
+        gravação terminar, sem precisar procurá-lo na lista depois.
+        """
+        registro = replace(lap, points=[])
+        self.laps.append(registro)
+        return registro
