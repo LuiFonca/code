@@ -29,6 +29,16 @@ RECEIVE_PORT = 33740
 # O PS5 para de transmitir se não receber um "toque" periódico.
 HEARTBEAT_INTERVAL = 10
 
+# Antes do primeiro pacote, o toque é bem mais frequente. Dois motivos:
+#
+# 1. `EHOSTUNREACH` numa rede local costuma ser **transitório**: o kernel
+#    responde isso enquanto a resolução ARP do endereço ainda está em curso.
+#    Uma segunda tentativa logo depois normalmente passa. Com 10s de espera, a
+#    conexão demorava dez segundos para se estabelecer — ou parecia falha.
+# 2. Se o console foi ligado depois do app, ele só começa a transmitir a partir
+#    do primeiro toque que receber.
+HEARTBEAT_INTERVAL_INITIAL = 1.0
+
 # Tempo sem nenhum pacote antes de reportar "sem_sinal". Mais grosseiro que o
 # watchdog da camada de apresentação (que vigia frames válidos, ~1s): aqui é
 # ausência total de tráfego.
@@ -70,14 +80,24 @@ class _ListenerThread(QThread):
         try:
             while self._running:
                 now = time.time()
-                if now - last_heartbeat > HEARTBEAT_INTERVAL:
+                interval = (
+                    HEARTBEAT_INTERVAL if got_first_packet else HEARTBEAT_INTERVAL_INITIAL
+                )
+                if now - last_heartbeat > interval:
                     try:
                         sock.sendto(b"A", (self.ps_ip, SEND_PORT))
-                        last_heartbeat_error = None
+                        if last_heartbeat_error is not None:
+                            # O toque voltou a passar depois de falhar (ARP
+                            # resolvido, cabo reconectado...). Avisa para a
+                            # interface poder limpar o alerta anterior — sem
+                            # isto, um erro transitório ficaria na tela para
+                            # sempre, mesmo com tudo já funcionando.
+                            last_heartbeat_error = None
+                            self.status_changed.emit("conectando")
                     except OSError as e:
-                        # Só reporta quando a mensagem muda. O heartbeat repete
-                        # a cada 10s; sem isso, um console desligado encheria a
-                        # interface com o mesmo erro indefinidamente.
+                        # Só reporta quando a mensagem muda. Sem isso, um
+                        # console desligado encheria a interface com o mesmo
+                        # erro repetido indefinidamente.
                         message = self._describe_send_error(e)
                         if message != last_heartbeat_error:
                             last_heartbeat_error = message

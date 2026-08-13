@@ -26,6 +26,25 @@ pasta pessoal) são as únicas fontes externas.
 
 ---
 
+## Diagnóstico de conexão
+
+Se o app não recebe telemetria, rode o diagnóstico antes de mexer em qualquer
+coisa — ele testa a rede sem abrir a interface e diz onde está o problema:
+
+```bash
+python3 src/tools/diagnose.py 192.168.15.156
+```
+
+Ele verifica se o computador está na mesma sub-rede do console, abre a porta de
+captura, envia o toque e escuta por 20 s, e no fim dá um veredito.
+
+**No macOS há uma causa que não é óbvia:** a partir do Sonoma, o sistema exige
+permissão de *Rede Local* para falar com aparelhos da rede, concedida **por
+aplicativo**. Sem ela, o `sendto` falha com o mesmo `[Errno 65] No route to
+host` de um IP errado. Confira em Ajustes do Sistema → Privacidade e Segurança
+→ Rede Local se o Terminal (ou o app de onde você roda o Python) está
+autorizado. Rodar de um terminal diferente do habitual cria uma permissão nova.
+
 ## A regra que sustenta tudo
 
 As dependências apontam **para dentro**. Cada camada só conhece as de baixo:

@@ -419,6 +419,15 @@ class MainWindow(QMainWindow):
             self._error_sticky = False
             self._reset_log_style()
             self.log_label.setText(messages["recebendo"])
+        elif event.state == "conectando" and self._error_sticky:
+            # O toque ao console voltou a passar: o alerta anterior era
+            # transitório e não deve continuar na tela assustando o usuário.
+            self._error_sticky = False
+            self._reset_log_style()
+            self.log_label.setText(
+                "Contato com o PlayStation restabelecido. Aguardando telemetria — "
+                "o GT7 só transmite dentro de uma sessão (corrida ou track day)."
+            )
         elif event.state in messages and not self._error_sticky:
             self.log_label.setText(messages[event.state])
 
