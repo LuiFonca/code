@@ -30,9 +30,21 @@ _FRAME_PLACEHOLDERS = ", ".join("?" * len(_FRAME_COLUMNS))
 
 
 class SqliteLapRepository(LapRepository):
-    def __init__(self, database: SqliteDatabase, num_sectors: int = 3):
+    def __init__(
+        self,
+        database: SqliteDatabase,
+        num_sectors: int = 3,
+        keep_best: int = KEEP_BEST_PER_TRACK,
+        keep_recent: int = KEEP_RECENT_PER_TRACK,
+    ):
         self._db = database
         self._num_sectors = num_sectors
+        self._keep_best = keep_best
+        self._keep_recent = keep_recent
+        # Quantas voltas a última gravação descartou por retenção. Lido logo
+        # depois de `save` para que a camada de aplicação possa avisar o
+        # usuário — antes, voltas sumiam do histórico sem qualquer sinal.
+        self.last_purged_count = 0
 
     @property
     def _conn(self):
@@ -49,15 +61,17 @@ class SqliteLapRepository(LapRepository):
         nenhum erro visível. Aqui, ou entra tudo, ou não entra nada.
         """
         with self._db.lock:
+            self.last_purged_count = 0
             try:
                 cur = self._conn.cursor()
                 cur.execute(
-                    "INSERT INTO laps (track_id, car_id, is_player, lap_time_ms, "
-                    "recorded_at, frame_count) VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO laps (track_id, car_id, is_player, is_complete, "
+                    "lap_time_ms, recorded_at, frame_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         lap.track_id,
                         lap.car_id,
                         1 if lap.is_player else 0,
+                        1 if lap.is_complete else 0,
                         lap.lap_time_ms,
                         lap.start_time.timestamp() if lap.start_time else time.time(),
                         len(lap.points),
@@ -106,15 +120,15 @@ class SqliteLapRepository(LapRepository):
         best_ids = [
             r[0] for r in self._conn.execute(
                 "SELECT id FROM laps WHERE track_id = ? AND is_player = 1 "
-                "ORDER BY lap_time_ms ASC LIMIT ?",
-                (track_id, KEEP_BEST_PER_TRACK),
+                "AND is_complete = 1 ORDER BY lap_time_ms ASC LIMIT ?",
+                (track_id, self._keep_best),
             ).fetchall()
         ]
         recent_ids = [
             r[0] for r in self._conn.execute(
                 "SELECT id FROM laps WHERE track_id = ? AND is_player = 1 "
                 "ORDER BY recorded_at DESC LIMIT ?",
-                (track_id, KEEP_RECENT_PER_TRACK),
+                (track_id, self._keep_recent),
             ).fetchall()
         ]
 
@@ -126,6 +140,12 @@ class SqliteLapRepository(LapRepository):
             return
 
         placeholders = ",".join("?" * len(keep_ids))
+        # Conta antes de apagar: é este número que a interface mostra ao
+        # usuário, para que a poda deixe de ser invisível.
+        self.last_purged_count = self._conn.execute(
+            f"SELECT COUNT(*) FROM laps WHERE track_id = ? AND id NOT IN ({placeholders})",
+            (track_id, *keep_ids),
+        ).fetchone()[0]
         self._conn.execute(
             f"DELETE FROM laps WHERE track_id = ? AND id NOT IN ({placeholders})",
             (track_id, *keep_ids),
@@ -145,7 +165,7 @@ class SqliteLapRepository(LapRepository):
 
     def get_by_id(self, lap_id: int) -> Lap | None:
         row = self._conn.execute(
-            "SELECT id, track_id, car_id, is_player, lap_time_ms, recorded_at "
+            "SELECT id, track_id, car_id, is_player, is_complete, lap_time_ms, recorded_at "
             "FROM laps WHERE id = ?",
             (lap_id,),
         ).fetchone()
@@ -157,7 +177,7 @@ class SqliteLapRepository(LapRepository):
 
     def get_all(self, limit: int | None = None) -> list[Lap]:
         sql = (
-            "SELECT id, track_id, car_id, is_player, lap_time_ms, recorded_at "
+            "SELECT id, track_id, car_id, is_player, is_complete, lap_time_ms, recorded_at "  # noqa: E501
             "FROM laps WHERE is_player = 1 ORDER BY recorded_at DESC"
         )
         params: tuple = ()
@@ -168,7 +188,7 @@ class SqliteLapRepository(LapRepository):
 
     def get_by_track(self, track_id: int, limit: int | None = None) -> list[Lap]:
         sql = (
-            "SELECT id, track_id, car_id, is_player, lap_time_ms, recorded_at "
+            "SELECT id, track_id, car_id, is_player, is_complete, lap_time_ms, recorded_at "  # noqa: E501
             "FROM laps WHERE track_id = ? AND is_player = 1 ORDER BY recorded_at DESC"
         )
         params: tuple = (track_id,)
@@ -178,19 +198,30 @@ class SqliteLapRepository(LapRepository):
         return [self._row_to_lap(r) for r in self._conn.execute(sql, params).fetchall()]
 
     def get_best(self, track_id: int) -> Lap | None:
+        """Volta mais rápida **completa** da pista.
+
+        Voltas incompletas ficam de fora mesmo tendo o menor tempo: o tempo é o
+        oficial do jogo (volta inteira), mas as amostras cobrem só o pedaço que
+        o app observou. Aceitá-las produziria um recorde falso e uma referência
+        de delta que acaba no meio da pista.
+
+        O empate é resolvido pelo `id` mais antigo — a primeira vez que o tempo
+        foi feito é que conta, e o critério tem que ser o mesmo em toda parte
+        para o troféu do histórico não discordar da referência do delta.
+        """
         row = self._conn.execute(
-            "SELECT id, track_id, car_id, is_player, lap_time_ms, recorded_at "
-            "FROM laps WHERE track_id = ? AND is_player = 1 "
-            "ORDER BY lap_time_ms ASC LIMIT 1",
+            "SELECT id, track_id, car_id, is_player, is_complete, lap_time_ms, recorded_at "
+            "FROM laps WHERE track_id = ? AND is_player = 1 AND is_complete = 1 "
+            "ORDER BY lap_time_ms ASC, id ASC LIMIT 1",
             (track_id,),
         ).fetchone()
         return self._row_to_lap(row) if row else None
 
     def get_top(self, track_id: int, limit: int = KEEP_BEST_PER_TRACK) -> list[Lap]:
         rows = self._conn.execute(
-            "SELECT id, track_id, car_id, is_player, lap_time_ms, recorded_at "
-            "FROM laps WHERE track_id = ? AND is_player = 1 "
-            "ORDER BY lap_time_ms ASC LIMIT ?",
+            "SELECT id, track_id, car_id, is_player, is_complete, lap_time_ms, recorded_at "
+            "FROM laps WHERE track_id = ? AND is_player = 1 AND is_complete = 1 "
+            "ORDER BY lap_time_ms ASC, id ASC LIMIT ?",
             (track_id, limit),
         ).fetchall()
         return [self._row_to_lap(r) for r in rows]
@@ -265,12 +296,15 @@ class SqliteLapRepository(LapRepository):
         """Linha da tabela `laps` → modelo de domínio, sem as amostras."""
         from datetime import datetime
 
-        lap_id, track_id, car_id, is_player, lap_time_ms, recorded_at = row
+        (
+            lap_id, track_id, car_id, is_player, is_complete, lap_time_ms, recorded_at
+        ) = row
         return Lap(
             id=lap_id,
             track_id=track_id,
             car_id=car_id,
             is_player=bool(is_player),
+            is_complete=bool(is_complete),
             lap_time_ms=lap_time_ms,
             start_time=datetime.fromtimestamp(recorded_at) if recorded_at else None,
             points=[],

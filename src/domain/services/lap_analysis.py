@@ -39,6 +39,7 @@ class LapSeries:
         self._points = points
         self._distances = [p.distance_m for p in points]
         self._channel_cache: dict[str, list[tuple[float, float]]] = {}
+        self._array_cache: dict[str, tuple[list, list]] = {}
 
     @property
     def is_empty(self) -> bool:
@@ -125,11 +126,24 @@ class LapSeries:
         return v0 + ratio * (v1 - v0)
 
     def _channel_arrays(self, channel: str):
+        """Listas paralelas (distâncias, valores) do canal, para busca binária.
+
+        Cacheado junto com os pares. Sem isto, cada `value_at` refazia o
+        `zip(*pairs)` sobre a série inteira — e a comparação de duas voltas,
+        que chama `value_at` centenas de vezes, gastava 408 ms só aqui numa
+        volta de 10.800 amostras.
+        """
+        cached = self._array_cache.get(channel)
+        if cached is not None:
+            return cached
         pairs = self._valid_points(channel)
         if not pairs:
-            return [], []
-        distances, values = zip(*pairs)
-        return list(distances), list(values)
+            result = ([], [])
+        else:
+            distances, values = zip(*pairs)
+            result = (list(distances), list(values))
+        self._array_cache[channel] = result
+        return result
 
     def elapsed_ms_at(self, distance_m: float) -> float | None:
         return self.value_at(distance_m, "elapsed_ms")

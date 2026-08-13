@@ -22,24 +22,58 @@ class SqliteTrackRepository(TrackRepository):
     def _conn(self):
         return self._db.connection
 
+    @staticmethod
+    def _row_to_track(row) -> Track:
+        track_id, name, raw = row
+        fractions = None
+        if raw:
+            try:
+                fractions = [float(x) for x in str(raw).split(",") if x.strip()]
+            except ValueError:
+                fractions = None
+        return Track(id=track_id, name=name, sector_fractions=fractions)
+
     def get_all(self) -> list[Track]:
         rows = self._conn.execute(
-            "SELECT id, name FROM tracks ORDER BY name ASC"
+            "SELECT id, name, sector_fractions FROM tracks ORDER BY name ASC"
         ).fetchall()
-        return [Track(id=r[0], name=r[1]) for r in rows]
+        return [self._row_to_track(r) for r in rows]
 
     def get_by_id(self, track_id: int) -> Track | None:
         row = self._conn.execute(
-            "SELECT id, name FROM tracks WHERE id = ?", (track_id,)
+            "SELECT id, name, sector_fractions FROM tracks WHERE id = ?", (track_id,)
         ).fetchone()
-        return Track(id=row[0], name=row[1]) if row else None
+        return self._row_to_track(row) if row else None
 
     def find_by_name(self, name: str) -> list[Track]:
         rows = self._conn.execute(
-            "SELECT id, name FROM tracks WHERE name LIKE ? ORDER BY name ASC",
+            "SELECT id, name, sector_fractions FROM tracks WHERE name LIKE ? "
+            "ORDER BY name ASC",
             (f"%{name}%",),
         ).fetchall()
-        return [Track(id=r[0], name=r[1]) for r in rows]
+        return [self._row_to_track(r) for r in rows]
+
+    def set_sector_fractions(
+        self, track_id: int, fractions: list[float] | None
+    ) -> None:
+        """Define onde caem os limites de setor desta pista.
+
+        Frações da distância total, crescentes, terminando em 1.0 (ex.:
+        `[0.31, 0.68, 1.0]`). `None` volta à divisão em partes iguais.
+
+        Só afeta voltas gravadas **a partir daí** — os tempos de setor são
+        calculados uma vez, na gravação. Recalcular o histórico inteiro seria
+        possível, mas mudaria silenciosamente números que o usuário já viu.
+        """
+        value = None
+        if fractions:
+            value = ",".join(f"{f:g}" for f in fractions)
+        with self._db.lock:
+            self._conn.execute(
+                "UPDATE tracks SET sector_fractions = ? WHERE id = ?",
+                (value, track_id),
+            )
+            self._conn.commit()
 
     def guess_by_length(
         self, lap_distance_m: float, tolerance_pct: float = 5.0

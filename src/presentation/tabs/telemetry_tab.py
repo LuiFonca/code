@@ -24,8 +24,11 @@ from PySide6.QtWidgets import (
 from ...application.viewmodels.telemetry_viewmodel import (
     AXIS_DISTANCE,
     AXIS_TIME,
+    SLIP_MODERATE_PCT,
+    SLIP_STABLE_PCT,
     LapDetail,
     TelemetryViewModel,
+    slip_level_label,
 )
 from ..widgets.widgets import format_ms
 from ..widgets.widgets_chart import SyncedMiniChart, TrackMapWidget
@@ -51,7 +54,7 @@ WHEEL_LABELS = {"fl": "Diant. Esq.", "fr": "Diant. Dir.", "rl": "Tras. Esq.", "r
 
 
 class _SlipIndicator(QFrame):
-    """Indicador central do mosaico de deriva: nível médio, com cor por faixa."""
+    """Indicador central do mosaico: índice médio de deslizamento, com faixa."""
 
     def __init__(self):
         super().__init__()
@@ -64,13 +67,14 @@ class _SlipIndicator(QFrame):
         self._value.setAlignment(Qt.AlignCenter)
         self._value.setStyleSheet("color: #ffffff; font-size: 30px; font-weight: 800;")
 
-        self._label = QLabel("DERIVA MÉDIA")
+        self._label = QLabel("ÍNDICE MÉDIO")
         self._label.setAlignment(Qt.AlignCenter)
         self._label.setObjectName("sectionHeader")
 
         self._verdict = QLabel("")
         self._verdict.setAlignment(Qt.AlignCenter)
         self._verdict.setStyleSheet("color: #c8cad0; font-size: 11px;")
+        self._verdict.setWordWrap(True)
 
         layout.addWidget(self._value)
         layout.addWidget(self._label)
@@ -78,14 +82,14 @@ class _SlipIndicator(QFrame):
 
     def set_pct(self, pct: float):
         self._value.setText(f"{pct:.1f}%")
-        if pct < 30:
-            color, verdict = "#3ddc84", "Aderência estável"
-        elif pct < 60:
-            color, verdict = "#f2c94c", "Deslizamento moderado"
+        if pct < SLIP_STABLE_PCT:
+            color = "#3ddc84"
+        elif pct < SLIP_MODERATE_PCT:
+            color = "#f2c94c"
         else:
-            color, verdict = "#ff5c5c", "Perda de aderência"
+            color = "#ff5c5c"
         self._value.setStyleSheet(f"color: {color}; font-size: 30px; font-weight: 800;")
-        self._verdict.setText(verdict)
+        self._verdict.setText(slip_level_label(pct))
 
     def clear(self):
         self._value.setText("--")
@@ -137,7 +141,16 @@ class TelemetryTab(QWidget):
         self._root.addWidget(self._section_header("SUSPENSÃO"))
         self.susp_charts = self._add_wheel_mosaic("")
 
-        self._root.addWidget(self._section_header("ÂNGULO DE DERIVA (SLIP ANGLE)"))
+        self._root.addWidget(
+            self._section_header("ÍNDICE DE DESLIZAMENTO DOS PNEUS  (0–100 %)")
+        )
+        slip_note = QLabel(
+            "Razão entre a velocidade da roda e a do solo, normalizada. "
+            "Não é ângulo em graus — o pacote do GT7 não transmite essa medida."
+        )
+        slip_note.setWordWrap(True)
+        slip_note.setStyleSheet("color: #8b93a7; font-size: 11px;")
+        self._root.addWidget(slip_note)
         self.slip_charts, self.slip_indicator = self._add_slip_mosaic()
 
         self._root.addWidget(self._section_header("TRAÇADO"))
@@ -235,7 +248,7 @@ class TelemetryTab(QWidget):
         charts = {}
         positions = {"fl": (0, 0), "fr": (0, 2), "rl": (1, 0), "rr": (1, 2)}
         for wheel, (r, c) in positions.items():
-            chart = SyncedMiniChart(f"{WHEEL_LABELS[wheel]} (graus)", height=110)
+            chart = SyncedMiniChart(f"{WHEEL_LABELS[wheel]} (%)", height=110)
             chart.hovered_at_distance.connect(self._on_hover)
             chart.hover_left.connect(self._on_hover_left)
             self._charts.append(chart)
@@ -323,7 +336,8 @@ class TelemetryTab(QWidget):
         for wheel, chart in self.slip_charts.items():
             chart.set_series(
                 [(WHEEL_LABELS[wheel], WHEEL_COLORS[wheel],
-                  self._vm.slip_angle_points(f"tire_slip_{wheel}"))]
+                  self._vm.slip_points(f"tire_slip_{wheel}"))],
+                y_range=(0, 100),
             )
         self.slip_indicator.set_pct(self._vm.average_slip_pct())
 
@@ -344,9 +358,15 @@ class TelemetryTab(QWidget):
             parts.append(f"Distância: {lap.distance_m:.0f} m")
             parts.append(f"Vel. média: {lap.avg_speed:.1f} km/h")
             parts.append(f"Vel. máxima: {lap.max_speed:.1f} km/h")
-            fuel = lap.fuel_used
-            if fuel is not None:
-                parts.append(f"Combustível: {fuel:.2f}")
+            # Sempre com unidade explícita: percentual do tanque quando a
+            # capacidade é conhecida, valor bruto rotulado quando não é.
+            fuel_pct = self._vm.fuel_used_pct()
+            if fuel_pct is not None:
+                parts.append(f"Combustível: {fuel_pct:.1f} % do tanque")
+            elif lap.fuel_used is not None:
+                parts.append(f"Combustível: {lap.fuel_used:.2f} (unidade do jogo)")
+        if not lap.is_complete:
+            parts.append("⚠ volta parcial — não conta como recorde")
         self._sector_panel.setText("   |   ".join(parts))
 
     # ---------- cursor sincronizado ----------

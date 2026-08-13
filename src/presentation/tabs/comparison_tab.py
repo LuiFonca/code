@@ -168,10 +168,12 @@ class ComparisonTab(QWidget):
             (self.chart_gear, "gear"),
             (self.chart_rpm, "rpm"),
         ):
+            # Séries vêm do ViewModel já reamostradas e cacheadas — montar a
+            # série crua a cada gráfico é o que fazia esta tela levar ~800 ms.
             chart.set_series(
                 [
-                    ("A", COLOR_A, sa.points(channel)),
-                    ("B", COLOR_B, sb.points(channel)),
+                    ("A", COLOR_A, self._vm.points_for("A", channel)),
+                    ("B", COLOR_B, self._vm.points_for("B", channel)),
                 ]
             )
 

@@ -59,6 +59,8 @@ class LiveViewModel(QObject):
         self._is_stale = False
         self._connected = False
 
+        self._tank_capacity: float | None = None
+
         self._bus.subscribe(TelemetryReceived, self._on_telemetry)
         self._bus.subscribe(DeltaUpdated, self._on_delta)
         self._bus.subscribe(ConnectionStateChanged, self._on_connection)
@@ -76,9 +78,28 @@ class LiveViewModel(QObject):
 
     # ---------- estado exposto ----------
 
+    def dispose(self) -> None:
+        """Para os temporizadores e cancela as inscrições."""
+        self._repaint_timer.stop()
+        self._watchdog.stop()
+        self._bus.unsubscribe(TelemetryReceived, self._on_telemetry)
+        self._bus.unsubscribe(DeltaUpdated, self._on_delta)
+        self._bus.unsubscribe(ConnectionStateChanged, self._on_connection)
+        self._bus.unsubscribe(LapCompleted, self._on_lap_completed)
+
     @property
     def is_stale(self) -> bool:
         return self._is_stale
+
+    @property
+    def tank_capacity(self) -> float | None:
+        """Capacidade do tanque, aprendida do pacote ao vivo.
+
+        Fica aqui porque só a telemetria em tempo real traz esse campo — as
+        voltas gravadas guardam o nível, não a capacidade. É o que permite às
+        outras telas mostrarem combustível em % em vez de valor bruto.
+        """
+        return self._tank_capacity
 
     @property
     def latest_point(self):
@@ -99,6 +120,9 @@ class LiveViewModel(QObject):
         # a renderização no caminho quente de 60 Hz.
         self._latest = event
         self._last_frame_at = time.monotonic()
+        capacity = getattr(event.frame, "fuel_capacity", None)
+        if capacity and capacity > 0:
+            self._tank_capacity = capacity
         if self._is_stale:
             self._is_stale = False
             self.stale_exited.emit()

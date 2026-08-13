@@ -67,6 +67,29 @@ class LapSaveFailed:
 
 
 @dataclass(frozen=True, slots=True)
+class LapsPurged:
+    """A política de retenção descartou voltas antigas.
+
+    Existe para que a poda deixe de ser invisível: antes, voltas simplesmente
+    sumiam do histórico sem nenhum sinal na interface."""
+
+    count: int
+    track_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LapDeleted:
+    """Volta removida pelo usuário.
+
+    O serviço de telemetria assina isto para largar a referência de delta
+    quando a volta apagada era justamente a melhor — sem o aviso, o delta
+    seguiria comparando contra uma volta que não existe mais."""
+
+    lap_id: int
+    track_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SessionStarted:
     session_id: int | None = None
     track_name: str | None = None

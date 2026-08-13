@@ -20,9 +20,10 @@ absoluto, de qualquer diretório, também funciona.
 
 `pycryptodome` não é opcional: os pacotes UDP do GT7 são cifrados com Salsa20.
 
-`src/` é autossuficiente — não depende da pasta `hanna_gt7_ai/`. O catálogo do
-jogo (`src/data/*.csv`) e o banco de voltas (`~/.hanna_gt7_ai/laps.db`, na sua
-pasta pessoal) são as únicas fontes externas.
+`src/` é o projeto inteiro. O catálogo do jogo fica em `src/data/*.csv`, e as
+voltas gravadas em `~/.hanna_gt7_ai/laps.db` — **na sua pasta pessoal**, não na
+do projeto. Esse caminho foi mantido para preservar o histórico de quem já usava
+a versão anterior; apagar a pasta do projeto não toca no banco.
 
 ---
 
@@ -111,7 +112,7 @@ O `Signal` faz o Qt usar conexão enfileirada e entregar na thread do assinante.
 
 ## O que cada arquivo faz
 
-### `domain/` — regras e contratos (879 linhas)
+### `domain/` — regras e contratos (903 linhas)
 
 Sem Qt, sem SQL, sem rede. A única exceção é `TelemetrySource`, que precisa de
 `Signal` — o porquê está em `interfaces/__init__.py`.
@@ -130,32 +131,33 @@ Sem Qt, sem SQL, sem rede. A única exceção é `TelemetrySource`, que precisa 
 **Por que alinhar por distância e não por tempo:** comparando por tempo, um
 trecho onde o piloto freia mais cedo desalinha toda a comparação dali em diante.
 
-### `application/` — orquestração e estado de tela (1437 linhas)
+### `application/` — orquestração e estado de tela (1899 linhas)
 
 | Arquivo | Responsabilidade |
 |---|---|
 | `services/telemetry_service.py` | Coração do fluxo. Detecta volta, integra distância, deriva G, converte DTO→domínio, publica eventos. Não conhece SQLite. |
 | `services/session_manager.py` | Decide se a volta é gravada. Separa "sem pista" de "modo replay" — motivos diferentes, mensagens diferentes. |
+| `services/lap_writer.py` | Fila de gravação numa thread própria, para o SQLite não travar a tela na linha de chegada. |
 | `events/event_bus.py` | `subscribe`/`unsubscribe`/`publish`. Handler que quebra não derruba os outros. |
-| `events/events.py` | 13 eventos como dataclasses imutáveis. |
+| `events/events.py` | 15 eventos como dataclasses imutáveis. |
 | `viewmodels/live_viewmodel.py` | Dois timers: repaint (desacopla renderização da chegada) e watchdog de stale. |
 | `viewmodels/history_viewmodel.py` | Lista, filtro e exclusão. Consultas em lote. |
 | `viewmodels/comparison_viewmodel.py` | Duas voltas → delta, setores, volta ideal. |
 | `viewmodels/telemetry_viewmodel.py` | Detalhe de uma volta; centraliza a escolha de eixo distância/tempo. |
 
-### `infrastructure/` — adaptadores (1550 linhas)
+### `infrastructure/` — adaptadores (1841 linhas)
 
 | Arquivo | Responsabilidade |
 |---|---|
 | `telemetry/gt7_protocol.py` | Salsa20 + 12 flags + offsets do pacote. Lógica pura, testável com pacote gravado. |
 | `telemetry/listener_thread.py` | QThread UDP (heartbeat 10s) + `Gt7TelemetrySource` que a adapta ao contrato. |
-| `repositories/sqlite_database.py` | Conexão, schema v5 e migrações. Caminho injetado (aceita `:memory:`). |
+| `repositories/sqlite_database.py` | Conexão, schema v6, migrações e verificação de colunas. Caminho injetado (aceita `:memory:`). |
 | `repositories/sqlite_lap_repository.py` | Voltas. `save` é uma transação única com rollback. Colunas derivadas do modelo. |
 | `repositories/sqlite_{car,track}_repository.py` | Carros e pistas do usuário. |
 | `repositories/csv_catalog.py` + 3 repos | Catálogo do jogo: 527 carros, 72 montadoras, 105 pistas. Somente leitura. |
 | `storage/file_lap_storage.py` | Esqueleto JSON (exportar/importar volta). `NotImplementedError`. |
 
-### `presentation/` — Views (2775 linhas)
+### `presentation/` — Views (2935 linhas)
 
 | Arquivo | Responsabilidade |
 |---|---|
@@ -177,7 +179,7 @@ fábricas de abas → `MainWindow`.
 
 ## O que a refatoração corrigiu
 
-| Antes (`hanna_gt7_ai/`) | Agora |
+| Antes (versão pré-refatoração) | Agora |
 |---|---|
 | 3 das 4 abas chamavam `lap_storage` direto — SQL dentro do widget | Views só conhecem ViewModels |
 | `LapRecorder`: 283 linhas, 5 responsabilidades, `init_db()` no construtor | `TelemetryService` + `SessionManager` |
@@ -202,7 +204,7 @@ Três só apareceram porque o smoke test exercitou o app montado de verdade:
    mas num `QComboBox` editável com `NoInsert` o `setCurrentText()` não move o
    `currentIndex` — `currentData()` devolve sempre o item 0. Com o catálogo de
    105 pistas carregado, qualquer pista digitada seria gravada como a primeira em
-   ordem alfabética. **Este bug está presente no `hanna_gt7_ai/` atual.**
+   ordem alfabética.
 
 3. **Render abortado no meio.** `set_sector_lines` espera pares
    `(posição, rótulo)`; recebia floats, e a exceção interrompia o desenho.
@@ -236,7 +238,7 @@ Verificado nesta migração:
 - **Smoke test** — com `excepthook`: zero exceções em 24 gráficos, troca de eixo,
   busca, comparação e criação de pista nova.
 
-`hanna_gt7_ai/` continua intacto e funcionando (`python hanna_gt7_ai/main.py`).
+A versão anterior do app foi removida do projeto — `src/` é a única base agora.
 
 ---
 

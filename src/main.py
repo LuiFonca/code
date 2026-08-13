@@ -85,7 +85,9 @@ def build_application() -> MainWindow:
     live_vm = LiveViewModel(event_bus)
     history_vm = HistoryViewModel(lap_repository, event_bus)
     comparison_vm = ComparisonViewModel(lap_repository, event_bus)
-    telemetry_vm = TelemetryViewModel(lap_repository, event_bus)
+    # O repositório de pistas entra aqui para a aba respeitar os limites de
+    # setor configurados por pista, em vez de sempre dividir em partes iguais.
+    telemetry_vm = TelemetryViewModel(lap_repository, event_bus, track_repository)
 
     # --- apresentação ---
     # Fábricas, não instâncias: a janela decide quando construir cada aba e não

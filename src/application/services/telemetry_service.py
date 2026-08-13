@@ -28,11 +28,14 @@ from ..events.events import (
     ConnectionStateChanged,
     DeltaUpdated,
     LapCompleted,
+    LapDeleted,
     LapDiscarded,
     LapSaveFailed,
+    LapsPurged,
     TelemetryReceived,
     TrackCandidatesDetected,
 )
+from .lap_writer import LapWriter
 from .session_manager import SessionManager
 
 GRAVITY = 9.81
@@ -46,11 +49,23 @@ CAR_REEMIT_INTERVAL = 180
 # parado ou quase parado, pequenas variações produziriam forças G absurdas.
 MIN_SPEED_FOR_G_KMH = 5.0
 MIN_SPEED_XZ_MS = 0.5
-MIN_DT_S = 0.001
 
 # Distância mínima para tentar adivinhar a pista pelo comprimento. Voltas muito
 # curtas são saídas de box ou abandonos, e casariam com qualquer coisa.
 MIN_DISTANCE_FOR_TRACK_GUESS_M = 100
+
+# Teto de sanidade para as forças G derivadas. Carro de corrida real não passa
+# de ~2 g; 5 g dá folga para qualquer caso legítimo e ainda barra o lixo. Sem
+# isto, um pacote perdido ou um reset de posição no jogo produz um valor
+# absurdo que é gravado no banco e estica a escala do gráfico, achatando a
+# volta inteira numa linha reta.
+MAX_G = 5.0
+
+# Intervalo aceitável entre amostras para derivar aceleração. A telemetria vem
+# a ~60 Hz (16,7 ms); fora desta faixa houve perda de pacote ou salto de tempo,
+# e a derivada não significa nada.
+MIN_DT_S = 0.001
+MAX_DT_S = 0.25
 
 
 class TelemetryService:
@@ -85,6 +100,12 @@ class TelemetryService:
         self._last_elapsed_ms: int | None = None
         self._lap_started_at: datetime | None = None
 
+        # A volta em curso foi observada desde o começo? Falso logo após
+        # conectar, porque o piloto já estava na pista quando o app abriu.
+        # Só vira verdadeiro depois de presenciar uma virada de volta — daí em
+        # diante o buffer cobre a volta inteira.
+        self._lap_observed_from_start = False
+
         self._prev_velocity_x: float | None = None
         self._prev_velocity_z: float | None = None
         self._prev_velocity_ms: int | None = None
@@ -99,22 +120,47 @@ class TelemetryService:
         self._comparator_best = LapComparator([])
         self._comparator_previous = LapComparator([])
 
+        # Gravação fora da thread da interface: ao cruzar a linha de chegada,
+        # escrever milhares de amostras no SQLite segurava a tela por dezenas
+        # de milissegundos — justamente quando o delta importa.
+        self._writer = LapWriter(
+            lap_repository=lap_repository,
+            on_saved=self._on_lap_written,
+            on_error=self._on_lap_write_failed,
+        )
+
         self._source.telemetry_stream.connect(self.on_frame)
         self._source.status_changed.connect(self._on_source_status)
         self._source.error_occurred.connect(self._on_source_error)
 
+        # Sem isto, excluir a melhor volta no histórico deixava o delta
+        # comparando contra uma volta que não existe mais.
+        self._bus.subscribe(LapDeleted, self._on_lap_deleted)
+
+    def _on_lap_deleted(self, event: LapDeleted) -> None:
+        """Recarrega a referência quando a volta apagada era a melhor."""
+        if event.track_id is not None and event.track_id != self._session.track_id:
+            return
+        self._load_best_reference()
+
     # ---------- ciclo de vida ----------
 
     def start(self) -> None:
-        self._reset_lap_state()
+        # observed_from_start=False: o piloto já podia estar na pista quando o
+        # app conectou, então a volta em curso não conta como completa.
+        self._reset_lap_state(observed_from_start=False)
         self._load_best_reference()
         self._session.start_session()
+        self._writer.start()
         self._source.start()
 
     def stop(self) -> None:
         self._source.stop()
         self._session.end_session()
-        self._reset_lap_state()
+        # Escoa a fila antes de encerrar: fechar logo após cruzar a linha não
+        # pode descartar a volta que acabou de ser feita.
+        self._writer.stop()
+        self._reset_lap_state(observed_from_start=False)
 
     @property
     def is_running(self) -> bool:
@@ -127,7 +173,7 @@ class TelemetryService:
         produziria um delta sem sentido. O comparador da volta anterior também
         é zerado, pela mesma razão.
         """
-        self._reset_lap_state()
+        self._reset_lap_state(observed_from_start=False)
         self._comparator_previous = LapComparator([])
         self._load_best_reference()
 
@@ -142,7 +188,14 @@ class TelemetryService:
             return
         self._comparator_best = LapComparator(self._laps.load_points(best.id))
 
-    def _reset_lap_state(self) -> None:
+    def _reset_lap_state(self, observed_from_start: bool = False) -> None:
+        """Zera o acúmulo da volta.
+
+        `observed_from_start` é o que distingue os dois motivos de zerar: uma
+        virada de volta presenciada (a próxima volta começa do zero de verdade)
+        de uma conexão nova ou troca de pista (a volta em curso já estava
+        rolando e o app só vê o pedaço final).
+        """
         self._buffer = []
         self._cumulative_distance = 0.0
         self._last_lap_count = None
@@ -151,6 +204,7 @@ class TelemetryService:
         self._prev_velocity_x = None
         self._prev_velocity_z = None
         self._prev_velocity_ms = None
+        self._lap_observed_from_start = observed_from_start
 
     # ---------- caminho quente (~60 Hz) ----------
 
@@ -158,16 +212,26 @@ class TelemetryService:
         """Processa um pacote. Chamado ~60x/s — tudo aqui precisa ser barato."""
 
         # Virada de volta: o contador mudou, então a volta anterior fechou.
+        # A partir daqui a próxima volta é observada desde o início.
         if self._last_lap_count is not None and frame.lap_count != self._last_lap_count:
             self._finalize_lap(frame.last_lap_ms)
+            self._lap_observed_from_start = True
 
-        # Pausado ou carregando: o tempo do jogo não corre, então acumular
-        # amostras aqui inflaria a distância e distorceria o delta. O contador
-        # de volta ainda é atualizado, para não perder a virada.
-        if getattr(frame, "is_paused", False) or getattr(frame, "is_loading", False):
-            self._last_lap_count = frame.lap_count
-            self._last_elapsed_ms = frame.current_lap_ms
-            return
+        # Pausado, carregando ou fora da pista: o tempo do jogo não corre (ou o
+        # carro não está em volta), então **acumular** aqui inflaria a distância
+        # e distorceria o delta.
+        #
+        # O que se suspende é só o acúmulo no buffer — a amostra continua sendo
+        # publicada e o painel ao vivo segue mostrando velocidade, marcha e
+        # pedais. Bloquear também a exibição apagaria a tela inteira sempre que
+        # uma dessas flags viesse marcada, e as flags do GT7 são justamente a
+        # parte do protocolo que veio de engenharia reversa: uma leitura errada
+        # não pode custar o dashboard.
+        suspend_accumulation = (
+            getattr(frame, "is_paused", False)
+            or getattr(frame, "is_loading", False)
+            or not getattr(frame, "is_on_track", True)
+        )
 
         g_lateral, g_longitudinal = self._compute_g_forces(frame)
 
@@ -175,25 +239,30 @@ class TelemetryService:
         # hodômetro por volta, e é a distância que alinha a comparação entre
         # voltas diferentes.
         if (
-            self._last_elapsed_ms is not None
+            not suspend_accumulation
+            and self._last_elapsed_ms is not None
             and frame.current_lap_ms >= self._last_elapsed_ms
         ):
             dt_s = (frame.current_lap_ms - self._last_elapsed_ms) / 1000
             self._cumulative_distance += (frame.speed_kmh / 3.6) * dt_s
 
-        if self._lap_started_at is None:
-            self._lap_started_at = datetime.now()
-
         point = self._frame_to_point(frame, g_lateral, g_longitudinal)
-        self._buffer.append(point)
+
+        if not suspend_accumulation:
+            if self._lap_started_at is None:
+                self._lap_started_at = datetime.now()
+            self._buffer.append(point)
 
         self._last_lap_count = frame.lap_count
         self._last_elapsed_ms = frame.current_lap_ms
 
         self._detect_car(frame)
 
+        # Publicado sempre: o painel ao vivo não depende de a volta estar
+        # sendo gravada.
         self._bus.publish(TelemetryReceived(point=point, frame=frame))
-        self._publish_deltas(frame.current_lap_ms)
+        if not suspend_accumulation:
+            self._publish_deltas(frame.current_lap_ms)
 
     def _compute_g_forces(self, frame) -> tuple[float, float]:
         """Força G lateral e longitudinal, derivando o vetor velocidade.
@@ -214,7 +283,9 @@ class TelemetryService:
             return 0.0, 0.0
 
         dt = (frame.current_lap_ms - self._prev_velocity_ms) / 1000.0
-        if dt <= MIN_DT_S:
+        if dt <= MIN_DT_S or dt > MAX_DT_S:
+            # Intervalo fora da faixa de 60 Hz: houve perda de pacote ou salto
+            # de tempo. Derivar aqui produziria uma aceleração fictícia.
             self._remember_velocity(frame)
             return 0.0, 0.0
 
@@ -231,7 +302,17 @@ class TelemetryService:
             g_lateral = (ax * right_x + az * right_z) / GRAVITY
 
         self._remember_velocity(frame)
-        return g_lateral, g_longitudinal
+        return self._clamp_g(g_lateral), self._clamp_g(g_longitudinal)
+
+    @staticmethod
+    def _clamp_g(value: float) -> float:
+        """Satura a força G no teto de sanidade.
+
+        Saturar em vez de descartar a amostra preserva o alinhamento por
+        distância: um buraco na série desalinharia a comparação entre voltas,
+        que é justamente o que o eixo de distância existe para garantir.
+        """
+        return max(-MAX_G, min(MAX_G, value))
 
     def _remember_velocity(self, frame) -> None:
         self._prev_velocity_x = frame.velocity_x
@@ -329,6 +410,7 @@ class TelemetryService:
                     TrackCandidatesDetected(names=[t.name for t in candidates[:5]])
                 )
 
+        is_complete = self._lap_observed_from_start
         lap = Lap(
             track_id=self._session.track_id,
             car_id=self._session.car_id,
@@ -336,46 +418,80 @@ class TelemetryService:
             start_time=self._lap_started_at,
             end_time=datetime.now(),
             is_player=self._session.is_player_mode,
+            is_complete=is_complete,
             points=points,
         )
 
         if not self._session.can_persist:
             # Mesmo sem gravar, a volta vira referência para o delta "vs volta
             # anterior" — é o que mantém o delta útil enquanto o piloto ainda
-            # não escolheu a pista.
-            self._comparator_previous = LapComparator(points)
+            # não escolheu a pista. Só se for completa: metade de volta como
+            # referência faria o delta morrer no meio da pista.
+            if is_complete:
+                self._comparator_previous = LapComparator(points)
             self._bus.publish(
                 LapDiscarded(
                     lap_time_ms=lap_time_ms,
                     reason=self._session.blocked_reason or "desconhecido",
                 )
             )
-            self._reset_lap_state()
+            self._reset_lap_state(observed_from_start=True)
             return
 
         try:
+            # Leitura é barata e precisa do estado de agora; a escrita é que
+            # sai do caminho quente.
             previous_best = self._laps.get_best(self._session.track_id)
-            lap_id = self._laps.save(lap)
-            lap.id = lap_id
-            is_best = previous_best is None or lap_time_ms < previous_best.lap_time_ms
+
+            # Volta incompleta nunca é recorde: o tempo é o oficial da volta
+            # inteira, mas as amostras cobrem só o pedaço observado. Ela é
+            # gravada (o tempo em si é verdadeiro e vale no histórico), porém
+            # não vira referência de nada.
+            is_best = is_complete and (
+                previous_best is None or lap_time_ms < previous_best.lap_time_ms
+            )
+
+            # Os comparadores só dependem das amostras que já estão em memória,
+            # então o delta da próxima volta fica correto imediatamente, sem
+            # esperar o banco.
+            if is_complete:
+                self._comparator_previous = LapComparator(points)
+                if is_best:
+                    self._comparator_best = LapComparator(points)
 
             self._session.register_lap(lap)
-            self._bus.publish(LapCompleted(lap=lap, lap_id=lap_id, is_best=is_best))
-
-            self._comparator_previous = LapComparator(points)
-            if is_best:
-                self._comparator_best = LapComparator(points)
+            self._writer.submit(lap, context=is_best)
         except Exception as exc:  # noqa: BLE001
-            # A falha vira evento visível. A versão antiga engolia isso num
-            # print(): o piloto completava a volta, via tudo normal na tela e
-            # só descobria a perda quando o histórico vinha vazio.
             self._bus.publish(
                 LapSaveFailed(
-                    message=f"Falha ao salvar volta: {exc}", lap_time_ms=lap_time_ms
+                    message=f"Falha ao preparar gravação: {exc}",
+                    lap_time_ms=lap_time_ms,
                 )
             )
         finally:
-            self._reset_lap_state()
+            self._reset_lap_state(observed_from_start=True)
+
+    # ---------- retorno da gravação (thread do gravador) ----------
+
+    def _on_lap_written(self, lap: Lap, lap_id: int, purged: int, is_best) -> None:
+        """Chamado na thread de gravação. Só publica eventos — o barramento faz
+        a troca de thread, e a interface recebe já na thread dela."""
+        lap.id = lap_id
+        if purged:
+            self._bus.publish(LapsPurged(count=purged, track_id=lap.track_id))
+        self._bus.publish(
+            LapCompleted(lap=lap, lap_id=lap_id, is_best=bool(is_best))
+        )
+
+    def _on_lap_write_failed(self, lap: Lap, exc: Exception) -> None:
+        """A falha vira evento visível. A versão antiga engolia isso num
+        print(): o piloto completava a volta, via tudo normal na tela e só
+        descobria a perda quando o histórico vinha vazio."""
+        self._bus.publish(
+            LapSaveFailed(
+                message=f"Falha ao salvar volta: {exc}", lap_time_ms=lap.lap_time_ms
+            )
+        )
 
     # ---------- repasse de estado da fonte ----------
 

@@ -28,11 +28,13 @@ DEFAULT_DB_PATH = Path.home() / ".hanna_gt7_ai" / "laps.db"
 # Incrementar sempre que uma coluna/tabela nova for necessária, adicionando a
 # migração correspondente em `_run_migrations`. Sem isso, o app quebra em
 # silêncio no banco de quem já usava a versão anterior.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Retenção por pista: as N mais rápidas (recordes) + as N mais recentes
 # (histórico cronológico). O resto é descartado ao salvar, para o banco não
-# crescer sem limite.
+# crescer sem limite. São apenas os **padrões** — o repositório aceita outros
+# valores pelo construtor, porque quem treina a mesma pista todo dia estoura
+# 50 voltas rápido.
 KEEP_BEST_PER_TRACK = 5
 KEEP_RECENT_PER_TRACK = 50
 
@@ -58,10 +60,60 @@ class SqliteDatabase:
 
         self._create_schema()
         self._run_migrations()
+        # Rede de segurança: as migrações são disparadas pelo carimbo de versão,
+        # então um banco cujo `user_version` não corresponde ao conteúdo real
+        # (backup restaurado pela metade, carimbo manual, migração interrompida)
+        # passaria batido e só quebraria em tempo de execução, com um erro de
+        # SQL incompreensível para o usuário. Conferir as colunas é barato e
+        # transforma esse cenário em nada.
+        self._ensure_columns()
         # Depois das migrações, nunca antes: os índices referenciam colunas
         # (is_player) que só existem a partir da v4. Num banco de usuário ainda
         # na v3, criá-los antes falha com "no such column" e o app não abre.
         self._create_indexes()
+
+    def _ensure_columns(self) -> None:
+        """Garante que toda coluna esperada exista, independente da versão."""
+        expected_frames = {
+            "elapsed_ms": "INTEGER NOT NULL DEFAULT 0",
+            "distance_m": "REAL", "speed_kmh": "REAL", "rpm": "REAL",
+            "gear": "INTEGER", "throttle": "REAL", "brake": "REAL",
+            "fuel_level": "REAL",
+            "tire_temp_fl": "REAL", "tire_temp_fr": "REAL",
+            "tire_temp_rl": "REAL", "tire_temp_rr": "REAL",
+            "position_x": "REAL", "position_z": "REAL",
+            "g_lateral": "REAL", "g_longitudinal": "REAL",
+            "suspension_fl": "REAL", "suspension_fr": "REAL",
+            "suspension_rl": "REAL", "suspension_rr": "REAL",
+            "tire_slip_fl": "REAL", "tire_slip_fr": "REAL",
+            "tire_slip_rl": "REAL", "tire_slip_rr": "REAL",
+            "turbo_boost": "REAL", "oil_temp": "REAL", "water_temp": "REAL",
+        }
+        existing = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(lap_frames)").fetchall()
+        }
+        for name, decl in expected_frames.items():
+            if name not in existing:
+                self._try_alter("lap_frames", f"{name} {decl}")
+
+        expected_laps = {
+            "car_id": "INTEGER REFERENCES cars(id)",
+            "is_player": "INTEGER NOT NULL DEFAULT 1",
+            "is_complete": "INTEGER NOT NULL DEFAULT 1",
+        }
+        existing = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(laps)").fetchall()
+        }
+        for name, decl in expected_laps.items():
+            if name not in existing:
+                self._try_alter("laps", f"{name} {decl}")
+
+        existing = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(tracks)").fetchall()
+        }
+        if "sector_fractions" not in existing:
+            self._try_alter("tracks", "sector_fractions TEXT")
+        self._conn.commit()
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -83,7 +135,8 @@ class SqliteDatabase:
             CREATE TABLE IF NOT EXISTS tracks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
-                created_at REAL NOT NULL
+                created_at REAL NOT NULL,
+                sector_fractions TEXT
             )
         """)
         conn.execute("""
@@ -96,9 +149,10 @@ class SqliteDatabase:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS laps (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                track_id INTEGER,
+                track_id INTEGER REFERENCES tracks(id),
                 car_id INTEGER REFERENCES cars(id),
                 is_player INTEGER NOT NULL DEFAULT 1,
+                is_complete INTEGER NOT NULL DEFAULT 1,
                 lap_time_ms INTEGER NOT NULL,
                 recorded_at REAL NOT NULL,
                 frame_count INTEGER NOT NULL
@@ -289,8 +343,85 @@ class SqliteDatabase:
             ):
                 self._try_alter("lap_frames", f"{col} REAL")
 
+        if current_version < 6:
+            self._migrate_to_v6()
+
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
+
+    def _migrate_to_v6(self) -> None:
+        """5 → 6: marca de volta completa, setores por pista e a chave
+        estrangeira que faltava em `laps.track_id`.
+
+        Três mudanças que precisam vir juntas porque duas delas exigem
+        reconstruir a tabela `laps` — o SQLite não adiciona restrição por ALTER.
+
+        1. `is_complete`: distingue volta gravada do início da que começou a ser
+           observada no meio (app conectado com a volta em andamento). Sem isso,
+           meia volta com o tempo cheio do jogo virava recorde.
+        2. `tracks.sector_fractions`: permite ajustar onde caem os limites de
+           setor por pista, em vez de assumir terços de distância.
+        3. `laps.track_id REFERENCES tracks(id)`: `car_id` sempre teve a
+           restrição, `track_id` não — dava para gravar volta apontando para
+           pista inexistente.
+
+        Voltas órfãs (apontando para pista que não existe) têm o `track_id`
+        zerado em vez de serem apagadas: elas já eram invisíveis nas listagens,
+        e destruir dado do usuário numa migração não se justifica.
+        """
+        conn = self._conn
+        self._try_alter("laps", "is_complete INTEGER NOT NULL DEFAULT 1")
+        self._try_alter("tracks", "sector_fractions TEXT")
+
+        columns = [r[1] for r in conn.execute("PRAGMA table_info(laps)").fetchall()]
+        has_fk = any(
+            r[2] == "tracks"
+            for r in conn.execute("PRAGMA foreign_key_list(laps)").fetchall()
+        )
+        if has_fk:
+            return  # banco criado do zero já nasce com a restrição
+
+        orphans = conn.execute(
+            "SELECT COUNT(*) FROM laps WHERE track_id IS NOT NULL "
+            "AND track_id NOT IN (SELECT id FROM tracks)"
+        ).fetchone()[0]
+        if orphans:
+            print(f"[schema v6] {orphans} volta(s) sem pista válida: track_id zerado.")
+
+        # A reconstrução precisa das FKs desligadas: `lap_frames` e `sector_times`
+        # referenciam `laps(id)` em cascata, e o DROP dispararia a exclusão delas.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.execute("""
+                CREATE TABLE laps_v6 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    track_id INTEGER REFERENCES tracks(id),
+                    car_id INTEGER REFERENCES cars(id),
+                    is_player INTEGER NOT NULL DEFAULT 1,
+                    is_complete INTEGER NOT NULL DEFAULT 1,
+                    lap_time_ms INTEGER NOT NULL,
+                    recorded_at REAL NOT NULL,
+                    frame_count INTEGER NOT NULL
+                )
+            """)
+            car_col = "car_id" if "car_id" in columns else "NULL"
+            player_col = "is_player" if "is_player" in columns else "1"
+            conn.execute(f"""
+                INSERT INTO laps_v6
+                    (id, track_id, car_id, is_player, is_complete,
+                     lap_time_ms, recorded_at, frame_count)
+                SELECT id,
+                       CASE WHEN track_id IN (SELECT id FROM tracks)
+                            THEN track_id ELSE NULL END,
+                       {car_col}, {player_col}, 1,
+                       lap_time_ms, recorded_at, frame_count
+                FROM laps
+            """)
+            conn.execute("DROP TABLE laps")
+            conn.execute("ALTER TABLE laps_v6 RENAME TO laps")
+            conn.commit()
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
 
     def _try_alter(self, table: str, column_def: str) -> None:
         """ADD COLUMN tolerante a coluna já existente."""
@@ -336,13 +467,45 @@ def reference_lap_distance(conn, track_id, exclude_lap_id=None) -> float | None:
     return totals[len(totals) // 2]
 
 
-def compute_sector_times(conn, lap_id: int, num_sectors: int, track_id=None) -> list[int]:
+def sector_fractions_for(conn, track_id) -> list[float] | None:
+    """Frações de distância onde os setores da pista terminam, ou None.
+
+    Guardadas como texto separado por vírgula em `tracks.sector_fractions`
+    (ex.: "0.31,0.68,1.0"). None significa "use a divisão padrão".
+
+    Existe porque o GT7 não transmite os pontos oficiais de setor: dividir a
+    volta em terços é um palpite, e quem conhece o circuito consegue alinhar os
+    cortes aos setores reais do traçado.
+    """
+    if track_id is None:
+        return None
+    row = conn.execute(
+        "SELECT sector_fractions FROM tracks WHERE id = ?", (track_id,)
+    ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        fractions = [float(x) for x in str(row[0]).split(",") if x.strip()]
+    except ValueError:
+        return None
+    # Precisam ser crescentes, dentro de (0, 1] — configuração inválida cai
+    # silenciosamente para o padrão em vez de produzir setores sem sentido.
+    if not fractions or any(f <= 0 or f > 1 for f in fractions):
+        return None
+    if any(b <= a for a, b in zip(fractions, fractions[1:])):
+        return None
+    return fractions
+
+
+def compute_sector_times(
+    conn, lap_id: int, num_sectors: int, track_id=None
+) -> list[int]:
     """Divide a volta em setores por **distância**, não por tempo.
 
-    Limitação conhecida: sem os pontos oficiais de setor da pista, a volta é
-    dividida em trechos de distância igual, ancorados na distância de referência
-    da pista. É aproximado, mas suficiente para localizar em que parte da volta
-    houve ganho ou perda.
+    Usa as frações configuradas para a pista quando existem; senão, divide em
+    trechos iguais. A divisão igual é aproximada — sem os pontos oficiais de
+    setor, é o melhor palpite — mas suficiente para localizar em que trecho da
+    volta houve ganho ou perda.
     """
     rows = conn.execute(
         "SELECT elapsed_ms, distance_m FROM lap_frames WHERE lap_id = ? ORDER BY seq ASC",
@@ -362,7 +525,12 @@ def compute_sector_times(conn, lap_id: int, num_sectors: int, track_id=None) -> 
         reference_distance = None
     total_distance = reference_distance or lap_total_distance
 
-    boundaries = [total_distance * (i / num_sectors) for i in range(1, num_sectors + 1)]
+    fractions = sector_fractions_for(conn, track_id)
+    if fractions:
+        num_sectors = len(fractions)
+    else:
+        fractions = [i / num_sectors for i in range(1, num_sectors + 1)]
+    boundaries = [total_distance * f for f in fractions]
 
     sector_times: list[int] = []
     last_boundary_ms = rows[0][0]

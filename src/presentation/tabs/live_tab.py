@@ -156,6 +156,57 @@ class _PedalBar(QFrame):
         self._pct.setText(f"{v}%")
 
 
+class _AidsRow(QFrame):
+    """Estado das assistências e do corte de giro, aceso quando atuam.
+
+    Os quatro indicadores vêm do bitfield de flags do pacote, que era
+    decodificado e jogado fora. Ficam apagados até atuarem, para não competir
+    com velocidade e delta na hora de olhar de relance.
+    """
+
+    LABELS = {
+        "tcs": ("TCS", "#f2c94c"),
+        "asm": ("ASM", "#4f7cff"),
+        "limiter": ("CORTE", "#ff5c5c"),
+        "handbrake": ("FREIO MÃO", "#ff9f4f"),
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("card")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 6, 14, 6)
+        layout.setSpacing(8)
+
+        title = QLabel("ASSISTÊNCIAS")
+        title.setObjectName("sectionHeader")
+        layout.addWidget(title)
+        layout.addStretch()
+
+        self._pills: dict[str, QLabel] = {}
+        for key, (text, _color) in self.LABELS.items():
+            pill = QLabel(text)
+            pill.setAlignment(Qt.AlignCenter)
+            pill.setMinimumWidth(64)
+            self._pills[key] = pill
+            layout.addWidget(pill)
+        self.set_states({})
+
+    def set_states(self, states: dict):
+        for key, pill in self._pills.items():
+            text, color = self.LABELS[key]
+            if states.get(key):
+                pill.setStyleSheet(
+                    f"background-color: {color}; color: #12141a; font-size: 11px; "
+                    "font-weight: 800; border-radius: 8px; padding: 3px 8px;"
+                )
+            else:
+                pill.setStyleSheet(
+                    "background-color: #23262f; color: #5a6070; font-size: 11px; "
+                    "font-weight: 700; border-radius: 8px; padding: 3px 8px;"
+                )
+
+
 class LiveDashboardTab(QWidget):
     def __init__(self, view_model: LiveViewModel):
         super().__init__()
@@ -207,6 +258,12 @@ class LiveDashboardTab(QWidget):
         for c in (self.card_lap, self.card_laptime, self.card_fuel):
             info_row.addWidget(c)
         root.addLayout(info_row)
+
+        # Assistências: já chegam em todo pacote e antes eram descartadas.
+        # Saber que o controle de tração cortou potência numa saída de curva
+        # muda a leitura do gráfico de acelerador.
+        self.aids_row = _AidsRow()
+        root.addWidget(self.aids_row)
 
         pedals_frame = QFrame()
         pedals_frame.setObjectName("card")
@@ -271,6 +328,13 @@ class LiveDashboardTab(QWidget):
             else:
                 self.card_fuel.set_value(f"{point.fuel_level:.1f}")
 
+            self.aids_row.set_states({
+                "tcs": getattr(frame, "tcs_active", False),
+                "asm": getattr(frame, "asm_active", False),
+                "limiter": getattr(frame, "rev_limiter_active", False),
+                "handbrake": bool(getattr(frame, "flags", 0) & (1 << 6)),
+            })
+
             if (
                 self._last_lap_count is not None
                 and frame.lap_count != self._last_lap_count
@@ -307,6 +371,7 @@ class LiveDashboardTab(QWidget):
         self.pedal_brake.set_value(0)
         self.card_delta.set_delta(None)
         self.card_delta_prev.set_delta(None)
+        self.aids_row.set_states({})
 
     def _save_ghost(self):
         points = self.track_map.get_trail_points("atual")

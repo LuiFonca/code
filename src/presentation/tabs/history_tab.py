@@ -122,9 +122,17 @@ class HistoryTab(QWidget):
 
         for r, row in enumerate(rows):
             lap = row.lap
-            trophy = "🏆" if row.is_best else ""
+            # Troféu para o recorde; aviso para a volta parcial, que tem tempo
+            # verdadeiro mas dados de só um pedaço — sem a marca, o usuário
+            # acharia que o app perdeu o recorde dele.
+            if row.is_best:
+                mark, mark_sort = "🏆", 0
+            elif not row.is_complete:
+                mark, mark_sort = "⚠", 2
+            else:
+                mark, mark_sort = "", 1
             cells = [
-                _SortableItem(trophy, 0 if row.is_best else 1),
+                _SortableItem(mark, mark_sort),
                 _SortableItem(str(lap.id or "--"), lap.id or 0),
                 _SortableItem(format_ms(lap.lap_time_ms), lap.lap_time_ms),
             ]
@@ -148,6 +156,13 @@ class HistoryTab(QWidget):
             for c, item in enumerate(cells):
                 if row.is_best:
                     item.setForeground(Qt.green)
+                elif not row.is_complete:
+                    item.setForeground(Qt.gray)
+                    item.setToolTip(
+                        "Volta parcial: o app começou a observar com ela já em "
+                        "andamento. O tempo é o do jogo, mas os dados cobrem só "
+                        "parte do traçado — por isso não conta como recorde."
+                    )
                 self._table.setItem(r, c, item)
 
         self._table.setSortingEnabled(True)

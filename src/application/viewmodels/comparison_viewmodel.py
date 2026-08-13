@@ -16,7 +16,8 @@ from ...domain.services.lap_analysis import (
     sector_times_from_series,
 )
 from ..events.event_bus import EventBus
-from ..events.events import LapCompleted
+from ..events.events import LapCompleted, LapDeleted, LapsPurged
+from .telemetry_viewmodel import resample
 
 NUM_SECTORS = 3
 
@@ -79,8 +80,49 @@ class ComparisonViewModel(QObject):
         self._bus = event_bus
         self._track_id: int | None = None
         self._result = ComparisonResult()
+        self._series_cache: dict[tuple[str, str], list] = {}
 
-        self._bus.subscribe(LapCompleted, lambda _e: self.refresh_lap_list())
+        # Mesma razão do TelemetryViewModel: sem reagir a exclusão e poda, os
+        # dois seletores continuariam oferecendo voltas que já não existem.
+        self._on_laps_changed = lambda _e: self._reload_after_change()
+        for event_type in (LapCompleted, LapDeleted, LapsPurged):
+            self._bus.subscribe(event_type, self._on_laps_changed)
+
+    def _reload_after_change(self) -> None:
+        self.refresh_lap_list()
+        result = self._result
+        gone = [
+            lap.id
+            for lap in (result.lap_a, result.lap_b)
+            if lap is not None and lap.id is not None
+            and self._laps.get_by_id(lap.id) is None
+        ]
+        if gone:
+            self._result = ComparisonResult()
+            self._series_cache.clear()
+
+    def dispose(self) -> None:
+        """Cancela as inscrições e libera as séries em cache."""
+        for event_type in (LapCompleted, LapDeleted, LapsPurged):
+            self._bus.unsubscribe(event_type, self._on_laps_changed)
+        self._series_cache.clear()
+
+    def points_for(self, side: str, channel: str) -> list[tuple[float, float]]:
+        """Série de um canal de um dos lados, reamostrada e cacheada.
+
+        Antes desta mudança, comparar duas voltas de ~10.000 amostras levava
+        818 ms: cada gráfico montava a série crua de novo a cada render.
+        """
+        if not self._result.is_valid:
+            return []
+        key = (side, channel)
+        cached = self._series_cache.get(key)
+        if cached is not None:
+            return cached
+        series = self._result.series_a if side == "A" else self._result.series_b
+        out = resample(series.points(channel)) if series.has_channel(channel) else []
+        self._series_cache[key] = out
+        return out
 
     @property
     def result(self) -> ComparisonResult:
@@ -114,6 +156,8 @@ class ComparisonViewModel(QObject):
         if series_a.is_empty or series_b.is_empty:
             self.error.emit("Uma das voltas não tem amostras suficientes.")
             return
+
+        self._series_cache.clear()
 
         # Os limites de setor saem do trecho comum às duas voltas: usar a
         # distância de cada uma separadamente faria "setor 2" cair em pontos

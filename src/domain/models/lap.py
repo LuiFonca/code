@@ -28,6 +28,11 @@ class Lap:
     start_time: datetime | None = None
     end_time: datetime | None = None
     is_player: bool = True
+    # False quando o app começou a observar com a volta já em andamento. O tempo
+    # vem do jogo e é da volta inteira, mas as amostras cobrem só um pedaço —
+    # por isso uma volta incompleta nunca pode virar recorde nem referência de
+    # delta, ainda que seu tempo seja o menor.
+    is_complete: bool = True
     points: list[TelemetryPoint] = field(default_factory=list)
 
     @property

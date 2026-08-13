@@ -37,6 +37,7 @@ from ..application.events.events import (
     LapCompleted,
     LapDiscarded,
     LapSaveFailed,
+    LapsPurged,
     TrackCandidatesDetected,
 )
 from ..application.services.session_manager import SessionManager
@@ -199,6 +200,7 @@ class MainWindow(QMainWindow):
         self._bus.subscribe(LapSaveFailed, self._on_lap_save_failed)
         self._bus.subscribe(CarDetected, self._on_car_detected)
         self._bus.subscribe(TrackCandidatesDetected, self._on_track_candidates)
+        self._bus.subscribe(LapsPurged, self._on_laps_purged)
 
     # ---------- seletores ----------
 
@@ -446,6 +448,18 @@ class MainWindow(QMainWindow):
         prefix = "🏁 Nova melhor volta salva" if event.is_best else "🏁 Volta salva"
         self._reset_log_style()
         self.log_label.setText(f"{prefix}: {formatted} (id {event.lap_id})")
+
+    def _on_laps_purged(self, event: LapsPurged):
+        """Avisa quando a retenção descarta voltas antigas.
+
+        Antes isso acontecia em silêncio: o usuário via o histórico encolher
+        sem entender por quê."""
+        plural = "s" if event.count > 1 else ""
+        self._reset_log_style()
+        self.log_label.setText(
+            f"{event.count} volta{plural} antiga{plural} removida{plural} pelo limite "
+            "de histórico da pista. Os melhores tempos são sempre preservados."
+        )
 
     def _on_lap_discarded(self, event: LapDiscarded):
         self._reset_log_style()

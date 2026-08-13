@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, Signal
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.models.lap import Lap
 from ..events.event_bus import EventBus
-from ..events.events import LapCompleted
+from ..events.events import LapCompleted, LapDeleted, LapsPurged
 
 
 @dataclass(slots=True)
@@ -25,6 +25,11 @@ class LapRow:
     car_name: str | None
     sector_times: list[int | None]
     is_best: bool
+    # Volta observada só em parte (app conectado com ela já em andamento). O
+    # tempo é verdadeiro, mas os dados cobrem um pedaço — por isso ela nunca
+    # é recorde, e a tabela precisa dizer isso em vez de deixar o usuário
+    # achar que o app perdeu o recorde dele.
+    is_complete: bool = True
 
 
 class HistoryViewModel(QObject):
@@ -47,8 +52,17 @@ class HistoryViewModel(QObject):
         self._rows: list[LapRow] = []
 
         # Volta nova gravada = tabela desatualizada. Recarregar por evento evita
-        # que a View precise saber quando pedir refresh.
-        self._bus.subscribe(LapCompleted, lambda _e: self.refresh())
+        # que a View precise saber quando pedir refresh. A poda por retenção
+        # também muda a tabela, e antes não avisava ninguém.
+        self._on_lap_completed = lambda _e: self.refresh()
+        self._on_laps_purged = lambda _e: self.refresh()
+        self._bus.subscribe(LapCompleted, self._on_lap_completed)
+        self._bus.subscribe(LapsPurged, self._on_laps_purged)
+
+    def dispose(self) -> None:
+        """Cancela as inscrições no barramento."""
+        self._bus.unsubscribe(LapCompleted, self._on_lap_completed)
+        self._bus.unsubscribe(LapsPurged, self._on_laps_purged)
 
     @property
     def rows(self) -> list[LapRow]:
@@ -91,16 +105,21 @@ class HistoryViewModel(QObject):
             else {}
         )
 
-        best_time = min(
-            (lap.lap_time_ms for lap in laps if lap.lap_time_ms > 0), default=None
-        )
+        # O troféu vem do mesmo critério que o repositório usa para escolher a
+        # referência do delta: volta completa, menor tempo, desempate pelo id
+        # mais antigo. Comparar com o mínimo aqui daria troféu para as duas
+        # voltas num empate, e podia marcar uma volta incompleta que nunca
+        # seria a referência.
+        best = self._laps.get_best(self._track_id)
+        best_id = best.id if best else None
 
         self._rows = [
             LapRow(
                 lap=lap,
                 car_name=car_names.get(lap.id),
                 sector_times=sectors.get(lap.id, []),
-                is_best=(lap.lap_time_ms == best_time and best_time is not None),
+                is_best=(lap.id == best_id),
+                is_complete=lap.is_complete,
             )
             for lap in laps
         ]
@@ -109,6 +128,10 @@ class HistoryViewModel(QObject):
     def delete_lap(self, lap_id: int) -> None:
         try:
             self._laps.delete(lap_id)
+            # Avisa o serviço de telemetria: se a volta apagada era a melhor,
+            # o delta ao vivo estaria comparando contra algo que não existe
+            # mais até a próxima troca de pista.
+            self._bus.publish(LapDeleted(lap_id=lap_id, track_id=self._track_id))
             self.refresh()
         except Exception as exc:  # noqa: BLE001
             self.error.emit(f"Não foi possível excluir a volta: {exc}")
@@ -120,6 +143,7 @@ class HistoryViewModel(QObject):
             return
         try:
             self._laps.delete_by_track(self._track_id)
+            self._bus.publish(LapDeleted(lap_id=-1, track_id=self._track_id))
             self.refresh()
         except Exception as exc:  # noqa: BLE001
             self.error.emit(f"Não foi possível limpar os dados: {exc}")
