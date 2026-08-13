@@ -139,6 +139,23 @@ MUTACOES = [
     ("F7 sessao segura amostras", "src/domain/models/session.py",
      "registro = replace(lap, points=[])", "registro = lap",
      "test_sessao_longa_nao_acumula_amostras_na_memoria"),
+
+    # A medicao dentro do app so vale se o composition root a ligar de fato.
+    ("F7 medicao ligada no app", "src/main.py",
+     "session_health=session_health,", "session_health=None,",
+     "test_app_monta_a_medicao_e_o_botao"),
+
+    # Uma reconexao nao pode virar "buraco no fluxo": o intervalo entre
+    # desconectar e reconectar afundaria a taxa media de uma sessao perfeita.
+    ("F7 reconexao nao e buraco", "src/application/services/session_health.py",
+     "        if estado in (\"recebendo\", \"conectando\"):\n"
+     "            if self._ultima is not None:\n"
+     "                self.quedas += 1\n"
+     "            self._ultima = None",
+     "        if estado in (\"recebendo\", \"conectando\"):\n"
+     "            if self._ultima is not None:\n"
+     "                self.quedas += 1",
+     "test_reconexao_sem_aviso_de_queda_tambem_nao_vira_interrupcao"),
 ]
 
 

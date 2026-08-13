@@ -1,25 +1,26 @@
 """
-Validação de sessão longa com o console de verdade.
+Validação de sessão longa **sem o app aberto**.
 
-A Fase 7 pede o que nenhum teste automatizado alcança: horas de telemetria
-real, com o jogo pausando, carregando, entrando e saindo de pista, e a rede
-oscilando. O que dá para automatizar — memória, acúmulo de estado, vazamento
-de thread — já está em `tests/test_sessao_longa.py`, com voltas sintéticas.
+Na maioria dos casos você não precisa desta ferramenta: a mesma medição está
+dentro do app, no botão 📊 da barra de conexão, e lá ela observa o fluxo que o
+app já recebe. Use esta versão só quando quiser medir a rede sem abrir a
+interface — por exemplo, para separar problema de rede de problema do app.
 
-O que falta é medir a *realidade*: a taxa de pacotes se mantém? há buracos?
-o quaternion de orientação chega válido o tempo todo, ou zera em algumas
-situações (replay, câmera de fora, pausa)? Essas perguntas não têm resposta
-sem o PS5, e olhar a tela do app não responde nenhuma delas.
+Por que as duas não rodam juntas
+---------------------------------
+UDP unicast entrega cada pacote a **um** socket, não a todos os que estão
+escutando a porta. Duas cópias ouvindo a 33740 não recebem o mesmo fluxo: uma
+fica com ele e a outra seca. `SO_REUSEPORT` não resolve — ele só permite o
+segundo `bind`, e é aí que mora a armadilha, porque nada falha visivelmente: o
+app simplesmente para de receber.
 
-Esta ferramenta faz a medição no lugar do olho. Rode em paralelo com o jogo:
+Por isso esta ferramenta agora **exige a porta livre** e diz isso claramente
+em vez de roubar o fluxo em silêncio.
 
     python3 src/tools/soak_check.py 192.168.15.156 --minutos 60
 
-Ela não grava nada, não abre a interface e não disputa nada com o app — usa a
-mesma porta em modo compartilhado, então pode rodar com o app aberto.
-
-Ao final imprime um relatório com o que passou e o que não passou. Me mande a
-saída: é o dado que fecha a Fase 7.
+Feche o app antes. Para medir com o app aberto — que é o caso normal, porque
+aí as voltas também são gravadas — use o botão 📊 dentro dele.
 """
 
 import argparse
@@ -199,22 +200,22 @@ def main() -> int:
     args = parser.parse_args()
 
     print(f"Sessão longa — alvo {args.ip}, por {args.minutos:.0f} minutos.")
-    print("Pode deixar o app aberto: esta ferramenta divide a porta com ele.")
+    print("O app precisa estar FECHADO: a porta de captura atende um só de cada")
+    print("vez. Com o app aberto, use o botão 📊 dentro dele.")
     print("Ctrl-C encerra e imprime o relatório do que já foi medido.\n")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # SO_REUSEADDR e não SO_REUSEPORT: o primeiro apenas permite reusar um
+    # endereço em TIME_WAIT, o segundo permitiria duas cópias ligadas na mesma
+    # porta — que é exatamente o que não pode acontecer aqui.
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    if hasattr(socket, "SO_REUSEPORT"):
-        # Sem isto, rodar junto com o app dá "endereço em uso" — e o ponto da
-        # ferramenta é justamente medir a sessão real, com o app funcionando.
-        try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except OSError:
-            pass
     try:
         sock.bind(("0.0.0.0", RECEIVE_PORT))
     except OSError as e:
-        print(f"Não foi possível abrir a porta {RECEIVE_PORT}: {e}")
+        print(f"A porta {RECEIVE_PORT} já está em uso: {e}\n")
+        print("O app (ou outra ferramenta de telemetria) está com ela.")
+        print("Feche o app e rode de novo — ou, melhor, use o botão 📊 dentro")
+        print("do app, que faz esta mesma medição sem disputar a porta.")
         return 1
     sock.settimeout(1.0)
 

@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         set_ps_ip: Callable[[str], None] | None = None,
         config: AppConfig | None = None,
         on_config_changed: Callable[[AppConfig], None] | None = None,
+        session_health=None,
     ):
         super().__init__()
         self.setWindowTitle("HANNA GT7 AI")
@@ -87,6 +88,9 @@ class MainWindow(QMainWindow):
         self._set_ps_ip = set_ps_ip
         self._config = config or AppConfig()
         self._on_config_changed = on_config_changed
+        # Opcional: sem ele o botão de relatório avisa que a medição não está
+        # ativa, em vez de a janela quebrar.
+        self._health = session_health
         # Enquanto True, mensagens genéricas de estado não sobrescrevem o erro
         # mostrado ao usuário. Ver `_on_connection_changed`.
         self._error_sticky = False
@@ -169,6 +173,17 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self._on_stop_clicked)
         self.stop_button.setEnabled(False)
 
+        self.health_button = QPushButton("📊")
+        self.health_button.setObjectName("stopButton")
+        self.health_button.setToolTip(
+            "Relatório da sessão: taxa de pacotes, interrupções no fluxo e "
+            "validade da orientação do carro.\n"
+            "É a medição de sessão longa — antes ela vivia numa ferramenta "
+            "separada, que disputava a porta de captura com o app."
+        )
+        self.health_button.setFixedWidth(38)
+        self.health_button.clicked.connect(self._show_session_report)
+
         self.prefs_button = QPushButton("⚙")
         self.prefs_button.setObjectName("stopButton")
         self.prefs_button.setToolTip("Preferências")
@@ -184,10 +199,57 @@ class MainWindow(QMainWindow):
         for w in (
             self.track_input, self.car_input, self.player_mode_checkbox,
             self.ip_input, self.connect_button, self.stop_button,
-            self.prefs_button, self.status_pill,
+            self.health_button, self.prefs_button, self.status_pill,
         ):
             layout.addWidget(w)
         return frame
+
+    def _show_session_report(self):
+        """Mostra o relatório de saúde da sessão em andamento.
+
+        Texto selecionável de propósito: o uso previsto é copiar e mandar.
+        """
+        from PySide6.QtWidgets import (
+            QDialog,
+            QDialogButtonBox,
+            QPlainTextEdit,
+            QVBoxLayout as _QVBoxLayout,
+        )
+
+        if self._health is None:
+            texto = "A medição de sessão não está ativa nesta instalação."
+        else:
+            texto = self._health.relatorio()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Relatório da sessão")
+        dialog.resize(620, 480)
+        layout = _QVBoxLayout(dialog)
+
+        campo = QPlainTextEdit(texto)
+        campo.setReadOnly(True)
+        # Fonte monoespaçada: o relatório é alinhado em colunas.
+        fonte = QFont("Menlo")
+        fonte.setStyleHint(QFont.Monospace)
+        fonte.setPointSize(11)
+        campo.setFont(fonte)
+        layout.addWidget(campo)
+
+        botoes = QDialogButtonBox(QDialogButtonBox.Close)
+        copiar = botoes.addButton("Copiar", QDialogButtonBox.ActionRole)
+        copiar.clicked.connect(lambda: self._copy_to_clipboard(campo.toPlainText()))
+        botoes.rejected.connect(dialog.reject)
+        layout.addWidget(botoes)
+
+        dialog.exec()
+
+    @staticmethod
+    def _copy_to_clipboard(texto: str) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(texto)
 
     def _open_preferences(self):
         """Abre as preferências e aplica o que for aplicável em tempo real.

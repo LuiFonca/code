@@ -30,6 +30,7 @@ if __package__ in (None, ""):
 from PySide6.QtWidgets import QApplication
 
 from .application.events.event_bus import EventBus
+from .application.services.session_health import SessionHealth
 from .application.services.session_manager import SessionManager
 from .application.services.telemetry_service import TelemetryService
 from .application.viewmodels.comparison_viewmodel import ComparisonViewModel
@@ -93,6 +94,10 @@ def build_application() -> MainWindow:
         car_name_resolver=car_catalog.get_full_name,
         config=config,
     )
+    # Observa o fluxo que o app já recebe. Vive aqui, e não numa ferramenta
+    # separada, porque UDP unicast entrega cada pacote a um socket só: uma
+    # ferramenta externa escutando a mesma porta rouba o fluxo do app.
+    session_health = SessionHealth(event_bus)
 
     live_vm = LiveViewModel(event_bus, config)
     history_vm = HistoryViewModel(lap_repository, event_bus)
@@ -144,6 +149,7 @@ def build_application() -> MainWindow:
         set_ps_ip=telemetry_source.set_ps_ip,
         config=config,
         on_config_changed=on_config_changed,
+        session_health=session_health,
     )
 
 
