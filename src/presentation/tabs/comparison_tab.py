@@ -24,17 +24,17 @@ from ...application.viewmodels.comparison_viewmodel import (
 )
 from ..widgets.widgets import format_ms
 from ..widgets.widgets_chart import SyncedMiniChart, TrackMapWidget
+from .chart_tab_base import ChartTabBase
 
 COLOR_A = "#4f7cff"
 COLOR_B = "#ff9f4f"
 COLOR_DELTA = "#f2c94c"
 
 
-class ComparisonTab(QWidget):
+class ComparisonTab(ChartTabBase):
     def __init__(self, view_model: ComparisonViewModel):
         super().__init__()
         self._vm = view_model
-        self._charts: list[SyncedMiniChart] = []
         self._build_ui()
 
         self._vm.laps_available.connect(self._on_laps_available)
@@ -61,21 +61,21 @@ class ComparisonTab(QWidget):
 
         # O delta vem primeiro de propósito: é a leitura que responde "onde eu
         # ganhei ou perdi tempo", que é a pergunta da tela.
-        self.chart_delta = self._add_chart("Delta (s) — positivo = B mais lento", 150)
-        self.chart_speed = self._add_chart("Velocidade (km/h)")
-        self.chart_throttle = self._add_chart("Acelerador (%)")
-        self.chart_brake = self._add_chart("Freio (%)")
-        self.chart_gear = self._add_chart("Marcha")
-        self.chart_rpm = self._add_chart("RPM")
+        self.chart_delta = self.add_chart("Delta (s) — positivo = B mais lento", 150)
+        self.chart_speed = self.add_chart("Velocidade (km/h)")
+        self.chart_throttle = self.add_chart("Acelerador (%)")
+        self.chart_brake = self.add_chart("Freio (%)")
+        self.chart_gear = self.add_chart("Marcha")
+        self.chart_rpm = self.add_chart("RPM")
 
-        self._root.addWidget(self._header("SETORES"))
+        self._root.addWidget(self.section_header("SETORES"))
         self._sector_grid = QGridLayout()
         sector_frame = QFrame()
         sector_frame.setObjectName("card")
         sector_frame.setLayout(self._sector_grid)
         self._root.addWidget(sector_frame)
 
-        self._root.addWidget(self._header("TRAÇADO"))
+        self._root.addWidget(self.section_header("TRAÇADO"))
         self.track_map = TrackMapWidget("Traçado das duas voltas", height=260)
         self._root.addWidget(self.track_map)
 
@@ -113,19 +113,6 @@ class ComparisonTab(QWidget):
         row.addWidget(self._compare_button)
         row.addStretch()
         return row
-
-    def _header(self, text: str) -> QLabel:
-        label = QLabel(text)
-        label.setObjectName("sectionHeader")
-        return label
-
-    def _add_chart(self, title: str, height: int = 130) -> SyncedMiniChart:
-        chart = SyncedMiniChart(title, height=height)
-        chart.hovered_at_distance.connect(self._on_hover)
-        chart.hover_left.connect(self._on_hover_left)
-        self._charts.append(chart)
-        self._root.addWidget(chart)
-        return chart
 
     # ---------- reação ao ViewModel ----------
 
@@ -177,12 +164,7 @@ class ComparisonTab(QWidget):
                 ]
             )
 
-        # O widget espera pares (posição, rótulo).
-        sector_lines = [
-            (d, f"S{i + 1}") for i, d in enumerate(result.sector_boundaries)
-        ]
-        for chart in self._charts:
-            chart.set_sector_lines(sector_lines)
+        self.apply_sector_lines(result.sector_boundaries)
 
         self._render_sectors(result)
         self._render_summary(result)
@@ -241,10 +223,3 @@ class ComparisonTab(QWidget):
             parts.append(f"Volta ideal combinada: {format_ms(result.theoretical_best_ms)}")
         self._summary.setText("   |   ".join(parts))
 
-    def _on_hover(self, x_value: float):
-        for chart in self._charts:
-            chart.show_crosshair(x_value)
-
-    def _on_hover_left(self):
-        for chart in self._charts:
-            chart.hide_crosshair()

@@ -32,6 +32,7 @@ from ...application.viewmodels.telemetry_viewmodel import (
 )
 from ..widgets.widgets import format_ms
 from ..widgets.widgets_chart import SyncedMiniChart, TrackMapWidget
+from .chart_tab_base import ChartTabBase
 
 COLOR_SPEED = "#4f7cff"
 COLOR_RPM = "#e06cff"
@@ -96,11 +97,10 @@ class _SlipIndicator(QFrame):
         self._verdict.setText("")
 
 
-class TelemetryTab(QWidget):
+class TelemetryTab(ChartTabBase):
     def __init__(self, view_model: TelemetryViewModel):
         super().__init__()
         self._vm = view_model
-        self._charts: list[SyncedMiniChart] = []
         self._build_ui()
 
         self._vm.laps_available.connect(self._on_laps_available)
@@ -128,21 +128,25 @@ class TelemetryTab(QWidget):
         self._root.setContentsMargins(4, 4, 4, 4)
         self._root.setSpacing(8)
 
-        self.chart_speed = self._add_chart("Velocidade (km/h)")
-        self.chart_rpm = self._add_chart("RPM")
-        self.chart_pedals = self._add_chart("Acelerador / Freio (%)")
-        self.chart_gear = self._add_chart("Marcha")
-        self.chart_g = self._add_chart("Força G (lateral / longitudinal)")
-        self.chart_fuel = self._add_chart("Combustível")
+        self.chart_speed = self.add_chart("Velocidade (km/h)")
+        self.chart_rpm = self.add_chart("RPM")
+        self.chart_pedals = self.add_chart("Acelerador / Freio (%)")
+        self.chart_gear = self.add_chart("Marcha")
+        self.chart_g = self.add_chart("Força G (lateral / longitudinal)")
+        self.chart_fuel = self.add_chart("Combustível")
 
-        self._root.addWidget(self._section_header("TEMPERATURA DOS PNEUS"))
-        self.tire_charts = self._add_wheel_mosaic("°C")
+        self._root.addWidget(self.section_header("TEMPERATURA DOS PNEUS"))
+        frame_pneus, self.tire_charts = self.add_wheel_mosaic(
+            WHEEL_LABELS, WHEEL_COLORS, unit="°C"
+        )
+        self._root.addWidget(frame_pneus)
 
-        self._root.addWidget(self._section_header("SUSPENSÃO"))
-        self.susp_charts = self._add_wheel_mosaic("")
+        self._root.addWidget(self.section_header("SUSPENSÃO"))
+        frame_susp, self.susp_charts = self.add_wheel_mosaic(WHEEL_LABELS, WHEEL_COLORS)
+        self._root.addWidget(frame_susp)
 
         self._root.addWidget(
-            self._section_header("ÍNDICE DE DESLIZAMENTO DOS PNEUS  (0–100 %)")
+            self.section_header("ÍNDICE DE DESLIZAMENTO DOS PNEUS  (0–100 %)")
         )
         slip_note = QLabel(
             "Razão entre a velocidade da roda e a do solo, normalizada. "
@@ -151,9 +155,13 @@ class TelemetryTab(QWidget):
         slip_note.setWordWrap(True)
         slip_note.setStyleSheet("color: #8b93a7; font-size: 11px;")
         self._root.addWidget(slip_note)
-        self.slip_charts, self.slip_indicator = self._add_slip_mosaic()
+        self.slip_indicator = _SlipIndicator()
+        frame_slip, self.slip_charts = self.add_wheel_mosaic(
+            WHEEL_LABELS, WHEEL_COLORS, unit="%", central_widget=self.slip_indicator
+        )
+        self._root.addWidget(frame_slip)
 
-        self._root.addWidget(self._section_header("TRAÇADO"))
+        self._root.addWidget(self.section_header("TRAÇADO"))
         self.track_map = TrackMapWidget("Traçado da volta", height=260)
         self._root.addWidget(self.track_map)
 
@@ -200,70 +208,6 @@ class TelemetryTab(QWidget):
         row.addStretch()
         return row
 
-    def _section_header(self, text: str) -> QLabel:
-        label = QLabel(text)
-        label.setObjectName("sectionHeader")
-        return label
-
-    def _add_chart(self, title: str, height: int = 130) -> SyncedMiniChart:
-        chart = SyncedMiniChart(title, height=height)
-        chart.hovered_at_distance.connect(self._on_hover)
-        chart.hover_left.connect(self._on_hover_left)
-        self._charts.append(chart)
-        self._root.addWidget(chart)
-        return chart
-
-    def _add_wheel_mosaic(self, unit: str) -> dict[str, SyncedMiniChart]:
-        """Grade 2×2 com um gráfico por roda.
-
-        Quatro linhas no mesmo gráfico se sobrepõem quando os valores são
-        próximos — que é o caso normal. Separadas, dá para ver a assimetria
-        entre lados, que é o que interessa no acerto do carro.
-        """
-        frame = QFrame()
-        grid = QGridLayout(frame)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(6)
-
-        charts = {}
-        for i, wheel in enumerate(("fl", "fr", "rl", "rr")):
-            title = f"{WHEEL_LABELS[wheel]}" + (f" ({unit})" if unit else "")
-            chart = SyncedMiniChart(title, height=110)
-            chart.hovered_at_distance.connect(self._on_hover)
-            chart.hover_left.connect(self._on_hover_left)
-            self._charts.append(chart)
-            charts[wheel] = chart
-            grid.addWidget(chart, i // 2, i % 2)
-
-        self._root.addWidget(frame)
-        return charts
-
-    def _add_slip_mosaic(self):
-        """Mosaico de deriva: 2×2 por roda + indicador central."""
-        frame = QFrame()
-        grid = QGridLayout(frame)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(6)
-
-        charts = {}
-        positions = {"fl": (0, 0), "fr": (0, 2), "rl": (1, 0), "rr": (1, 2)}
-        for wheel, (r, c) in positions.items():
-            chart = SyncedMiniChart(f"{WHEEL_LABELS[wheel]} (%)", height=110)
-            chart.hovered_at_distance.connect(self._on_hover)
-            chart.hover_left.connect(self._on_hover_left)
-            self._charts.append(chart)
-            charts[wheel] = chart
-            grid.addWidget(chart, r, c)
-
-        indicator = _SlipIndicator()
-        grid.addWidget(indicator, 0, 1, 2, 1)
-        grid.setColumnStretch(0, 3)
-        grid.setColumnStretch(1, 2)
-        grid.setColumnStretch(2, 3)
-
-        self._root.addWidget(frame)
-        return charts, indicator
-
     # ---------- reação ao ViewModel ----------
 
     def _on_laps_available(self, laps: list):
@@ -294,12 +238,7 @@ class TelemetryTab(QWidget):
         by_time = detail.axis_mode == AXIS_TIME
         # As linhas de setor marcam distância; no eixo temporal não têm posição
         # definida, então saem em vez de aparecerem no lugar errado.
-        # O widget espera pares (posição, rótulo).
-        sectors = (
-            []
-            if by_time
-            else [(d, f"S{i + 1}") for i, d in enumerate(detail.sector_boundaries)]
-        )
+        sectors = [] if by_time else detail.sector_boundaries
 
         self.chart_speed.set_series(
             [("Velocidade", COLOR_SPEED, self._vm.points_for("speed_kmh"))]
@@ -341,8 +280,7 @@ class TelemetryTab(QWidget):
             )
         self.slip_indicator.set_pct(self._vm.average_slip_pct())
 
-        for chart in self._charts:
-            chart.set_sector_lines(sectors)
+        self.apply_sector_lines(sectors)
 
         self.track_map.clear()
         trail = detail.series.position_points()
@@ -369,12 +307,3 @@ class TelemetryTab(QWidget):
             parts.append("⚠ volta parcial — não conta como recorde")
         self._sector_panel.setText("   |   ".join(parts))
 
-    # ---------- cursor sincronizado ----------
-
-    def _on_hover(self, x_value: float):
-        for chart in self._charts:
-            chart.show_crosshair(x_value)
-
-    def _on_hover_left(self):
-        for chart in self._charts:
-            chart.hide_crosshair()
