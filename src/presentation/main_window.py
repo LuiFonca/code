@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..application.events.event_bus import EventBus
+from ..domain.config import AppConfig
 from ..application.events.events import (
     CarDetected,
     ConnectionStateChanged,
@@ -46,6 +47,7 @@ from ..domain.interfaces.car_repository import CarRepository
 from ..domain.interfaces.track_repository import TrackRepository
 from ..domain.models.car import Car
 from ..domain.models.track import Track
+from .preferences_dialog import PreferencesDialog
 from .styles import DARK_STYLE, DANGER, STATUS_COLORS, STATUS_LABELS, TEXT_MUTED
 from .widgets.widgets import format_ms
 
@@ -66,6 +68,8 @@ class MainWindow(QMainWindow):
         tab_factories: dict[str, Callable[[], QWidget]],
         on_track_changed: Callable[[int | None], None] | None = None,
         set_ps_ip: Callable[[str], None] | None = None,
+        config: AppConfig | None = None,
+        on_config_changed: Callable[[AppConfig], None] | None = None,
     ):
         super().__init__()
         self.setWindowTitle("HANNA GT7 AI")
@@ -81,6 +85,8 @@ class MainWindow(QMainWindow):
         self._track_catalog = track_catalog
         self._on_track_changed = on_track_changed
         self._set_ps_ip = set_ps_ip
+        self._config = config or AppConfig()
+        self._on_config_changed = on_config_changed
         # Enquanto True, mensagens genéricas de estado não sobrescrevem o erro
         # mostrado ao usuário. Ver `_on_connection_changed`.
         self._error_sticky = False
@@ -127,7 +133,7 @@ class MainWindow(QMainWindow):
 
         self.ip_input = QLineEdit()
         self.ip_input.setPlaceholderText("IP do PlayStation (ex: 192.168.1.50)")
-        self.ip_input.setText(DEFAULT_PS_IP)
+        self.ip_input.setText(self._config.ps_ip)
         self.ip_input.setMinimumWidth(140)
         self.ip_input.setMaximumWidth(240)
 
@@ -163,6 +169,12 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self._on_stop_clicked)
         self.stop_button.setEnabled(False)
 
+        self.prefs_button = QPushButton("⚙")
+        self.prefs_button.setObjectName("stopButton")
+        self.prefs_button.setToolTip("Preferências")
+        self.prefs_button.setFixedWidth(38)
+        self.prefs_button.clicked.connect(self._open_preferences)
+
         self.status_pill = QLabel()
         self.status_pill.setObjectName("statusPill")
         self._set_status_pill("desconectado")
@@ -171,10 +183,43 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         for w in (
             self.track_input, self.car_input, self.player_mode_checkbox,
-            self.ip_input, self.connect_button, self.stop_button, self.status_pill,
+            self.ip_input, self.connect_button, self.stop_button,
+            self.prefs_button, self.status_pill,
         ):
             layout.addWidget(w)
         return frame
+
+    def _open_preferences(self):
+        """Abre as preferências e aplica o que for aplicável em tempo real.
+
+        Nem tudo pode mudar com a captura em andamento: o intervalo do toque e
+        os limites de retenção são lidos na construção da thread e do
+        repositório. A tela avisa isso, e aqui só o que é seguro é propagado.
+        """
+        from ..domain.config import save_config
+
+        dialog = PreferencesDialog(self._config, self)
+        if dialog.exec() != PreferencesDialog.Accepted:
+            return
+
+        nova = dialog.result_config()
+        try:
+            save_config(nova)
+        except OSError as exc:
+            self.log_label.setText(f"⚠ Não foi possível salvar as preferências: {exc}")
+            return
+
+        self._config = nova
+        if not self._service.is_running:
+            self.ip_input.setText(nova.ps_ip)
+        if self._on_config_changed is not None:
+            self._on_config_changed(nova)
+
+        self._reset_log_style()
+        self.log_label.setText(
+            "Preferências salvas. Ajustes de rede e de histórico valem a partir "
+            "da próxima conexão."
+        )
 
     def _build_info_bar(self) -> QWidget:
         frame = QFrame()

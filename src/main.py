@@ -36,6 +36,7 @@ from .application.viewmodels.comparison_viewmodel import ComparisonViewModel
 from .application.viewmodels.history_viewmodel import HistoryViewModel
 from .application.viewmodels.live_viewmodel import LiveViewModel
 from .application.viewmodels.telemetry_viewmodel import TelemetryViewModel
+from .domain.config import load_config
 from .infrastructure.repositories.csv_car_repository import CsvCarRepository
 from .infrastructure.repositories.csv_catalog import CsvCatalog
 from .infrastructure.repositories.csv_track_repository import CsvTrackRepository
@@ -54,12 +55,22 @@ from .presentation.tabs.telemetry_tab import TelemetryTab
 def build_application() -> MainWindow:
     """Monta o grafo de dependências, de baixo para cima."""
 
+    # --- configuração ---
+    # Lida uma vez, injetada em todo mundo. É o único ponto do app que conhece
+    # o arquivo de configuração.
+    config = load_config()
+
     # --- barramento ---
     event_bus = EventBus()
 
     # --- infraestrutura ---
     database = SqliteDatabase()
-    lap_repository = SqliteLapRepository(database)
+    lap_repository = SqliteLapRepository(
+        database,
+        num_sectors=config.num_sectors,
+        keep_best=config.keep_best_per_track,
+        keep_recent=config.keep_recent_per_track,
+    )
     track_repository = SqliteTrackRepository(database)
     car_repository = SqliteCarRepository(database)
 
@@ -67,7 +78,7 @@ def build_application() -> MainWindow:
     track_catalog = CsvTrackRepository(catalog)
     car_catalog = CsvCarRepository(catalog)
 
-    telemetry_source = Gt7TelemetrySource(DEFAULT_PS_IP)
+    telemetry_source = Gt7TelemetrySource(config.ps_ip, config=config)
 
     # --- aplicação ---
     session_manager = SessionManager(event_bus)
@@ -80,14 +91,18 @@ def build_application() -> MainWindow:
         # Só a função de resolver nome, não o repositório inteiro: o serviço
         # precisa de "id -> Montadora Modelo", nada mais.
         car_name_resolver=car_catalog.get_full_name,
+        config=config,
+        on_config_changed=on_config_changed,
     )
 
-    live_vm = LiveViewModel(event_bus)
+    live_vm = LiveViewModel(event_bus, config)
     history_vm = HistoryViewModel(lap_repository, event_bus)
     comparison_vm = ComparisonViewModel(lap_repository, event_bus)
     # O repositório de pistas entra aqui para a aba respeitar os limites de
     # setor configurados por pista, em vez de sempre dividir em partes iguais.
-    telemetry_vm = TelemetryViewModel(lap_repository, event_bus, track_repository)
+    telemetry_vm = TelemetryViewModel(
+        lap_repository, event_bus, track_repository, config
+    )
 
     # --- apresentação ---
     # Fábricas, não instâncias: a janela decide quando construir cada aba e não
@@ -98,6 +113,19 @@ def build_application() -> MainWindow:
         "Telemetria": lambda: TelemetryTab(telemetry_vm),
         "Comparação": lambda: ComparisonTab(comparison_vm),
     }
+
+    def on_config_changed(nova) -> None:
+        """Propaga o que pode mudar sem reiniciar o app.
+
+        Fonte de telemetria e ViewModels leem a config a cada uso; o
+        repositório e a thread de captura leem na construção, então esses
+        valores só valem na próxima sessão.
+        """
+        telemetry_source._config = nova
+        telemetry_service._config = nova
+        live_vm._config = nova
+        telemetry_vm._config = nova
+        telemetry_vm._series_cache.clear()
 
     def on_track_changed(track_id: int | None) -> None:
         """Propaga a troca de pista para os ViewModels que filtram por ela."""
@@ -115,6 +143,8 @@ def build_application() -> MainWindow:
         tab_factories=tab_factories,
         on_track_changed=on_track_changed,
         set_ps_ip=telemetry_source.set_ps_ip,
+        config=config,
+        on_config_changed=on_config_changed,
     )
 
 

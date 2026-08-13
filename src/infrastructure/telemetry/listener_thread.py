@@ -20,6 +20,7 @@ import time
 
 from PySide6.QtCore import QThread, Signal
 
+from ...domain.config import AppConfig
 from ...domain.interfaces.telemetry_source import TelemetrySource
 from .gt7_protocol import TelemetryFrame, salsa20_decode
 
@@ -56,9 +57,11 @@ class _ListenerThread(QThread):
     status_changed = Signal(str)
     error_occurred = Signal(str)
 
-    def __init__(self, ps_ip: str, parent=None):
+    def __init__(self, ps_ip: str, heartbeat_interval: float = HEARTBEAT_INTERVAL,
+                 parent=None):
         super().__init__(parent)
         self.ps_ip = ps_ip
+        self._heartbeat_interval = heartbeat_interval
         self._running = False
 
     def run(self) -> None:
@@ -81,7 +84,9 @@ class _ListenerThread(QThread):
             while self._running:
                 now = time.time()
                 interval = (
-                    HEARTBEAT_INTERVAL if got_first_packet else HEARTBEAT_INTERVAL_INITIAL
+                    self._heartbeat_interval
+                    if got_first_packet
+                    else HEARTBEAT_INTERVAL_INITIAL
                 )
                 if now - last_heartbeat > interval:
                     try:
@@ -168,9 +173,11 @@ class _ListenerThread(QThread):
 class Gt7TelemetrySource(TelemetrySource):
     """Implementação de `TelemetrySource` para o GT7 via UDP."""
 
-    def __init__(self, ps_ip: str, parent=None):
+    def __init__(self, ps_ip: str | None = None, config: AppConfig | None = None,
+                 parent=None):
         super().__init__(parent)
-        self._ps_ip = ps_ip
+        self._config = config or AppConfig()
+        self._ps_ip = ps_ip or self._config.ps_ip
         self._thread: _ListenerThread | None = None
 
     @property
@@ -190,7 +197,9 @@ class Gt7TelemetrySource(TelemetrySource):
         if self.is_running:
             return  # idempotente, conforme o contrato da interface
 
-        self._thread = _ListenerThread(self._ps_ip)
+        self._thread = _ListenerThread(
+            self._ps_ip, heartbeat_interval=self._config.heartbeat_interval_s
+        )
         # Reencaminhamento sinal-a-sinal: o Qt repassa a emissão sem handler
         # intermediário, preservando a thread de origem para que a conexão
         # enfileirada aconteça no assinante final.

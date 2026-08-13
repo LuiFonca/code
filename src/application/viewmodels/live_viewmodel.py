@@ -6,6 +6,7 @@ import time
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from ...domain.config import AppConfig
 from ..events.event_bus import EventBus
 from ..events.events import (
     ConnectionStateChanged,
@@ -48,9 +49,15 @@ class LiveViewModel(QObject):
     stale_exited = Signal()
     lap_completed = Signal(object)          # LapCompleted
 
-    def __init__(self, event_bus: EventBus, parent: QObject | None = None):
+    def __init__(
+        self,
+        event_bus: EventBus,
+        config: AppConfig | None = None,
+        parent: QObject | None = None,
+    ):
         super().__init__(parent)
         self._bus = event_bus
+        self._config = config or AppConfig()
 
         self._latest: TelemetryReceived | None = None
         self._latest_delta_best: float | None = None
@@ -153,7 +160,7 @@ class LiveViewModel(QObject):
     def _check_stale(self) -> None:
         if not self._connected or self._last_frame_at is None or self._is_stale:
             return
-        if time.monotonic() - self._last_frame_at > STALE_TIMEOUT_S:
+        if time.monotonic() - self._last_frame_at > self._config.stale_timeout_s:
             self._is_stale = True
             self._latest_delta_best = None
             self._latest_delta_previous = None

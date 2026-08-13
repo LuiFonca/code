@@ -19,7 +19,7 @@ MUTACOES = [
      "test_01_volta_parcial_nao_vira_recorde"),
 
     ("02 indice slip", "src/application/viewmodels/telemetry_viewmodel.py",
-     "return min(abs(slip_value) / SLIP_SATURATION, 1.0) * 100.0",
+     "return min(abs(slip_value) / saturation, 1.0) * 100.0",
      "return min(abs(slip_value) * 12.0, 12.0)",
      "test_02_indice_deslizamento_sem_unidade_falsa"),
 
@@ -44,7 +44,8 @@ MUTACOES = [
      "test_06_gravacao_fora_da_thread_da_interface"),
 
     ("07 teto de forca G", "src/application/services/telemetry_service.py",
-     "return max(-MAX_G, min(MAX_G, value))", "return value",
+     "        teto = self._config.max_g\n        return max(-teto, min(teto, value))",
+     "        return value",
      "test_07_forca_g_saturada"),
 
     ("08 exibicao ao vivo", "src/application/services/telemetry_service.py",

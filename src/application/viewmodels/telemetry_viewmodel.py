@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QObject, Signal
 
+from ...domain.config import AppConfig
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.models.lap import Lap
 from ...domain.services.lap_analysis import LapSeries, sector_boundaries_m
@@ -53,7 +54,7 @@ class LapDetail:
         return self.series is not None and not self.series.is_empty
 
 
-def slip_index_pct(slip_value: float) -> float:
+def slip_index_pct(slip_value: float, saturation: float = SLIP_SATURATION) -> float:
     """Valor bruto de slip → índice de 0 a 100 %.
 
     Sem conversão para graus: o dado de origem é uma razão, e transformá-lo em
@@ -61,7 +62,7 @@ def slip_index_pct(slip_value: float) -> float:
     serve para o que interessa na prática — comparar rodas entre si e voltas
     entre si — sem afirmar uma unidade física que não se sustenta.
     """
-    return min(abs(slip_value) / SLIP_SATURATION, 1.0) * 100.0
+    return min(abs(slip_value) / saturation, 1.0) * 100.0
 
 
 def slip_level_label(pct: float) -> str:
@@ -103,11 +104,13 @@ class TelemetryViewModel(QObject):
         lap_repository: LapRepository,
         event_bus: EventBus,
         track_repository=None,
+        config: AppConfig | None = None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
         self._laps = lap_repository
         self._bus = event_bus
+        self._config = config or AppConfig()
         # Opcional: sem ele os setores caem na divisão em partes iguais.
         self._tracks = track_repository
         self._track_id: int | None = None
@@ -210,7 +213,7 @@ class TelemetryViewModel(QObject):
             track = self._tracks.get_by_id(self._track_id)
         if track is not None and track.sector_fractions:
             return [series.max_distance * f for f in track.sector_fractions]
-        return sector_boundaries_m(series.max_distance, NUM_SECTORS)
+        return sector_boundaries_m(series.max_distance, self._config.num_sectors)
 
     # ---------- séries para os gráficos ----------
 
@@ -240,13 +243,16 @@ class TelemetryViewModel(QObject):
             if self._axis_mode == AXIS_TIME
             else series.points(channel)
         )
-        out = resample(raw)
+        out = resample(raw, self._config.max_plot_points)
         self._series_cache[key] = out
         return out
 
     def slip_points(self, channel: str) -> list[tuple[float, float]]:
         """Série de um canal de slip como índice de 0 a 100 %."""
-        return [(x, slip_index_pct(v)) for x, v in self.points_for(channel)]
+        saturacao = self._config.slip_saturation
+        return [
+            (x, slip_index_pct(v, saturacao)) for x, v in self.points_for(channel)
+        ]
 
     def has_channel(self, channel: str) -> bool:
         return self._detail.is_valid and self._detail.series.has_channel(channel)
@@ -266,7 +272,10 @@ class TelemetryViewModel(QObject):
         points = self._detail.series.points_raw
         if not points:
             return 0.0
-        return sum(slip_index_pct(p.tire_slip_avg) for p in points) / len(points)
+        saturacao = self._config.slip_saturation
+        return sum(
+            slip_index_pct(p.tire_slip_avg, saturacao) for p in points
+        ) / len(points)
 
     def fuel_used_pct(self) -> float | None:
         """Combustível gasto na volta, em % do tanque.

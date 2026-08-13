@@ -16,6 +16,7 @@ import math
 from datetime import datetime
 from typing import Callable
 
+from ...domain.config import AppConfig
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.interfaces.telemetry_source import TelemetrySource
 from ...domain.interfaces.track_repository import TrackRepository
@@ -83,7 +84,9 @@ class TelemetryService:
         event_bus: EventBus,
         track_catalog: TrackRepository | None = None,
         car_name_resolver: Callable[[int], str | None] | None = None,
+        config: AppConfig | None = None,
     ):
+        self._config = config or AppConfig()
         self._source = telemetry_source
         self._laps = lap_repository
         self._session = session_manager
@@ -304,15 +307,15 @@ class TelemetryService:
         self._remember_velocity(frame)
         return self._clamp_g(g_lateral), self._clamp_g(g_longitudinal)
 
-    @staticmethod
-    def _clamp_g(value: float) -> float:
+    def _clamp_g(self, value: float) -> float:
         """Satura a força G no teto de sanidade.
 
         Saturar em vez de descartar a amostra preserva o alinhamento por
         distância: um buraco na série desalinharia a comparação entre voltas,
         que é justamente o que o eixo de distância existe para garantir.
         """
-        return max(-MAX_G, min(MAX_G, value))
+        teto = self._config.max_g
+        return max(-teto, min(teto, value))
 
     def _remember_velocity(self, frame) -> None:
         self._prev_velocity_x = frame.velocity_x
