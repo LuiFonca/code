@@ -1,0 +1,21 @@
+# Bytecode do Python — gerado a cada execução, nunca faz parte do projeto.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Banco de voltas: fica em ~/.hanna_gt7_ai/, mas cópias de teste podem
+# aparecer na pasta do projeto durante depuração.
+*.db
+*.db-journal
+
+# Sistema operacional / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
