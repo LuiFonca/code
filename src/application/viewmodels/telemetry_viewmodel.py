@@ -257,6 +257,47 @@ class TelemetryViewModel(QObject):
     def has_channel(self, channel: str) -> bool:
         return self._detail.is_valid and self._detail.series.has_channel(channel)
 
+    # ---------- ângulo de deriva ----------
+    #
+    # Medida distinta do índice de deslizamento, e por isso exposta em métodos
+    # próprios: o índice diz quanto as rodas escorregam em relação ao solo, o
+    # ângulo diz quanto o carro está atravessado em relação a para onde aponta.
+    # As duas convivem — voltas gravadas antes do schema v8 têm só a primeira.
+
+    def has_slip_angle(self) -> bool:
+        """True quando a volta carregada tem o ângulo gravado."""
+        return self.has_channel("slip_angle_deg")
+
+    def slip_angle_points(self) -> list[tuple[float, float]]:
+        return self.points_for("slip_angle_deg")
+
+    def peak_slip_angle_deg(self) -> float | None:
+        """Maior ângulo em módulo na volta, preservando o sinal.
+
+        O pico é o número que interessa na leitura: a média fica perto de zero
+        porque curvas para lados opostos se cancelam.
+        """
+        pontos = self._valid_slip_angles()
+        if not pontos:
+            return None
+        return max(pontos, key=abs)
+
+    def average_slip_angle_deg(self) -> float | None:
+        """Média do módulo do ângulo — quanto o carro andou atravessado."""
+        pontos = self._valid_slip_angles()
+        if not pontos:
+            return None
+        return sum(abs(v) for v in pontos) / len(pontos)
+
+    def _valid_slip_angles(self) -> list[float]:
+        if not self._detail.is_valid:
+            return []
+        return [
+            p.slip_angle_deg
+            for p in self._detail.series.points_raw
+            if p.slip_angle_deg is not None
+        ]
+
     @property
     def axis_max(self) -> float:
         """Fim do eixo ativo — distância total ou duração da volta."""

@@ -42,6 +42,7 @@ COLOR_GEAR = "#f2c94c"
 COLOR_FUEL = "#f2994a"
 COLOR_G_LAT = "#ff9f4f"
 COLOR_G_LONG = "#3ddc84"
+COLOR_SLIP_ANGLE = "#00d5c8"
 
 # Uma cor por roda, reaproveitada nos três mosaicos (pneu, suspensão, slip) —
 # assim a mesma roda tem sempre a mesma cor, em qualquer painel.
@@ -149,8 +150,9 @@ class TelemetryTab(ChartTabBase):
             self.section_header("ÍNDICE DE DESLIZAMENTO DOS PNEUS  (0–100 %)")
         )
         slip_note = QLabel(
-            "Razão entre a velocidade da roda e a do solo, normalizada. "
-            "Não é ângulo em graus — o pacote do GT7 não transmite essa medida."
+            "Razão entre a velocidade da roda e a do solo, normalizada — quanto "
+            "cada pneu escorrega. Mede coisa diferente do ângulo de deriva "
+            "abaixo, que é a atitude do carro inteiro."
         )
         slip_note.setWordWrap(True)
         slip_note.setStyleSheet("color: #8b93a7; font-size: 11px;")
@@ -160,6 +162,8 @@ class TelemetryTab(ChartTabBase):
             WHEEL_LABELS, WHEEL_COLORS, unit="%", central_widget=self.slip_indicator
         )
         self._root.addWidget(frame_slip)
+
+        self._build_slip_angle_section()
 
         self._root.addWidget(self.section_header("TRAÇADO"))
         self.track_map = TrackMapWidget("Traçado da volta", height=260)
@@ -171,6 +175,75 @@ class TelemetryTab(ChartTabBase):
         self._sector_panel = QLabel("")
         self._sector_panel.setObjectName("sectionHeader")
         outer.addWidget(self._sector_panel)
+
+    def _build_slip_angle_section(self):
+        """Ângulo de deriva em graus — ao lado do índice, não no lugar dele.
+
+        São medidas independentes e ambas úteis: dá para ter índice alto com
+        ângulo baixo (rodas patinando em aceleração, carro reto) e ângulo alto
+        com índice moderado (traseira saindo de forma controlada). Substituir
+        uma pela outra perderia informação.
+
+        A seção inteira some quando a volta não tem o dado — voltas gravadas
+        antes do schema v8. Um gráfico vazio com título faria parecer que a
+        medida existe e deu zero, que é uma afirmação diferente de "não medido".
+        """
+        self._slip_angle_header = self.section_header("ÂNGULO DE DERIVA  (graus)")
+        self._root.addWidget(self._slip_angle_header)
+
+        self._slip_angle_note = QLabel(
+            "Ângulo entre para onde o carro aponta e para onde ele de fato se "
+            "move, obtido do quaternion de orientação. Positivo e negativo "
+            "distinguem o lado; perto de zero, o carro está alinhado com a "
+            "trajetória."
+        )
+        self._slip_angle_note.setWordWrap(True)
+        self._slip_angle_note.setStyleSheet("color: #8b93a7; font-size: 11px;")
+        self._root.addWidget(self._slip_angle_note)
+
+        self.chart_slip_angle = self.add_chart("Ângulo de deriva (°)")
+        self._root.addWidget(self.chart_slip_angle)
+
+        self._slip_angle_summary = QLabel("")
+        self._slip_angle_summary.setStyleSheet("color: #c8cad0; font-size: 12px;")
+        self._root.addWidget(self._slip_angle_summary)
+
+        self._slip_angle_absent = QLabel(
+            "Esta volta foi gravada antes da medida de ângulo existir — só o "
+            "índice de deslizamento acima está disponível."
+        )
+        self._slip_angle_absent.setWordWrap(True)
+        self._slip_angle_absent.setStyleSheet("color: #6b6f7a; font-size: 11px;")
+        self._root.addWidget(self._slip_angle_absent)
+
+    def _render_slip_angle(self):
+        """Preenche (ou esconde) a seção de ângulo conforme o dado disponível."""
+        tem_dado = self._vm.has_slip_angle()
+
+        self._slip_angle_header.setVisible(tem_dado)
+        self._slip_angle_note.setVisible(tem_dado)
+        self.chart_slip_angle.setVisible(tem_dado)
+        self._slip_angle_summary.setVisible(tem_dado)
+        self._slip_angle_absent.setVisible(not tem_dado)
+
+        if not tem_dado:
+            self.chart_slip_angle.set_series([])
+            self._slip_angle_summary.setText("")
+            return
+
+        self.chart_slip_angle.set_series(
+            [("Deriva", COLOR_SLIP_ANGLE, self._vm.slip_angle_points())]
+        )
+        pico = self._vm.peak_slip_angle_deg()
+        media = self._vm.average_slip_angle_deg()
+        if pico is None or media is None:
+            self._slip_angle_summary.setText("")
+            return
+        lado = "direita" if pico > 0 else "esquerda"
+        self._slip_angle_summary.setText(
+            f"Pico: {pico:+.1f}° (para a {lado})    |    "
+            f"Média em módulo: {media:.1f}°"
+        )
 
     def _build_controls(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -279,6 +352,7 @@ class TelemetryTab(ChartTabBase):
                 y_range=(0, 100),
             )
         self.slip_indicator.set_pct(self._vm.average_slip_pct())
+        self._render_slip_angle()
 
         self.apply_sector_lines(sectors)
 

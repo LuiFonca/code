@@ -541,7 +541,10 @@ def test_fase2_migracao_v7_voltas_antigas_nascem_validas(tmp_path, make_lap):
 
     db2 = SqliteDatabase(caminho)
     laps2 = SqliteLapRepository(db2)
-    assert db2.connection.execute("PRAGMA user_version").fetchone()[0] == 7
+    # `>= 7` e não `== 7`: o que este teste protege é que a migração da v7
+    # rodou, não que ela seja a última. Fixar o número exato faria toda
+    # migração futura quebrar um teste que não tem nada a ver com ela.
+    assert db2.connection.execute("PRAGMA user_version").fetchone()[0] >= 7
     assert laps2.get_by_id(lap_id).is_valid is True
     assert laps2.get_best(track_id).id == lap_id
     db2.close()

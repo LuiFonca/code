@@ -76,9 +76,15 @@ def _assinatura(aba):
 
 
 # ======================= Telemetria =========================================
-def test_telemetria_monta_18_graficos(aba_telemetria):
+def test_telemetria_monta_19_graficos(aba_telemetria):
+    """18 gráficos até a Fase 5, mais o de ângulo de deriva na Fase 6.
+
+    O número era 18 e foi alterado deliberadamente: a Fase 6 **acrescenta** um
+    gráfico, sem mexer nos existentes. Se algum dia este teste voltar a 18 sem
+    que alguém tenha decidido remover o ângulo, é regressão.
+    """
     aba, _ = aba_telemetria
-    assert len(aba._charts) == 18
+    assert len(aba._charts) == 19
 
 
 def test_telemetria_mosaicos_completos(aba_telemetria):

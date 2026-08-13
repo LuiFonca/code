@@ -82,6 +82,16 @@ class TelemetryFrame:
     velocity_x: float
     velocity_y: float
     velocity_z: float
+    # Quaternion de orientação do carro. É o que permite calcular ângulo de
+    # deriva de verdade: sem ele, só dá para saber para onde o carro se move,
+    # não para onde ele aponta.
+    rotation_i: float
+    rotation_j: float
+    rotation_k: float
+    rotation_w: float
+    angular_velocity_x: float
+    angular_velocity_y: float
+    angular_velocity_z: float
     body_height: float
     best_lap_ms: int
     last_lap_ms: int
@@ -146,6 +156,11 @@ class TelemetryFrame:
         """
         position_x, position_y, position_z = struct.unpack("<fff", d[0x04:0x10])
         velocity_x, velocity_y, velocity_z = struct.unpack("<fff", d[0x10:0x1C])
+        # 0x1C-0x38: sete floats que o parser ignorava. São a orientação do
+        # carro (quaternion) e a velocidade angular — o dado que faltava para
+        # calcular deriva em graus em vez de um índice adimensional.
+        rot_i, rot_j, rot_k, rot_w = struct.unpack("<ffff", d[0x1C:0x2C])
+        ang_x, ang_y, ang_z = struct.unpack("<fff", d[0x2C:0x38])
         body_height = struct.unpack("<f", d[0x38:0x3C])[0]
         rpm = struct.unpack("<f", d[0x3C:0x40])[0]
         fuel = struct.unpack("<f", d[0x44:0x48])[0]
@@ -202,6 +217,13 @@ class TelemetryFrame:
             velocity_x=velocity_x,
             velocity_y=velocity_y,
             velocity_z=velocity_z,
+            rotation_i=rot_i,
+            rotation_j=rot_j,
+            rotation_k=rot_k,
+            rotation_w=rot_w,
+            angular_velocity_x=ang_x,
+            angular_velocity_y=ang_y,
+            angular_velocity_z=ang_z,
             body_height=body_height,
             best_lap_ms=best_lap_ms,
             last_lap_ms=last_lap_ms,

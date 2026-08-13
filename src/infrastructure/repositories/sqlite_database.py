@@ -28,7 +28,7 @@ DEFAULT_DB_PATH = Path.home() / ".hanna_gt7_ai" / "laps.db"
 # Incrementar sempre que uma coluna/tabela nova for necessária, adicionando a
 # migração correspondente em `_run_migrations`. Sem isso, o app quebra em
 # silêncio no banco de quem já usava a versão anterior.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Retenção por pista: as N mais rápidas (recordes) + as N mais recentes
 # (histórico cronológico). O resto é descartado ao salvar, para o banco não
@@ -191,7 +191,8 @@ class SqliteDatabase:
                 tire_slip_rr REAL,
                 turbo_boost REAL,
                 oil_temp REAL,
-                water_temp REAL
+                water_temp REAL,
+                slip_angle_deg REAL
             )
         """)
         conn.execute("""
@@ -347,6 +348,13 @@ class SqliteDatabase:
 
         if current_version < 6:
             self._migrate_to_v6()
+
+        if current_version < 8:
+            # 7 → 8: ângulo de deriva em graus, derivado do quaternion de
+            # orientação que o parser passou a ler. Voltas antigas ficam com
+            # NULL — o dado não existia quando foram gravadas, e inventá-lo
+            # seria pior que admitir a ausência.
+            self._try_alter("lap_frames", "slip_angle_deg REAL")
 
         if current_version < 7:
             # 6 → 7: marca de volta válida. O pacote do GT7 não informa

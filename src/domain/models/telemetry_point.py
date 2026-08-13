@@ -50,6 +50,11 @@ class TelemetryPoint:
     turbo_boost: float
     oil_temp: float
     water_temp: float
+    # Ângulo entre para onde o carro aponta e para onde ele de fato se move,
+    # em graus. Derivado do quaternion de orientação — diferente do índice de
+    # deslizamento, que é razão de velocidade de roda e não tem unidade física.
+    # None em voltas gravadas antes desta medida existir.
+    slip_angle_deg: float | None = None
 
     @property
     def elapsed_s(self) -> float:

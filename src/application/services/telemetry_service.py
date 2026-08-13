@@ -25,6 +25,7 @@ from ...domain.interfaces.track_repository import TrackRepository
 from ...domain.models.lap import Lap
 from ...domain.models.telemetry_point import TelemetryPoint
 from ...domain.services.lap_comparator import LapComparator
+from ...domain.services.slip_angle import slip_angle_deg
 from ..events.event_bus import EventBus
 from ..events.events import (
     CarDetected,
@@ -440,6 +441,14 @@ class TelemetryService:
             turbo_boost=frame.turbo_boost,
             oil_temp=frame.oil_temp,
             water_temp=frame.water_temp,
+            slip_angle_deg=slip_angle_deg(
+                frame.velocity_x,
+                frame.velocity_z,
+                getattr(frame, "rotation_i", 0.0),
+                getattr(frame, "rotation_j", 0.0),
+                getattr(frame, "rotation_k", 0.0),
+                getattr(frame, "rotation_w", 0.0),
+            ),
         )
 
     def _detect_car(self, frame) -> None:

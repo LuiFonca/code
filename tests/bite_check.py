@@ -83,6 +83,56 @@ MUTACOES = [
                 track_id INTEGER,"""),
       ("        if has_fk:", "        if True:")],
      "test_13_track_id_tem_chave_estrangeira"),
+
+    # ---------------------------------------------------------------- fases
+    # As correcoes acima vieram da auditoria; as abaixo sao das sete fases do
+    # roteiro. Cada fase precisa do mesmo tratamento: se desfazer a mudanca
+    # deixa a suite verde, a fase nao esta protegida contra regressao.
+
+    ("F1 faixa de config", "src/domain/config.py",
+     "    faixa = _LIMITES.get(name)\n    if faixa is not None and not (faixa[0] <= valor <= faixa[1]):\n        return default",
+     "    faixa = None",
+     "test_valor_fora_de_faixa_e_recusado"),
+
+    ("F2 volta invalida", "src/infrastructure/repositories/sqlite_lap_repository.py",
+     "AND is_valid = 1 ORDER BY lap_time_ms ASC, id ASC LIMIT 1",
+     "ORDER BY lap_time_ms ASC, id ASC LIMIT 1",
+     "test_fase2_volta_invalida_sai_da_disputa"),
+
+    ("F3 versao de arquivo", "src/infrastructure/storage/file_lap_storage.py",
+     "if versao is None or versao > FORMAT_VERSION:", "if False:",
+     "test_versao_futura_e_recusada"),
+
+    # Mutacao composta, e a licao aqui foi cara: apenas remover a flag de
+    # `start()` nao reproduz o defeito — deixa `_running` sempre False, o laco
+    # nunca roda e a thread morre sozinha. O defeito original era a flag ser
+    # armada DENTRO de `run()`, desfazendo um `stop()` que chegasse antes. Para
+    # a mordida valer, a mutacao precisa restaurar o codigo antigo inteiro.
+    ("F4 corrida da thread", "src/infrastructure/telemetry/listener_thread.py",
+     [("        self._running = True\n        super().start(*args, **kwargs)",
+       "        super().start(*args, **kwargs)"),
+      ("    def run(self) -> None:\n        try:\n            sock = socket.socket",
+       "    def run(self) -> None:\n        try:\n            self._running = True\n"
+       "            sock = socket.socket")],
+     "test_pre_stop_encerra_a_thread"),
+
+    ("F5 linhas de setor", "src/presentation/tabs/chart_tab_base.py",
+     "[(d, f\"S{i + 1}\") for i, d in enumerate(boundaries)] if boundaries else []",
+     "list(boundaries) if boundaries else []",
+     "test_telemetria_linhas_de_setor_so_no_eixo_de_distancia"),
+
+    # Trocar a ordem do produto vetorial inverte o lado da deriva: o grafico
+    # mostraria a traseira saindo para o lado errado, sem nenhum sinal de erro.
+    ("F6 sinal da deriva", "src/domain/services/slip_angle.py",
+     "cruzado = fz * velocity_x - fx * velocity_z",
+     "cruzado = fx * velocity_z - fz * velocity_x",
+     "test_angulo_conhecido_e_recuperado"),
+
+    # Quaternion nulo rotaciona (0,0,1) para (0,0,1): sem a checagem de norma o
+    # calculo devolve zero, afirmando "sem deriva" onde a resposta e "nao sei".
+    ("F6 quaternion nulo", "src/domain/services/slip_angle.py",
+     "    if norma < 0.5:\n        return None", "    if False:\n        return None",
+     "test_quaternion_degenerado_devolve_none"),
 ]
 
 
