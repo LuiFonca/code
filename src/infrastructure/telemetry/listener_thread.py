@@ -65,6 +65,7 @@ class _ListenerThread(QThread):
         self.status_changed.emit("conectando")
         last_heartbeat = 0.0
         got_first_packet = False
+        last_heartbeat_error: str | None = None
 
         try:
             while self._running:
@@ -72,8 +73,15 @@ class _ListenerThread(QThread):
                 if now - last_heartbeat > HEARTBEAT_INTERVAL:
                     try:
                         sock.sendto(b"A", (self.ps_ip, SEND_PORT))
+                        last_heartbeat_error = None
                     except OSError as e:
-                        self.error_occurred.emit(f"Erro ao enviar heartbeat: {e}")
+                        # Só reporta quando a mensagem muda. O heartbeat repete
+                        # a cada 10s; sem isso, um console desligado encheria a
+                        # interface com o mesmo erro indefinidamente.
+                        message = self._describe_send_error(e)
+                        if message != last_heartbeat_error:
+                            last_heartbeat_error = message
+                            self.error_occurred.emit(message)
                     last_heartbeat = now
 
                 try:
@@ -103,6 +111,32 @@ class _ListenerThread(QThread):
             # levantar algo inesperado — senão a porta ficaria presa até o
             # processo morrer, e a reconexão falharia com "endereço em uso".
             sock.close()
+
+    def _describe_send_error(self, error: OSError) -> str:
+        """Traduz a falha de envio em algo acionável.
+
+        A mensagem crua do sistema ("[Errno 65] No route to host") não diz o
+        que fazer nem para qual endereço a tentativa foi. Os números mudam
+        entre sistemas — EHOSTUNREACH é 65 no macOS e 113 no Linux — então a
+        comparação usa as constantes do módulo `errno`, não literais.
+        """
+        import errno
+
+        ip = self.ps_ip
+        if error.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+            return (
+                f"Não foi possível alcançar o PlayStation em {ip} (sem rota até o "
+                f"host). Confira se o IP está correto e se o console e este "
+                f"computador estão na mesma rede."
+            )
+        if error.errno == errno.ECONNREFUSED:
+            return (
+                f"O PlayStation em {ip} recusou a conexão. Verifique se o GT7 "
+                f"está aberto numa sessão."
+            )
+        if error.errno in (errno.EADDRNOTAVAIL, errno.EINVAL):
+            return f"Endereço inválido: {ip!r}. Confira o IP digitado."
+        return f"Falha ao contatar o PlayStation em {ip}: {error}"
 
     def stop(self) -> None:
         self._running = False

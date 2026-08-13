@@ -80,6 +80,9 @@ class MainWindow(QMainWindow):
         self._track_catalog = track_catalog
         self._on_track_changed = on_track_changed
         self._set_ps_ip = set_ps_ip
+        # Enquanto True, mensagens genéricas de estado não sobrescrevem o erro
+        # mostrado ao usuário. Ver `_on_connection_changed`.
+        self._error_sticky = False
 
         self._build_ui(tab_factories)
         self._subscribe()
@@ -347,6 +350,9 @@ class MainWindow(QMainWindow):
         self.connect_button.setEnabled(False)
         self.ip_input.setEnabled(False)
         self.stop_button.setEnabled(True)
+        # Nova tentativa de conexão zera o erro anterior.
+        self._error_sticky = False
+        self._reset_log_style()
 
         if track_id is None:
             self.log_label.setText(
@@ -366,6 +372,8 @@ class MainWindow(QMainWindow):
         self.ip_input.setEnabled(True)
         self.stop_button.setEnabled(False)
         self._set_status_pill("desconectado")
+        self._error_sticky = False
+        self._reset_log_style()
         self.log_label.setText(
             "Desconectado. Todos os dados coletados permanecem disponíveis."
         )
@@ -382,20 +390,47 @@ class MainWindow(QMainWindow):
         )
 
     def _on_connection_changed(self, event: ConnectionStateChanged):
+        # Ao parar, a thread ainda pode ter um "sem_sinal" na fila, emitido
+        # antes de perceber o pedido de encerramento. Entregue depois, ele
+        # sobrescreveria a mensagem de desconexão com um alerta de uma captura
+        # que já não existe.
+        if not self._service.is_running and event.state in (
+            "conectando", "recebendo", "sem_sinal",
+        ):
+            return
+
         self._set_status_pill(event.state)
         messages = {
             "sem_sinal": "Sem pacotes recebidos. Confira se o jogo está numa sessão ativa.",
             "recebendo": "Recebendo telemetria normalmente.",
         }
+
         if event.message:
+            # Mensagem de erro é "pegajosa": um console inalcançável dispara o
+            # erro de rota e, logo depois, o timeout genérico do socket. Sem
+            # isto, o texto que diz o que fazer ("confira o IP") seria
+            # imediatamente sobrescrito por "sem pacotes recebidos".
+            self._error_sticky = True
             self.log_label.setText(event.message)
-        elif event.state in messages:
+            self.log_label.setStyleSheet(
+                f"color: {DANGER}; font-size: 12px; font-weight: 700;"
+            )
+        elif event.state == "recebendo":
+            self._error_sticky = False
+            self._reset_log_style()
+            self.log_label.setText(messages["recebendo"])
+        elif event.state in messages and not self._error_sticky:
             self.log_label.setText(messages[event.state])
 
         if event.state == "erro":
-            self.connect_button.setEnabled(True)
-            self.ip_input.setEnabled(True)
-            self.stop_button.setEnabled(False)
+            # Nem todo erro derruba a captura: falha de heartbeat (console
+            # inalcançável) é recuperável e a thread continua tentando, então
+            # os botões não podem voltar ao estado "desconectado" — isso
+            # deixaria o usuário sem como parar uma captura ainda ativa.
+            still_running = self._service.is_running
+            self.connect_button.setEnabled(not still_running)
+            self.ip_input.setEnabled(not still_running)
+            self.stop_button.setEnabled(still_running)
 
     def _on_lap_completed(self, event: LapCompleted):
         formatted = format_ms(event.lap.lap_time_ms)
