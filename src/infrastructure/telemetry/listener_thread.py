@@ -64,8 +64,19 @@ class _ListenerThread(QThread):
         self._heartbeat_interval = heartbeat_interval
         self._running = False
 
-    def run(self) -> None:
+    def start(self, *args, **kwargs) -> None:
+        """Arma a flag ANTES de disparar a thread.
+
+        `run()` não pode ser quem liga `_running`: `QThread.start()` retorna
+        imediatamente, e um `stop()` que chegue antes de `run()` começar seria
+        desfeito na primeira linha dela. O resultado é uma thread órfã presa no
+        laço, segurando a porta 33740 — e a próxima conexão falha com
+        "endereço em uso" sem explicação.
+        """
         self._running = True
+        super().start(*args, **kwargs)
+
+    def run(self) -> None:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -167,7 +178,14 @@ class _ListenerThread(QThread):
         self._running = False
         # Espera um pouco mais que o timeout do socket: a thread pode estar
         # bloqueada em `recvfrom` e só perceber o pedido de parada ao expirar.
-        self.wait(SOCKET_TIMEOUT * 1000 + 500)
+        if not self.wait(SOCKET_TIMEOUT * 1000 + 500):
+            # Não terminou no prazo. Melhor relatar do que seguir em frente
+            # fingindo que encerrou — uma thread presa aqui é justamente a que
+            # produz "endereço em uso" na próxima conexão.
+            self.error_occurred.emit(
+                "A captura não encerrou no tempo esperado. Se a próxima conexão "
+                "falhar com 'endereço em uso', reinicie o aplicativo."
+            )
 
 
 class Gt7TelemetrySource(TelemetrySource):
@@ -211,6 +229,12 @@ class Gt7TelemetrySource(TelemetrySource):
     def stop(self) -> None:
         if self._thread is None:
             return
-        self._thread.stop()
+        thread = self._thread
+        thread.stop()
+        # A referência só é solta depois da parada de fato. Descartá-la antes
+        # deixaria o objeto QThread sem dono enquanto ainda roda, e o Qt avisa
+        # "Destroyed while thread is still running" — quando avisa.
         self._thread = None
+        if thread.isRunning():
+            thread.wait(500)
         self.status_changed.emit("desconectado")

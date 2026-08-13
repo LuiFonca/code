@@ -414,7 +414,11 @@ class MainWindow(QMainWindow):
         self._service.start()
 
     def _on_stop_clicked(self):
+        # Durante a reconexão o mesmo botão serve para desistir.
+        if self._service.is_reconnecting:
+            self._service.cancel_reconnect()
         self._service.stop()
+        self.stop_button.setText("Desconectar")
         self.connect_button.setEnabled(True)
         self.ip_input.setEnabled(True)
         self.stop_button.setEnabled(False)
@@ -437,6 +441,14 @@ class MainWindow(QMainWindow):
         )
 
     def _on_connection_changed(self, event: ConnectionStateChanged):
+        # O rótulo do botão volta ao normal antes de qualquer descarte de
+        # evento: sair da reconexão precisa restaurar "Desconectar" mesmo
+        # quando o evento que sinaliza isso chega com a captura já parada.
+        if self.stop_button.text() == "Cancelar" and event.state in (
+            "recebendo", "desconectado", "erro",
+        ):
+            self.stop_button.setText("Desconectar")
+
         # Ao parar, a thread ainda pode ter um "sem_sinal" na fila, emitido
         # antes de perceber o pedido de encerramento. Entregue depois, ele
         # sobrescreveria a mensagem de desconexão com um alerta de uma captura
@@ -477,6 +489,15 @@ class MainWindow(QMainWindow):
             )
         elif event.state in messages and not self._error_sticky:
             self.log_label.setText(messages[event.state])
+
+        if event.state == "reconectando":
+            # A captura caiu sozinha: Conectar fica travado (o app já está
+            # tentando) e Desconectar vira o modo de desistir.
+            self.connect_button.setEnabled(False)
+            self.ip_input.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.stop_button.setText("Cancelar")
+            return
 
         if event.state == "erro":
             # Nem todo erro derruba a captura: falha de heartbeat (console

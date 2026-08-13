@@ -16,6 +16,8 @@ import math
 from datetime import datetime
 from typing import Callable
 
+from PySide6.QtCore import QTimer
+
 from ...domain.config import AppConfig
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.interfaces.telemetry_source import TelemetrySource
@@ -135,6 +137,17 @@ class TelemetryService:
             on_error=self._on_lap_write_failed,
         )
 
+        # Reconexão automática. O temporizador é de disparo único e recriado a
+        # cada tentativa: um QTimer repetitivo continuaria disparando depois de
+        # a conexão voltar, e desligá-lo no momento certo seria mais uma coisa
+        # para errar.
+        self._reconnect_timer = QTimer()
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._attempt_reconnect)
+        self._reconnect_attempt = 0
+        # Distingue queda de desconexão pedida — só a primeira religa.
+        self._stop_requested = False
+
         self._source.telemetry_stream.connect(self.on_frame)
         self._source.status_changed.connect(self._on_source_status)
         self._source.error_occurred.connect(self._on_source_error)
@@ -151,7 +164,63 @@ class TelemetryService:
 
     # ---------- ciclo de vida ----------
 
+    @property
+    def is_reconnecting(self) -> bool:
+        return self._reconnect_timer.isActive()
+
+    def cancel_reconnect(self) -> None:
+        """Desiste de reconectar sem fechar o app."""
+        self._reconnect_timer.stop()
+        self._reset_reconnect_backoff()
+        self._bus.publish(
+            ConnectionStateChanged(state="desconectado", message="Reconexão cancelada.")
+        )
+
+    def _reset_reconnect_backoff(self) -> None:
+        self._reconnect_attempt = 0
+
+    def _next_reconnect_delay(self) -> float:
+        """Recuo exponencial com teto.
+
+        Console desligado pode ficar assim por horas; tentar a cada segundo
+        inundaria a rede e o log sem chance de sucesso.
+        """
+        atraso = self._config.reconnect_initial_delay_s * (2 ** self._reconnect_attempt)
+        self._reconnect_attempt += 1
+        return min(atraso, self._config.reconnect_max_delay_s)
+
+    def _schedule_reconnect(self) -> None:
+        if not self._config.auto_reconnect or self._stop_requested:
+            return
+        if self._reconnect_timer.isActive():
+            return
+        atraso = self._next_reconnect_delay()
+        self._bus.publish(
+            ConnectionStateChanged(
+                state="reconectando",
+                message=(
+                    f"Sinal perdido. Tentativa {self._reconnect_attempt} de "
+                    f"reconexão em {atraso:.0f}s."
+                ),
+            )
+        )
+        self._reconnect_timer.start(int(atraso * 1000))
+
+    def _attempt_reconnect(self) -> None:
+        if self._stop_requested or self._source.is_running:
+            return
+        self._source.start()
+        if self._source.is_running:
+            # Só zera o recuo quando a fonte de fato subiu; zerar na tentativa
+            # faria o intervalo nunca crescer com o console desligado.
+            self._reset_reconnect_backoff()
+        else:
+            self._schedule_reconnect()
+
     def start(self) -> None:
+        self._stop_requested = False
+        self._reconnect_timer.stop()
+        self._reset_reconnect_backoff()
         # observed_from_start=False: o piloto já podia estar na pista quando o
         # app conectou, então a volta em curso não conta como completa.
         self._reset_lap_state(observed_from_start=False)
@@ -161,6 +230,11 @@ class TelemetryService:
         self._source.start()
 
     def stop(self) -> None:
+        # Marcado antes de parar a fonte: o status "desconectado" que ela emite
+        # não pode ser confundido com uma queda e disparar reconexão.
+        self._stop_requested = True
+        self._reconnect_timer.stop()
+        self._reset_reconnect_backoff()
         self._source.stop()
         self._session.end_session()
         # Escoa a fila antes de encerrar: fechar logo após cruzar a linha não
@@ -514,6 +588,13 @@ class TelemetryService:
     # ---------- repasse de estado da fonte ----------
 
     def _on_source_status(self, state: str) -> None:
+        if state == "recebendo":
+            # Telemetria voltando é a única prova de que a conexão está boa.
+            self._reset_reconnect_backoff()
+        elif state == "sem_sinal" and not self._source.is_running:
+            # A fonte morreu sem ninguém pedir: candidato a reconexão.
+            self._schedule_reconnect()
+            return
         self._bus.publish(ConnectionStateChanged(state=state))
 
     def _on_source_error(self, message: str) -> None:

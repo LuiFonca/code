@@ -183,6 +183,7 @@ STATUS_COLORS = {
     "conectando": ("#3a3410", WARNING),
     "recebendo": ("#123a1f", SUCCESS),
     "stale": (BORDER, ORANGE),
+    "reconectando": ("#3a3410", WARNING),
     "sem_sinal": ("#3a2410", ORANGE),
     "erro": ("#3a1414", DANGER),
 }
@@ -192,6 +193,7 @@ STATUS_LABELS = {
     "conectando": "Conectando...",
     "recebendo": "● Conectado",
     "stale": "○ Sem dados",
+    "reconectando": "↻ Reconectando",
     "sem_sinal": "Sem sinal",
     "erro": "Erro",
 }

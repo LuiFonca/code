@@ -92,7 +92,6 @@ def build_application() -> MainWindow:
         # precisa de "id -> Montadora Modelo", nada mais.
         car_name_resolver=car_catalog.get_full_name,
         config=config,
-        on_config_changed=on_config_changed,
     )
 
     live_vm = LiveViewModel(event_bus, config)
