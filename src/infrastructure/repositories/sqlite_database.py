@@ -58,6 +58,10 @@ class SqliteDatabase:
 
         self._create_schema()
         self._run_migrations()
+        # Depois das migrações, nunca antes: os índices referenciam colunas
+        # (is_player) que só existem a partir da v4. Num banco de usuário ainda
+        # na v3, criá-los antes falha com "no such column" e o app não abre.
+        self._create_indexes()
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -142,8 +146,15 @@ class SqliteDatabase:
                 time_ms INTEGER NOT NULL
             )
         """)
-        # Índices que sustentam as consultas quentes: melhor volta da pista,
-        # listagem por recência e carga das amostras de uma volta.
+        conn.commit()
+
+    def _create_indexes(self) -> None:
+        """Índices das consultas quentes: melhor volta da pista, listagem por
+        recência e carga das amostras de uma volta.
+
+        Roda depois das migrações — ver o comentário no construtor.
+        """
+        conn = self._conn
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_laps_track_time "
             "ON laps(track_id, is_player, lap_time_ms)"
