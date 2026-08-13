@@ -1,9 +1,15 @@
 """
 Aba "Comparação" — compara duas voltas com múltiplos gráficos sincronizados
 pelo mesmo eixo de distância (velocidade, marcha, delta, freio, acelerador,
-temperatura de pneus, combustível). Passar o mouse sobre qualquer gráfico
-mostra a mesma posição em todos os outros, e um painel no topo com os
-valores exatos de cada canal para as duas voltas naquele ponto.
+temperatura de pneus, combustível, traçado). Passar o mouse sobre qualquer
+gráfico mostra a mesma posição em todos os outros, e um painel no topo com
+os valores exatos de cada canal para as duas voltas naquele ponto.
+
+Cada canal é plotado com os pontos realmente salvos daquela volta (ver
+LapSeries.points) — voltas com taxas de amostragem diferentes, números
+de pontos diferentes, ou colunas ausentes (voltas antigas de antes de um
+canal existir no schema) não quebram os gráficos: o canal ausente
+simplesmente não desenha aquela linha, em vez de travar a tela toda.
 """
 
 from PySide6.QtWidgets import (
@@ -13,13 +19,19 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from analysis import lap_storage
-from analysis.telemetry_series import LapSeries, compute_delta_series
+from analysis.telemetry_series import (
+    LapSeries, compute_delta_series, sector_boundaries_m,
+    sector_times_from_series, best_combined_sectors,
+)
 from gui.widgets import format_ms
-from gui.widgets_chart import SyncedMiniChart
+from gui.widgets_chart import SyncedMiniChart, TrackMapWidget
 
 COLOR_A = "#4f7cff"
 COLOR_B = "#ff9f4f"
 COLOR_DELTA = "#f2c94c"
+COLOR_MARKER_A = "#8fb0ff"
+COLOR_MARKER_B = "#ffc48f"
+NUM_SECTORS = 3
 
 
 class ComparisonTab(QWidget):
@@ -42,6 +54,7 @@ class ComparisonTab(QWidget):
         root.addWidget(self.summary_label)
 
         root.addWidget(self._build_readout_panel())
+        root.addWidget(self._build_sector_panel())
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -50,6 +63,9 @@ class ComparisonTab(QWidget):
         charts_layout = QVBoxLayout(charts_container)
         charts_layout.setSpacing(10)
         charts_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.track_map = TrackMapWidget("Traçado — Volta A (azul) vs Volta B (laranja)")
+        charts_layout.addWidget(self.track_map)
 
         self.chart_speed = SyncedMiniChart("Velocidade (km/h)")
         self.chart_delta = SyncedMiniChart("Delta acumulado (s) — abaixo de 0 = Volta B mais rápida")
@@ -144,6 +160,57 @@ class ComparisonTab(QWidget):
         frame.setVisible(False)
         return frame
 
+    def _build_sector_panel(self) -> QWidget:
+        """Comparação setor a setor (item 14): tempo de cada setor nas
+        duas voltas usando os MESMOS limites de distância (ver
+        telemetry_series.sector_times_from_series), então 'Setor 2' é o
+        mesmo trecho físico nas duas voltas mesmo que uma delas tenha sido
+        salva antes desse critério existir."""
+        frame = QFrame()
+        frame.setObjectName("card")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(6)
+
+        title = QLabel("Comparação por setor")
+        title.setStyleSheet("font-size: 12px; font-weight: 600; color: #8a8e99;")
+        layout.addWidget(title)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(20)
+        grid.setVerticalSpacing(4)
+        headers = ["", "Volta A", "Volta B", "Diferença"]
+        for col, text in enumerate(headers):
+            lbl = QLabel(text)
+            lbl.setStyleSheet("color: #8a8e99; font-size: 11px; font-weight: 600;")
+            grid.addWidget(lbl, 0, col)
+
+        self.sector_rows = []
+        for row in range(1, NUM_SECTORS + 1):
+            name_lbl = QLabel(f"Setor {row}")
+            name_lbl.setStyleSheet("font-size: 12px;")
+            val_a = QLabel("--")
+            val_b = QLabel("--")
+            val_diff = QLabel("--")
+            for w in (val_a, val_b, val_diff):
+                w.setStyleSheet("font-size: 12px; font-weight: 600;")
+            grid.addWidget(name_lbl, row, 0)
+            grid.addWidget(val_a, row, 1)
+            grid.addWidget(val_b, row, 2)
+            grid.addWidget(val_diff, row, 3)
+            self.sector_rows.append((val_a, val_b, val_diff))
+
+        layout.addLayout(grid)
+
+        self.sector_summary_label = QLabel("")
+        self.sector_summary_label.setStyleSheet("color: #8a8e99; font-size: 12px;")
+        self.sector_summary_label.setWordWrap(True)
+        layout.addWidget(self.sector_summary_label)
+
+        self.sector_frame = frame
+        frame.setVisible(False)
+        return frame
+
     # ---------- carregar voltas ----------
 
     def set_track(self, track_id: int):
@@ -165,8 +232,9 @@ class ComparisonTab(QWidget):
         self.combo_a.clear()
         self.combo_b.clear()
 
-        for lap_id, lap_time_ms, recorded_at in laps:
-            label = f"#{lap_id} — {format_ms(lap_time_ms)}"
+        for lap_id, lap_time_ms, recorded_at, car_name in laps:
+            suffix = f" — {car_name}" if car_name else ""
+            label = f"#{lap_id} — {format_ms(lap_time_ms)}{suffix}"
             self.combo_a.addItem(label, lap_id)
             self.combo_b.addItem(label, lap_id)
 
@@ -205,6 +273,11 @@ class ComparisonTab(QWidget):
         self.series_a = LapSeries(frames_a)
         self.series_b = LapSeries(frames_b)
 
+        # Cada canal só é desenhado se pelo menos uma das duas voltas tiver
+        # dado (voltas salvas antes da v4 do schema não têm combustível,
+        # pneus ou posição — ver LapSeries.has_channel). Isso evita
+        # gráficos "quebrados" quando se compara uma volta antiga com uma
+        # nova, em vez de simplesmente não desenhar o que falta.
         self.chart_speed.set_series([
             ("Volta A", COLOR_A, self.series_a.points("speed_kmh")),
             ("Volta B", COLOR_B, self.series_b.points("speed_kmh")),
@@ -221,35 +294,48 @@ class ComparisonTab(QWidget):
             ("Volta A", COLOR_A, self._to_binary_step(self.series_a.points("brake"))),
             ("Volta B", COLOR_B, self._to_binary_step(self.series_b.points("brake"))),
         ], y_range=(-0.1, 1.1))
-        self.chart_fuel.set_series([
-            ("Volta A", COLOR_A, self.series_a.points("fuel_level")),
-            ("Volta B", COLOR_B, self.series_b.points("fuel_level")),
-        ])
 
-        tires_a = self._average_tire_points(self.series_a)
-        tires_b = self._average_tire_points(self.series_b)
-        self.chart_tires.set_series([
-            ("Volta A", COLOR_A, tires_a),
-            ("Volta B", COLOR_B, tires_b),
-        ])
+        has_fuel = self.series_a.has_channel("fuel_level") or self.series_b.has_channel("fuel_level")
+        self.chart_fuel.setVisible(has_fuel)
+        if has_fuel:
+            self.chart_fuel.set_series([
+                ("Volta A", COLOR_A, self.series_a.points("fuel_level")),
+                ("Volta B", COLOR_B, self.series_b.points("fuel_level")),
+            ])
+
+        has_tires = self.series_a.has_channel("tire_temp_fl") or self.series_b.has_channel("tire_temp_fl")
+        self.chart_tires.setVisible(has_tires)
+        if has_tires:
+            self.chart_tires.set_series([
+                ("Volta A", COLOR_A, self._average_tire_points(self.series_a)),
+                ("Volta B", COLOR_B, self._average_tire_points(self.series_b)),
+            ])
+
+        has_position = self.series_a.has_channel("position_x") or self.series_b.has_channel("position_x")
+        self.track_map.setVisible(has_position)
+        if has_position:
+            self.track_map.set_paths([
+                ("Volta A", COLOR_A, self.series_a.position_points()),
+                ("Volta B", COLOR_B, self.series_b.position_points()),
+            ])
 
         delta_points = compute_delta_series(self.series_a, self.series_b)
         self.chart_delta.set_series([("Delta", COLOR_DELTA, delta_points)])
 
         self.readout_frame.setVisible(True)
-        self._build_summary(delta_points, frames_a, frames_b)
+        self._build_summary(delta_points)
+        self._build_sector_comparison()
 
-        # Linhas de setor: dividimos a volta de referência (A) em 3 partes
-        # iguais por distância (mesma lógica usada no Histórico), e marcamos
-        # onde o setor 2 e o setor 3 começam — no estilo da imagem de
-        # referência (linhas verticais tracejadas). Diferente de um app com
-        # mapa oficial da pista, não temos onde ficam as CURVAS específicas
-        # (o GT7 não expõe isso via telemetria), só a divisão por setor.
-        if self.series_a and self.series_a.max_distance > 0:
-            total = self.series_a.max_distance
-            sector_defs = [(total / 3, "S2"), (total * 2 / 3, "S3")]
-        else:
-            sector_defs = []
+        # Linhas de setor: usamos a mesma referência de distância do banco
+        # (ver lap_storage._reference_lap_distance) para que "S2"/"S3"
+        # caiam no mesmo trecho físico independente de qual volta está
+        # sendo usada como pano de fundo dos gráficos. Diferente de um app
+        # com mapa oficial da pista, não temos onde ficam as CURVAS
+        # específicas (o GT7 não expõe isso via telemetria), só a divisão
+        # por setor.
+        reference_distance = max(self.series_a.max_distance, self.series_b.max_distance)
+        bounds = sector_boundaries_m(reference_distance, NUM_SECTORS)
+        sector_defs = [(d, f"S{i + 2}") for i, d in enumerate(bounds[:-1])]
         for chart in self.all_charts:
             chart.set_sector_lines(sector_defs)
 
@@ -276,12 +362,26 @@ class ComparisonTab(QWidget):
         fr = series.points("tire_temp_fr")
         rl = series.points("tire_temp_rl")
         rr = series.points("tire_temp_rr")
+        # Os 4 canais de pneu são sempre gravados juntos (mesmo frame), então
+        # em uso normal têm o mesmo tamanho; o min() abaixo é só uma
+        # salvaguarda contra um descompasso inesperado, para não estourar
+        # IndexError em vez de simplesmente usar o que está disponível.
+        n = min(len(fl), len(fr), len(rl), len(rr))
         return [
             (fl[i][0], (fl[i][1] + fr[i][1] + rl[i][1] + rr[i][1]) / 4)
-            for i in range(len(fl))
+            for i in range(n)
         ]
 
-    def _build_summary(self, delta_points, frames_a, frames_b):
+    @staticmethod
+    def _fuel_used(series: LapSeries):
+        """Combustível consumido na volta (inicial - final), ou None se a
+        volta não tem essa coluna (schema antigo)."""
+        points = series.points("fuel_level")
+        if len(points) < 2:
+            return None
+        return points[0][1] - points[-1][1]
+
+    def _build_summary(self, delta_points):
         if not delta_points:
             self.summary_label.setText(
                 f"Comparando volta #{self.lap_id_a} e volta #{self.lap_id_b}."
@@ -295,15 +395,55 @@ class ComparisonTab(QWidget):
         biggest_gain = min(delta_points, key=lambda p: p[1])
         biggest_loss = max(delta_points, key=lambda p: p[1])
 
-        fuel_a_used = frames_a[0][7] - frames_a[-1][7]
-        fuel_b_used = frames_b[0][7] - frames_b[-1][7]
-
-        self.summary_label.setText(
+        text = (
             f"Volta {faster} foi {diff_abs:.3f}s mais rápida no trecho comparado. "
             f"Maior ganho de B em relação a A: {abs(biggest_gain[1]):.2f}s perto de {biggest_gain[0]:.0f}m. "
-            f"Maior perda de B em relação a A: {biggest_loss[1]:.2f}s perto de {biggest_loss[0]:.0f}m. "
-            f"Combustível consumido — A: {fuel_a_used:.1f}L, B: {fuel_b_used:.1f}L."
+            f"Maior perda de B em relação a A: {biggest_loss[1]:.2f}s perto de {biggest_loss[0]:.0f}m."
         )
+
+        fuel_a_used = self._fuel_used(self.series_a)
+        fuel_b_used = self._fuel_used(self.series_b)
+        if fuel_a_used is not None and fuel_b_used is not None:
+            text += f" Combustível consumido — A: {fuel_a_used:.1f}L, B: {fuel_b_used:.1f}L."
+
+        self.summary_label.setText(text)
+
+    def _build_sector_comparison(self):
+        """Preenche o painel de setores (item 14): tempo por setor das duas
+        voltas usando limites de distância idênticos, diferença, e a soma
+        do melhor setor de cada volta (volta teórica ideal)."""
+        reference_distance = max(self.series_a.max_distance, self.series_b.max_distance)
+        bounds = sector_boundaries_m(reference_distance, NUM_SECTORS)
+        sectors_a = sector_times_from_series(self.series_a, bounds)
+        sectors_b = sector_times_from_series(self.series_b, bounds)
+
+        for row, (ta, tb) in enumerate(zip(sectors_a, sectors_b)):
+            val_a, val_b, val_diff = self.sector_rows[row]
+            if ta is None or tb is None:
+                val_a.setText(format_ms(ta) if ta is not None else "--")
+                val_b.setText(format_ms(tb) if tb is not None else "--")
+                val_diff.setText("--")
+                continue
+            val_a.setText(format_ms(ta))
+            val_b.setText(format_ms(tb))
+            diff_ms = tb - ta
+            sign = "+" if diff_ms >= 0 else ""
+            val_diff.setText(f"{sign}{diff_ms / 1000:.3f}s")
+            color = "#ff5c5c" if diff_ms > 0 else "#3ddc84" if diff_ms < 0 else "#e8e8ec"
+            val_diff.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {color};")
+
+        best_ms, choices = best_combined_sectors(sectors_a, sectors_b)
+        if best_ms is not None:
+            picks = ", ".join(
+                f"S{i + 1}: {choice}" for i, choice in enumerate(choices) if choice
+            )
+            self.sector_summary_label.setText(
+                f"Melhor combinação possível: {format_ms(best_ms)} ({picks})."
+            )
+        else:
+            self.sector_summary_label.setText("")
+
+        self.sector_frame.setVisible(True)
 
     # ---------- cursor sincronizado ----------
 
@@ -311,10 +451,19 @@ class ComparisonTab(QWidget):
         for chart in self.all_charts:
             chart.show_crosshair(distance_m)
         self._update_readout(distance_m)
+        self._update_track_map_markers(distance_m)
 
     def _on_hover_leave(self):
         for chart in self.all_charts:
             chart.hide_crosshair()
+        self.track_map.clear_markers()
+
+    def _update_track_map_markers(self, distance_m: float):
+        if self.series_a is None or self.series_b is None:
+            return
+        xa, za = self.series_a.value_at(distance_m, "position_x"), self.series_a.value_at(distance_m, "position_z")
+        xb, zb = self.series_b.value_at(distance_m, "position_x"), self.series_b.value_at(distance_m, "position_z")
+        self.track_map.set_markers([(xa, za, COLOR_MARKER_A), (xb, zb, COLOR_MARKER_B)])
 
     def _update_readout(self, distance_m: float):
         if self.series_a is None or self.series_b is None:
