@@ -12,6 +12,10 @@ python -m src.main
 
 `pycryptodome` não é opcional: os pacotes UDP do GT7 são cifrados com Salsa20.
 
+`src/` é autossuficiente — não depende da pasta `hanna_gt7_ai/`. O catálogo do
+jogo (`src/data/*.csv`) e o banco de voltas (`~/.hanna_gt7_ai/laps.db`, na sua
+pasta pessoal) são as únicas fontes externas.
+
 ---
 
 ## A regra que sustenta tudo

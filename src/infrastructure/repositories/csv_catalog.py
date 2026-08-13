@@ -20,9 +20,10 @@ from ...domain.models.car import Car
 from ...domain.models.maker import Maker
 from ...domain.models.track import Track
 
-DEFAULT_DATA_DIR = (
-    Path(__file__).resolve().parent.parent.parent.parent / "hanna_gt7_ai" / "data"
-)
+# Fica dentro de src/ para o pacote ser autossuficiente: apontar para a pasta
+# do app antigo faria o catálogo (527 carros, 105 pistas, auto-identificação de
+# pista) sumir no dia em que aquela pasta fosse removida.
+DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
 
 class CsvCatalog:
