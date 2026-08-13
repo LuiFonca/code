@@ -71,15 +71,23 @@ class SessionManager:
 
     @property
     def can_persist(self) -> bool:
-        """True quando a volta que fechar agora deve ser gravada."""
-        return self._track is not None and self._is_player_mode
+        """True quando a volta que fechar agora deve ser gravada.
+
+        Pista **não** é mais exigida. Antes era, e a consequência era a pior
+        possível: o piloto rodava uma sessão inteira e descobria no fim que
+        nada tinha sido salvo, com os dados já perdidos. Uma volta sem pista
+        ainda é uma volta — ela é gravada com o campo vazio, e o app tenta
+        reconhecer a pista pelo desenho do traçado.
+
+        O modo replay/IA continua bloqueando, e por um motivo diferente: ali a
+        volta não é do piloto, então gravá-la sujaria os recordes dele.
+        """
+        return self._is_player_mode
 
     @property
     def blocked_reason(self) -> str | None:
         """Por que a gravação está bloqueada, em texto pronto para exibir.
         None quando não está bloqueada."""
-        if self._track is None:
-            return "nenhuma pista definida"
         if not self._is_player_mode:
             return "modo replay/IA"
         return None

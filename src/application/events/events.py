@@ -136,6 +136,24 @@ class TrackCandidatesDetected:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackRecognized:
+    """A pista foi reconhecida pelo desenho do traçado.
+
+    Diferente de `TrackCandidatesDetected`, que é palpite por comprimento e
+    quase sempre traz vários nomes: aqui há uma resposta só, e ela só é
+    publicada quando o traçado casa com folga sobre o segundo colocado.
+
+    `deviation_m` é o desvio médio em metros — quanto menor, mais certa a
+    identificação. Vai junto para a interface poder dizer o quanto confia.
+    """
+
+    track_id: int
+    track_name: str
+    deviation_m: float
+    lap_time_ms: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectionStateChanged:
     """Estado da captura: "conectando", "recebendo", "sem_sinal", "stale",
     "desconectado", "erro"."""

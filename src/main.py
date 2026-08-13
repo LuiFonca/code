@@ -32,6 +32,7 @@ from PySide6.QtWidgets import QApplication
 from .application.events.event_bus import EventBus
 from .application.services.session_health import SessionHealth
 from .application.services.session_manager import SessionManager
+from .application.services.track_identifier import TrackIdentifier
 from .application.services.telemetry_service import TelemetryService
 from .application.viewmodels.comparison_viewmodel import ComparisonViewModel
 from .application.viewmodels.history_viewmodel import HistoryViewModel
@@ -93,6 +94,10 @@ def build_application() -> MainWindow:
         # precisa de "id -> Montadora Modelo", nada mais.
         car_name_resolver=car_catalog.get_full_name,
         config=config,
+        # Reconhece a pista pelo desenho do traçado quando o piloto não
+        # escolheu nenhuma — a volta é gravada de qualquer jeito, e o
+        # reconhecimento só decide quando há folga sobre o segundo candidato.
+        track_identifier=TrackIdentifier(track_repository),
     )
     # Observa o fluxo que o app já recebe. Vive aqui, e não numa ferramenta
     # separada, porque UDP unicast entrega cada pacote a um socket só: uma
@@ -100,7 +105,7 @@ def build_application() -> MainWindow:
     session_health = SessionHealth(event_bus)
 
     live_vm = LiveViewModel(event_bus, config)
-    history_vm = HistoryViewModel(lap_repository, event_bus)
+    history_vm = HistoryViewModel(lap_repository, event_bus, track_repository)
     comparison_vm = ComparisonViewModel(lap_repository, event_bus)
     # O repositório de pistas entra aqui para a aba respeitar os limites de
     # setor configurados por pista, em vez de sempre dividir em partes iguais.

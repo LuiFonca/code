@@ -101,6 +101,15 @@ class HistoryTab(QWidget):
         )
         self._import_button.clicked.connect(self._on_import_clicked)
 
+        self._assign_button = QPushButton("Atribuir pista")
+        self._assign_button.setObjectName("stopButton")
+        self._assign_button.setToolTip(
+            "Move a volta selecionada para a pista escolhida na barra superior.\n"
+            "Serve para as voltas que o app gravou sem pista e não conseguiu "
+            "reconhecer pelo traçado."
+        )
+        self._assign_button.clicked.connect(self._on_assign_clicked)
+
         self._delete_button = QPushButton("Excluir volta")
         self._delete_button.setObjectName("stopButton")
         self._delete_button.clicked.connect(self._on_delete_clicked)
@@ -111,6 +120,7 @@ class HistoryTab(QWidget):
         controls.addWidget(self._export_button)
         controls.addWidget(self._import_button)
         controls.addWidget(self._invalidate_button)
+        controls.addWidget(self._assign_button)
         controls.addWidget(self._delete_button)
         controls.addWidget(self._clear_button)
         root.addLayout(controls)
@@ -234,6 +244,38 @@ class HistoryTab(QWidget):
         )
         if confirm == QMessageBox.Yes:
             self._vm.delete_lap(lap_id)
+
+    def _on_assign_clicked(self):
+        """Pergunta a pista e move a volta selecionada para ela.
+
+        A pista é escolhida aqui, num diálogo próprio, e não na barra superior:
+        selecionar a pista lá trocaria a lista exibida e a volta que se quer
+        atribuir sumiria da tela antes de o usuário chegar ao botão.
+
+        A lista é editável — a primeira volta de um circuito novo precisa poder
+        criar a pista na hora.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        lap_id = self._selected_lap_id()
+        if lap_id is None:
+            QMessageBox.information(
+                self, "Nenhuma volta selecionada",
+                "Selecione uma volta na tabela para atribuir a pista.",
+            )
+            return
+
+        conhecidas = self._vm.available_track_names()
+        nome, ok = QInputDialog.getItem(
+            self,
+            "Atribuir pista",
+            f"Em que pista foi rodada a volta {lap_id}?",
+            conhecidas,
+            0,
+            True,   # editável: permite digitar uma pista que ainda não existe
+        )
+        if ok and nome.strip():
+            self._vm.assign_track_by_name(lap_id, nome)
 
     def _on_toggle_valid_clicked(self):
         lap_id = self._selected_lap_id()

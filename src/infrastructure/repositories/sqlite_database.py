@@ -28,7 +28,7 @@ DEFAULT_DB_PATH = Path.home() / ".hanna_gt7_ai" / "laps.db"
 # Incrementar sempre que uma coluna/tabela nova for necessária, adicionando a
 # migração correspondente em `_run_migrations`. Sem isso, o app quebra em
 # silêncio no banco de quem já usava a versão anterior.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Retenção por pista: as N mais rápidas (recordes) + as N mais recentes
 # (histórico cronológico). O resto é descartado ao salvar, para o banco não
@@ -114,6 +114,8 @@ class SqliteDatabase:
         }
         if "sector_fractions" not in existing:
             self._try_alter("tracks", "sector_fractions TEXT")
+        if "map_fingerprint" not in existing:
+            self._try_alter("tracks", "map_fingerprint TEXT")
         self._conn.commit()
 
     @property
@@ -137,7 +139,8 @@ class SqliteDatabase:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 created_at REAL NOT NULL,
-                sector_fractions TEXT
+                sector_fractions TEXT,
+                map_fingerprint TEXT
             )
         """)
         conn.execute("""
@@ -362,6 +365,13 @@ class SqliteDatabase:
             # manual — mesmo caminho já usado para replay/IA. Voltas existentes
             # nascem válidas: presumir o contrário apagaria recordes legítimos.
             self._try_alter("laps", "is_valid INTEGER NOT NULL DEFAULT 1")
+
+        if current_version < 9:
+            # 8 → 9: assinatura do traçado, para reconhecer a pista de uma
+            # volta gravada sem pista definida. Fica na pista e não na volta
+            # porque é característica do circuito; é preenchida na primeira
+            # volta completa gravada com aquela pista escolhida à mão.
+            self._try_alter("tracks", "map_fingerprint TEXT")
 
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()

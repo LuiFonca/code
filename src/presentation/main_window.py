@@ -40,6 +40,7 @@ from ..application.events.events import (
     LapSaveFailed,
     LapsPurged,
     TrackCandidatesDetected,
+    TrackRecognized,
 )
 from ..application.services.session_manager import SessionManager
 from ..application.services.telemetry_service import TelemetryService
@@ -304,6 +305,7 @@ class MainWindow(QMainWindow):
         self._bus.subscribe(ConnectionStateChanged, self._on_connection_changed)
         self._bus.subscribe(LapCompleted, self._on_lap_completed)
         self._bus.subscribe(LapDiscarded, self._on_lap_discarded)
+        self._bus.subscribe(TrackRecognized, self._on_track_recognized)
         self._bus.subscribe(LapSaveFailed, self._on_lap_save_failed)
         self._bus.subscribe(CarDetected, self._on_car_detected)
         self._bus.subscribe(TrackCandidatesDetected, self._on_track_candidates)
@@ -395,24 +397,37 @@ class MainWindow(QMainWindow):
 
     # ---------- ações ----------
 
-    def _apply_track(self) -> int | None:
+    def _apply_track(self) -> tuple[int | None, bool]:
+        """Aplica a pista do campo. Devolve (id, mudou de fato)."""
         name = self._resolve_track_name()
         track = None
         if name:
             track_id = self._tracks.get_or_create(name)
             track = Track(id=track_id, name=name)
-        self._session.set_track(track)
-        return track.id if track else None
+        mudou = self._session.set_track(track)
+        return (track.id if track else None), mudou
 
-    def _apply_car(self) -> int | None:
+    def _apply_car(self) -> tuple[int | None, bool]:
         name = self._resolve_car_name()
         car_id = self._cars.get_or_create(name)
         car = self._cars.get_by_id(car_id)
-        self._session.set_car(car or Car(id=car_id, name=name))
-        return car_id
+        mudou = self._session.set_car(car or Car(id=car_id, name=name))
+        return car_id, mudou
 
     def _on_track_selected(self):
-        track_id = self._apply_track()
+        """Reage à escolha de pista — e só quando ela muda de fato.
+
+        Este método está ligado ao `editingFinished` do campo, e esse sinal do
+        Qt dispara a cada **perda de foco**, não a cada edição. Sem a checagem
+        de mudança, clicar num gráfico ou trocar de aba no meio de uma volta
+        recarregava listas, descartava a volta aberta na aba Telemetria e
+        reiniciava o acúmulo da volta em andamento — três sintomas que pareciam
+        problemas distintos e eram este único caminho.
+        """
+        track_id, mudou = self._apply_track()
+        if not mudou:
+            return
+
         self._service.reload_reference()
         self._reload_track_list()
         self._update_info_bar()
@@ -421,7 +436,8 @@ class MainWindow(QMainWindow):
 
         if track_id is None:
             self.log_label.setText(
-                f"{NO_TRACK_TEXT} — voltas não serão salvas até você definir uma pista."
+                f"{NO_TRACK_TEXT} — a volta será salva sem pista e o app tentará "
+                "reconhecê-la pelo traçado."
             )
         else:
             self.log_label.setText(
@@ -429,7 +445,9 @@ class MainWindow(QMainWindow):
             )
 
     def _on_car_selected(self):
-        self._apply_car()
+        _car_id, mudou = self._apply_car()
+        if not mudou:
+            return
         self._reload_car_list()
         self._update_info_bar()
 
@@ -447,7 +465,7 @@ class MainWindow(QMainWindow):
             self.log_label.setText("Digite o IP do PlayStation antes de conectar.")
             return
 
-        track_id = self._apply_track()
+        track_id, _mudou = self._apply_track()
         self._apply_car()
         if self._on_track_changed:
             self._on_track_changed(track_id)
@@ -465,8 +483,8 @@ class MainWindow(QMainWindow):
 
         if track_id is None:
             self.log_label.setText(
-                f"Conectando em {ip} — {NO_TRACK_TEXT}: defina uma pista para começar "
-                "a salvar voltas (pode ser feito a qualquer momento, sem reconectar)."
+                f"Conectando em {ip} — {NO_TRACK_TEXT}. As voltas serão salvas mesmo "
+                "assim e o app tentará reconhecer a pista pelo traçado."
             )
         else:
             self.log_label.setText(
@@ -611,6 +629,28 @@ class MainWindow(QMainWindow):
         self.car_input.setCurrentText(event.car_name)
         self._on_car_selected()
         self.log_label.setText(f"Carro detectado automaticamente: {event.car_name}")
+
+    def _on_track_recognized(self, event: TrackRecognized):
+        """A pista foi reconhecida pelo traçado — adota e avisa.
+
+        Diferente do palpite por comprimento, aqui há uma resposta só e ela já
+        veio com folga sobre o segundo colocado. A volta que disparou isto já
+        foi gravada na pista certa; adotar no campo é o que faz as **próximas**
+        irem direto para lá.
+
+        Se o usuário já digitou uma pista, o que ele escolheu vale — o
+        reconhecimento não sobrescreve decisão de gente.
+        """
+        if self._resolve_track_name():
+            return
+        self.track_input.setCurrentText(event.track_name)
+        self._on_track_selected()
+        self._reset_log_style()
+        self.log_label.setText(
+            f"Pista reconhecida pelo traçado: {event.track_name} "
+            f"(desvio médio de {event.deviation_m:.0f} m). "
+            "A volta foi salva nela; corrija o campo acima se não for essa."
+        )
 
     def _on_track_candidates(self, event: TrackCandidatesDetected):
         if not event.names or self._resolve_track_name():

@@ -156,6 +156,46 @@ MUTACOES = [
      "            if self._ultima is not None:\n"
      "                self.quedas += 1",
      "test_reconexao_sem_aviso_de_queda_tambem_nao_vira_interrupcao"),
+
+    # -------------------------------------------------- correcoes de campo
+    # Tres sintomas relatados numa sessao real, com uma causa comum: um evento
+    # de foco da interface zerava o estado da volta em andamento.
+
+    ("C1 volta sobrevive ao foco", "src/application/services/telemetry_service.py",
+     "        track_id = self._session.track_id\n"
+     "        if track_id != self._reference_track_id:\n"
+     "            self._reset_lap_state(observed_from_start=False)\n"
+     "            self._comparator_previous = LapComparator([])",
+     "        self._reset_lap_state(observed_from_start=False)\n"
+     "        self._comparator_previous = LapComparator([])",
+     "test_perder_o_foco_do_campo_de_pista_nao_zera_a_volta"),
+
+    ("C1 troca real ainda zera", "src/application/services/telemetry_service.py",
+     "        if track_id != self._reference_track_id:", "        if False:",
+     "test_trocar_de_pista_de_verdade_ainda_zera"),
+
+    ("C3 grava sem pista", "src/application/services/session_manager.py",
+     "        return self._is_player_mode\n", 
+     "        return self._track is not None and self._is_player_mode\n",
+     "test_volta_sem_pista_e_gravada"),
+
+    ("C3 lista sem pista", "src/infrastructure/repositories/sqlite_lap_repository.py",
+     "        if track_id is None:\n"
+     "            sql = colunas + \"track_id IS NULL AND is_player = 1 ORDER BY recorded_at DESC\"",
+     "        if False:\n"
+     "            sql = colunas + \"track_id IS NULL AND is_player = 1 ORDER BY recorded_at DESC\"",
+     "test_lista_de_voltas_sem_pista"),
+
+    # Sem a margem sobre o segundo colocado, o reconhecimento escolhe o menos
+    # ruim entre candidatos todos errados — e voltas vao parar na pista errada.
+    ("C3 margem do reconhecimento", "src/domain/services/track_fingerprint.py",
+     "        if melhor_desvio > 1e-6 and segundo / melhor_desvio < MARGEM_MINIMA:",
+     "        if False:",
+     "test_dois_candidatos_parecidos_nao_decidem"),
+
+    ("C3 limiar do reconhecimento", "src/domain/services/track_fingerprint.py",
+     "    if melhor_desvio > MAX_DESVIO_MEDIO_M:", "    if False:",
+     "test_candidata_unica_distante_e_recusada"),
 ]
 
 

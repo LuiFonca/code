@@ -38,6 +38,7 @@ from ..events.events import (
     LapsPurged,
     TelemetryReceived,
     TrackCandidatesDetected,
+    TrackRecognized,
 )
 from .lap_writer import LapWriter
 from .session_manager import SessionManager
@@ -57,6 +58,10 @@ MIN_SPEED_XZ_MS = 0.5
 # Distância mínima para tentar adivinhar a pista pelo comprimento. Voltas muito
 # curtas são saídas de box ou abandonos, e casariam com qualquer coisa.
 MIN_DISTANCE_FOR_TRACK_GUESS_M = 100
+
+# Sentinela de "referência ainda não carregada". Um objeto próprio porque
+# `None` já significa "nenhuma pista definida", que é um estado legítimo.
+_NAO_CARREGADO = object()
 
 # Teto de sanidade para as forças G derivadas. Carro de corrida real não passa
 # de ~2 g; 5 g dá folga para qualquer caso legítimo e ainda barra o lixo. Sem
@@ -88,6 +93,7 @@ class TelemetryService:
         track_catalog: TrackRepository | None = None,
         car_name_resolver: Callable[[int], str | None] | None = None,
         config: AppConfig | None = None,
+        track_identifier=None,
     ):
         self._config = config or AppConfig()
         self._source = telemetry_source
@@ -99,6 +105,9 @@ class TelemetryService:
         # precisa traduzir id -> "Montadora Modelo", e essa composição é do
         # catálogo CSV, não do contrato genérico de CarRepository.
         self._resolve_car_name = car_name_resolver
+        # Reconhece a pista pelo traçado quando o piloto não escolheu nenhuma.
+        # Opcional: sem ele a volta é gravada sem pista, como antes.
+        self._track_identifier = track_identifier
 
         self._buffer: list[TelemetryPoint] = []
         self._cumulative_distance = 0.0
@@ -128,6 +137,10 @@ class TelemetryService:
         # Melhor tempo conhecido da pista, mantido em memória para não
         # depender de leitura do banco no fechamento da volta (ver _finalize_lap).
         self._best_lap_time_ms: int | None = None
+        # Pista para a qual a referência atual foi carregada. Sentinela em vez
+        # de None: None é uma pista válida ("nenhuma"), e usá-lo como "ainda
+        # não carregado" faria a primeira carga parecer uma troca de pista.
+        self._reference_track_id: int | None | object = _NAO_CARREGADO
 
         # Gravação fora da thread da interface: ao cruzar a linha de chegada,
         # escrever milhares de amostras no SQLite segurava a tela por dezenas
@@ -250,12 +263,29 @@ class TelemetryService:
     def reload_reference(self) -> None:
         """Recarrega a melhor volta como referência do delta.
 
-        Chamado ao trocar de pista: a referência anterior é de outra pista e
-        produziria um delta sem sentido. O comparador da volta anterior também
-        é zerado, pela mesma razão.
+        **Só descarta a volta em andamento quando a pista realmente mudou.**
+
+        A distinção não é preciosismo — foi a causa de três sintomas que
+        pareciam problemas separados. A interface reaplica a pista a cada
+        `editingFinished` do campo, e esse sinal do Qt dispara a cada **perda
+        de foco**, não a cada edição: clicar num gráfico, trocar de aba ou
+        mexer em qualquer outro campo chamava este método no meio da volta.
+        Zerando o acúmulo, o resultado era:
+
+        - o delta voltava ao início da referência e parecia só funcionar no
+          começo da volta;
+        - a volta gravada começava no ponto do último clique, e os gráficos
+          mostravam um pedaço;
+        - a volta perdia o `is_complete` e não disputava recorde.
+
+        Quando a pista muda de verdade, descartar continua certo: a volta em
+        curso pertence à pista anterior, e carregá-la na nova produziria
+        recorde falso e traçado misturado.
         """
-        self._reset_lap_state(observed_from_start=False)
-        self._comparator_previous = LapComparator([])
+        track_id = self._session.track_id
+        if track_id != self._reference_track_id:
+            self._reset_lap_state(observed_from_start=False)
+            self._comparator_previous = LapComparator([])
         self._load_best_reference()
 
     def _load_best_reference(self) -> None:
@@ -266,6 +296,9 @@ class TelemetryService:
         marcação de inválida).
         """
         track_id = self._session.track_id
+        # Guardado para que `reload_reference` saiba distinguir "a pista mudou"
+        # de "a interface reaplicou a mesma pista".
+        self._reference_track_id = track_id
         if track_id is None:
             self._comparator_best = LapComparator([])
             self._best_lap_time_ms = None
@@ -490,6 +523,43 @@ class TelemetryService:
             DeltaUpdated(delta_best_s=delta_best, delta_previous_s=delta_prev)
         )
 
+    # ---------- reconhecimento de pista ----------
+
+    def _recognize_track(self, points, lap_time_ms: int) -> int | None:
+        """Tenta descobrir a pista pelo traçado. None quando não dá para saber.
+
+        Falha aqui não pode custar a volta: qualquer erro no reconhecimento
+        vira "sem pista", e a gravação segue. Perder a volta por causa de um
+        recurso de conveniência seria trocar um problema pequeno por um grande.
+        """
+        if self._track_identifier is None:
+            return None
+        try:
+            resultado = self._track_identifier.identify(points)
+        except Exception:  # noqa: BLE001
+            return None
+        if resultado is None:
+            return None
+
+        track_id, nome, desvio = resultado
+        self._bus.publish(
+            TrackRecognized(
+                track_id=track_id, track_name=nome,
+                deviation_m=desvio, lap_time_ms=lap_time_ms,
+            )
+        )
+        return track_id
+
+    def _learn_track(self, track_id: int, points) -> None:
+        """Guarda o traçado da pista escolhida à mão, se ainda não houver um."""
+        if self._track_identifier is None:
+            return
+        try:
+            self._track_identifier.learn(track_id, points)
+        except Exception:  # noqa: BLE001
+            # Aprender é conveniência; falhar aqui não pode derrubar a gravação.
+            pass
+
     # ---------- fechamento de volta ----------
 
     def _finalize_lap(self, lap_time_ms: int) -> None:
@@ -509,8 +579,19 @@ class TelemetryService:
                 )
 
         is_complete = self._lap_observed_from_start
+        track_id = self._session.track_id
+        if track_id is None and is_complete:
+            # Sem pista escolhida, tenta reconhecer pelo desenho do traçado.
+            # Só em volta completa: meia volta casaria com meia dúzia de
+            # circuitos, e errar a pista contamina o histórico de outra.
+            track_id = self._recognize_track(points, lap_time_ms)
+        elif track_id is not None and is_complete:
+            # Pista escolhida à mão: é a oportunidade de aprender o traçado
+            # dela, para reconhecer as próximas voltas sozinho.
+            self._learn_track(track_id, points)
+
         lap = Lap(
-            track_id=self._session.track_id,
+            track_id=track_id,
             car_id=self._session.car_id,
             lap_time_ms=lap_time_ms,
             start_time=self._lap_started_at,

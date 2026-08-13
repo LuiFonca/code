@@ -204,17 +204,44 @@ class SqliteLapRepository(LapRepository):
             params = (limit,)
         return [self._row_to_lap(r) for r in self._conn.execute(sql, params).fetchall()]
 
-    def get_by_track(self, track_id: int, limit: int | None = None) -> list[Lap]:
-        sql = (
+    def get_by_track(self, track_id: int | None, limit: int | None = None) -> list[Lap]:
+        """Voltas da pista, mais recentes primeiro.
+
+        `track_id=None` devolve as voltas **sem pista** — as que foram gravadas
+        antes de o app saber de que circuito eram. Não é o mesmo que "todas":
+        é um grupo próprio, e precisa ser visível, senão a volta é salva e
+        desaparece, que é pior do que não salvar.
+
+        `WHERE track_id = ?` com None nunca casa: em SQL, nada é igual a NULL.
+        Daí o ramo explícito com `IS NULL`.
+        """
+        colunas = (
             "SELECT id, track_id, car_id, is_player, is_complete, is_valid, "
-            "lap_time_ms, recorded_at "  # noqa: E501
-            "FROM laps WHERE track_id = ? AND is_player = 1 ORDER BY recorded_at DESC"
+            "lap_time_ms, recorded_at FROM laps WHERE "
         )
-        params: tuple = (track_id,)
+        if track_id is None:
+            sql = colunas + "track_id IS NULL AND is_player = 1 ORDER BY recorded_at DESC"
+            params: tuple = ()
+        else:
+            sql = colunas + "track_id = ? AND is_player = 1 ORDER BY recorded_at DESC"
+            params = (track_id,)
         if limit is not None:
             sql += " LIMIT ?"
-            params = (track_id, limit)
+            params = params + (limit,)
         return [self._row_to_lap(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    def assign_track(self, lap_id: int, track_id: int) -> None:
+        """Atribui uma pista a uma volta que estava sem.
+
+        Fecha o ciclo do reconhecimento automático: quando ele não decide, a
+        volta continua no grupo "sem pista" e o usuário resolve à mão, sem
+        perder nada.
+        """
+        with self._db.lock:
+            self._conn.execute(
+                "UPDATE laps SET track_id = ? WHERE id = ?", (track_id, lap_id)
+            )
+            self._conn.commit()
 
     def get_best(self, track_id: int) -> Lap | None:
         """Volta mais rápida **completa** da pista.

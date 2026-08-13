@@ -7,6 +7,7 @@ Complementa o catálogo estático (`CsvTrackRepository`). A interface pede
 é conhecido. Ver o método para o comportamento adotado.
 """
 
+import json
 import time
 
 from ...domain.interfaces.track_repository import TrackRepository
@@ -74,6 +75,65 @@ class SqliteTrackRepository(TrackRepository):
                 (value, track_id),
             )
             self._conn.commit()
+
+    # ---------- assinatura do traçado ----------
+
+    def set_fingerprint(self, track_id: int, fingerprint: list | None) -> None:
+        """Grava (ou apaga) a assinatura do traçado desta pista.
+
+        Guardada na pista, e não na volta: é característica do circuito. Fica
+        como JSON num campo de texto porque o SQLite não tem tipo de array e
+        porque a assinatura nunca é filtrada por SQL — só lida inteira.
+        """
+        valor = json.dumps(fingerprint) if fingerprint else None
+        with self._db.lock:
+            self._conn.execute(
+                "UPDATE tracks SET map_fingerprint = ? WHERE id = ?",
+                (valor, track_id),
+            )
+            self._conn.commit()
+
+    def get_fingerprint(self, track_id: int) -> list | None:
+        row = self._conn.execute(
+            "SELECT map_fingerprint FROM tracks WHERE id = ?", (track_id,)
+        ).fetchone()
+        return self._decode_fingerprint(row[0]) if row else None
+
+    def all_fingerprints(self) -> dict[int, list]:
+        """Assinaturas de todas as pistas que já têm uma, por id.
+
+        É o conjunto de candidatas do reconhecimento. Pistas sem assinatura
+        simplesmente não participam — não há como compará-las.
+        """
+        rows = self._conn.execute(
+            "SELECT id, map_fingerprint FROM tracks WHERE map_fingerprint IS NOT NULL"
+        ).fetchall()
+        saida = {}
+        for track_id, raw in rows:
+            assinatura = self._decode_fingerprint(raw)
+            if assinatura:
+                saida[track_id] = assinatura
+        return saida
+
+    @staticmethod
+    def _decode_fingerprint(raw):
+        """Assinatura corrompida vira ausência, não exceção.
+
+        O campo é escrito pelo app, mas o banco é um arquivo do usuário: ler
+        lixo ali não pode impedir a gravação da volta.
+        """
+        if not raw:
+            return None
+        try:
+            dados = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(dados, list) or not dados:
+            return None
+        try:
+            return [(float(x), float(z)) for x, z in dados]
+        except (TypeError, ValueError):
+            return None
 
     def guess_by_length(
         self, lap_distance_m: float, tolerance_pct: float = 5.0

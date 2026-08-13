@@ -44,11 +44,14 @@ class HistoryViewModel(QObject):
         self,
         lap_repository: LapRepository,
         event_bus: EventBus,
+        track_repository=None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
         self._laps = lap_repository
         self._bus = event_bus
+        # Opcional: só é usado para atribuir pista a uma volta que ficou sem.
+        self._tracks = track_repository
         self._track_id: int | None = None
         self._filter = ""
         self._rows: list[LapRow] = []
@@ -85,11 +88,9 @@ class HistoryViewModel(QObject):
         self.laps_changed.emit(self._apply_filter(self._rows))
 
     def refresh(self) -> None:
-        if self._track_id is None:
-            self._rows = []
-            self.laps_changed.emit([])
-            return
-
+        # Sem pista selecionada, a lista mostra as voltas **sem pista** — as
+        # que o reconhecimento automático não conseguiu identificar. Antes esta
+        # tela ficava vazia, e uma volta salva sem pista simplesmente sumia.
         laps = self._laps.get_by_track(self._track_id)
         if not laps:
             self._rows = []
@@ -138,6 +139,57 @@ class HistoryViewModel(QObject):
             self.refresh()
         except Exception as exc:  # noqa: BLE001
             self.error.emit(f"Não foi possível excluir a volta: {exc}")
+
+    def available_track_names(self) -> list[str]:
+        """Pistas já conhecidas, para oferecer na hora de atribuir."""
+        if self._tracks is None:
+            return []
+        return [t.name for t in self._tracks.get_all()]
+
+    def assign_track_by_name(self, lap_id: int, name: str) -> bool:
+        """Move a volta para a pista de nome informado, criando-a se preciso.
+
+        Por nome e não por id porque é assim que o usuário pensa no problema —
+        e porque a pista pode ainda não existir no banco, que é justamente o
+        caso da primeira volta num circuito novo.
+        """
+        nome = (name or "").strip()
+        if not nome:
+            self.error.emit("Informe o nome da pista.")
+            return False
+        if self._tracks is None:
+            self.error.emit("Catálogo de pistas indisponível.")
+            return False
+        try:
+            track_id = self._tracks.get_or_create(nome)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(f"Não foi possível criar a pista: {exc}")
+            return False
+        return self.assign_track(lap_id, track_id)
+
+    def assign_track(self, lap_id: int, track_id: int) -> bool:
+        """Move uma volta sem pista para a pista informada.
+
+        É a saída manual para quando o reconhecimento pelo traçado não decide —
+        primeira volta num circuito novo, volta parcial, ou dois traçados
+        parecidos demais. Sem isto, a volta ficaria salva e sem uso.
+        """
+        if track_id is None:
+            self.error.emit("Escolha uma pista antes de atribuir.")
+            return False
+        if not hasattr(self._laps, "assign_track"):
+            self.error.emit("Este armazenamento não permite mudar a pista da volta.")
+            return False
+        try:
+            self._laps.assign_track(lap_id, track_id)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(f"Não foi possível atribuir a pista: {exc}")
+            return False
+        # A volta saiu deste grupo; a lista precisa refletir isso na hora.
+        self.refresh()
+        self._bus.publish(LapCompleted(lap=Lap(id=lap_id, track_id=track_id),
+                                       lap_id=lap_id, is_best=False))
+        return True
 
     def set_lap_valid(self, lap_id: int, is_valid: bool) -> None:
         """Marca a volta como válida ou inválida.
