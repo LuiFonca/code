@@ -156,6 +156,69 @@ class HistoryViewModel(QObject):
         except Exception as exc:  # noqa: BLE001
             self.error.emit(f"Não foi possível alterar a volta: {exc}")
 
+    def export_lap(self, lap_id: int, destino) -> bool:
+        """Grava a volta num arquivo avulso. Devolve se deu certo."""
+        from src.infrastructure.storage.file_lap_storage import FileLapStorage
+
+        lap = self._laps.get_by_id(lap_id)
+        if lap is None:
+            self.error.emit("Volta não encontrada.")
+            return False
+        try:
+            FileLapStorage(self._export_scratch_dir()).export_lap(lap, destino)
+            return True
+        except OSError as exc:
+            self.error.emit(f"Não foi possível exportar: {exc}")
+            return False
+
+    def import_lap(self, origem) -> bool:
+        """Lê uma volta de arquivo e grava no repositório atual.
+
+        O `id` do arquivo é descartado de propósito: ele veio de outro banco e
+        colidiria com uma volta existente. A pista também é reatribuída para a
+        pista aberta — importar uma volta de Interlagos enquanto se olha
+        Suzuka misturaria os históricos.
+        """
+        from src.infrastructure.storage.file_lap_storage import (
+            FileLapStorage,
+            UnsupportedLapFile,
+        )
+
+        if self._track_id is None:
+            self.error.emit("Escolha uma pista antes de importar.")
+            return False
+        try:
+            lap = FileLapStorage.read_lap_file(origem)
+        except UnsupportedLapFile as exc:
+            self.error.emit(str(exc))
+            return False
+
+        if not lap.points:
+            self.error.emit("O arquivo não contém amostras de telemetria.")
+            return False
+
+        lap.id = None
+        lap.track_id = self._track_id
+        try:
+            self._laps.save(lap)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(f"Não foi possível importar: {exc}")
+            return False
+        self._bus.publish(LapCompleted(lap=lap, lap_id=lap.id or 0, is_best=False))
+        self.refresh()
+        return True
+
+    @staticmethod
+    def _export_scratch_dir():
+        """Diretório efêmero exigido pelo construtor do FileLapStorage.
+
+        A exportação escreve no destino escolhido pelo usuário, não aqui — mas
+        a classe precisa de um diretório para existir.
+        """
+        import tempfile
+
+        return tempfile.mkdtemp(prefix="hanna-export-")
+
     def clear_track(self) -> None:
         """Apaga todas as voltas da pista. A confirmação é da View — o
         ViewModel assume que a decisão já foi tomada."""

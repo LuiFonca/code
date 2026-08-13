@@ -11,6 +11,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -85,6 +86,21 @@ class HistoryTab(QWidget):
         )
         self._invalidate_button.clicked.connect(self._on_toggle_valid_clicked)
 
+        self._export_button = QPushButton("Exportar")
+        self._export_button.setObjectName("stopButton")
+        self._export_button.setToolTip(
+            "Salva a volta selecionada num arquivo, para backup ou para enviar "
+            "a outra pessoa."
+        )
+        self._export_button.clicked.connect(self._on_export_clicked)
+
+        self._import_button = QPushButton("Importar")
+        self._import_button.setObjectName("stopButton")
+        self._import_button.setToolTip(
+            "Lê uma volta de arquivo e grava na pista aberta."
+        )
+        self._import_button.clicked.connect(self._on_import_clicked)
+
         self._delete_button = QPushButton("Excluir volta")
         self._delete_button.setObjectName("stopButton")
         self._delete_button.clicked.connect(self._on_delete_clicked)
@@ -92,6 +108,8 @@ class HistoryTab(QWidget):
         controls.addWidget(self._search)
         controls.addWidget(self._count_label)
         controls.addStretch()
+        controls.addWidget(self._export_button)
+        controls.addWidget(self._import_button)
         controls.addWidget(self._invalidate_button)
         controls.addWidget(self._delete_button)
         controls.addWidget(self._clear_button)
@@ -229,6 +247,34 @@ class HistoryTab(QWidget):
         if linha is None:
             return
         self._vm.set_lap_valid(lap_id, not linha.is_valid)
+
+    def _on_export_clicked(self):
+        lap_id = self._selected_lap_id()
+        if lap_id is None:
+            QMessageBox.information(
+                self, "Nenhuma volta selecionada",
+                "Selecione uma volta na tabela para exportar.",
+            )
+            return
+        destino, _ = QFileDialog.getSaveFileName(
+            self, "Exportar volta", f"volta-{lap_id}.json", "Volta GT7 (*.json)"
+        )
+        if not destino:
+            return
+        if self._vm.export_lap(lap_id, destino):
+            self._show_info(f"Volta {lap_id} exportada.")
+
+    def _on_import_clicked(self):
+        origem, _ = QFileDialog.getOpenFileName(
+            self, "Importar volta", "", "Volta GT7 (*.json)"
+        )
+        if not origem:
+            return
+        if self._vm.import_lap(origem):
+            self._show_info("Volta importada para a pista aberta.")
+
+    def _show_info(self, mensagem: str):
+        QMessageBox.information(self, "Pronto", mensagem)
 
     def _on_clear_clicked(self):
         if self._vm.track_id is None:

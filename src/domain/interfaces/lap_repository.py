@@ -60,6 +60,13 @@ class LapRepository(ABC):
         consultava setor a setor dentro do laço de renderização."""
 
     @abstractmethod
+    def set_valid(self, lap_id: int, is_valid: bool) -> None:
+        """Marca ou desmarca a volta como válida.
+
+        A volta permanece no repositório em qualquer caso — o tempo aconteceu.
+        O que muda é a participação na disputa de recorde."""
+
+    @abstractmethod
     def delete(self, lap_id: int) -> None:
         """Remove a volta e tudo que depende dela (amostras, setores)."""
 
