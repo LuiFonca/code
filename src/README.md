@@ -6,9 +6,17 @@ simplificada + MVVM, com injeção por construtor e barramento de eventos.
 ## Como rodar
 
 ```bash
-pip install PySide6 pycryptodome
-python -m src.main
+pip3 install PySide6 pycryptodome
+
+# a partir da pasta do projeto — qualquer uma destas serve:
+python3 -m src.main
+python3 src/main.py
+python3 src
 ```
+
+No macOS e em boa parte das distribuições Linux o comando é `python3`;
+`python` sozinho normalmente não existe. Rodar `src/main.py` por caminho
+absoluto, de qualquer diretório, também funciona.
 
 `pycryptodome` não é opcional: os pacotes UDP do GT7 são cifrados com Salsa20.
 

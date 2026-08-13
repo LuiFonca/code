@@ -7,11 +7,25 @@ recebem suas dependências pelo construtor, na forma das interfaces do domínio.
 implementação concreta por conta própria, a troca de SQLite por JSON exigiria
 caçar imports por todo o projeto.
 
-Para rodar:
-    python -m src.main
+Para rodar (qualquer uma das formas funciona):
+    python3 -m src.main
+    python3 src/main.py
+    python3 src
 """
 
 import sys
+from pathlib import Path
+
+# Permite executar este arquivo diretamente (`python3 src/main.py`), que é o
+# que qualquer pessoa tenta primeiro. Sem isto, os imports relativos abaixo
+# falham com "attempted relative import with no known parent package": rodado
+# como script, o Python não considera `src` um pacote.
+#
+# A correção põe a pasta-mãe no sys.path e declara o pacote, o que faz os
+# imports relativos passarem a resolver normalmente.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    __package__ = "src"
 
 from PySide6.QtWidgets import QApplication
 
