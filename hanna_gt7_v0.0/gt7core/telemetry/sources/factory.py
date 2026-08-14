@@ -43,8 +43,14 @@ def create_telemetry_source(
     if kind == "mock":
         from .mock import MockTelemetrySource
 
-        _log.info("fonte de telemetria: sintética")
-        return MockTelemetrySource(sample_rate_hz=settings.telemetry.sample_rate_hz)
+        _log.info(
+            "fonte de telemetria: sintética",
+            extra={"speed": settings.telemetry.mock_speed_multiplier},
+        )
+        return MockTelemetrySource(
+            sample_rate_hz=settings.telemetry.sample_rate_hz,
+            speed_multiplier=settings.telemetry.mock_speed_multiplier,
+        )
 
     if kind == "udp":
         from .udp import Gt7UdpTelemetrySource

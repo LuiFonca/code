@@ -79,6 +79,10 @@ class TelemetryConfig:
     receive_port: int = 33740
     sample_rate_hz: int = 60
     buffer_size: int = 4096       # quadros no ring buffer antes de descartar
+    # Acelera o tempo simulado da fonte sintética. 1.0 é tempo real; 60.0 roda
+    # uma sessão de 50 voltas em ~85 s, o que torna viável exercitar gravação e
+    # retenção sem esperar uma hora e meia.
+    mock_speed_multiplier: float = 1.0
 
 
 @dataclass(slots=True)
@@ -155,6 +159,15 @@ class Settings:
                 # cai para o padrão. O log estruturado registra a substituição.
                 return default
 
+        def get_float(name: str, default: float) -> float:
+            raw = get(name)
+            if raw is None:
+                return default
+            try:
+                return float(raw)
+            except ValueError:
+                return default
+
         def get_bool(name: str, default: bool) -> bool:
             raw = get(name)
             if raw is None:
@@ -168,6 +181,7 @@ class Settings:
             receive_port=get_int("RECEIVE_PORT", 33740),
             sample_rate_hz=get_int("SAMPLE_RATE_HZ", 60),
             buffer_size=get_int("BUFFER_SIZE", 4096),
+            mock_speed_multiplier=get_float("MOCK_SPEED", 1.0),
         )
 
         storage_defaults = StorageConfig()

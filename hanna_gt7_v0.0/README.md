@@ -4,11 +4,12 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 2 concluída.** O núcleo (`gt7core`) roda headless com 157 testes
-e 80% de cobertura, e já tem as três fontes de telemetria (ao vivo, sintética e
-replay) atrás do mesmo contrato. A interface (`src/`) ainda é a versão anterior:
-o adaptador que a liga ao núcleo novo (`gt7app/adapters/qt_bus.py`) está pronto e
-testado, mas a migração das abas é trabalho da Fase 3.
+**Estado: Fase 3 concluída.** O núcleo (`gt7core`) roda headless com 197 testes,
+tem as três fontes de telemetria atrás do mesmo contrato, persiste sessões e
+voltas, e já existe uma interface completa rodando sobre ele
+(`python3 -m gt7app`). A aplicação antiga em `src/` continua funcionando e
+intacta — as três abas restantes (histórico, telemetria, comparação) seguem o
+molde de `gt7app/window.py` para migrar.
 
 ---
 
@@ -35,11 +36,20 @@ analytics) rodando em Python puro:
 
 `--laps N` muda o número de voltas; `--verbose` liga o log detalhado.
 
-## Rodar a interface gráfica (versão anterior, funcional)
+## Rodar a interface
 
 ```bash
 pip3 install PySide6 pycryptodome
-python3 -m src.main
+
+python3 -m gt7app          # interface nova, sobre o núcleo
+python3 -m src.main        # aplicação anterior, com as 4 abas
+```
+
+A interface nova sobe com telemetria sintética por padrão — dá para ver o painel
+funcionando sem console nenhum. Para acelerar o tempo simulado:
+
+```bash
+GT7_MOCK_SPEED=20 python3 -m gt7app
 ```
 
 Requer um PlayStation com GT7 na mesma rede. Se não receber telemetria,
@@ -58,7 +68,7 @@ python3 src/tools/diagnose.py <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 157 testes
+python3 -m pytest tests/            # 197 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core)
 ```
@@ -77,11 +87,18 @@ gt7core/          Núcleo — Python puro, ZERO Qt. Roda headless.
   observability/    logging estruturado + métricas de captura
   demo.py           demonstração executável
 
+gt7core/
+  session/          SessionManager (política) + RecordingService (mecânica)
+  storage/          SQLite: banco, migrações e repositórios
+
 gt7app/           Casca de interface — a única parte que conhece Qt
   adapters/         QtEventBusAdapter (entrega eventos na thread da UI)
+  viewmodels/       estado de tela, sem widgets
+  application.py    composition root: monta o grafo de baixo para cima
+  window.py         painel ao vivo
 
 src/              Interface PySide6 (arquitetura anterior, funcional)
-tests/            157 testes
+tests/            197 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -188,6 +205,15 @@ E o que a Fase 2 acrescentou:
 - **§35 observabilidade** → contadores de pacote (recebidos, inválidos, descartados, pkt/s)
 - **P2 (continuação)** → fonte UDP portada para `threading` puro, sem `QThread`
 - **Adaptador Qt** → a garantia de thread da interface preservada numa peça só
+
+E a Fase 3:
+
+- **P9 sessões efêmeras** → tabela `sessions`, migração v6 e `find_unfinished()`
+  para a recuperação após falha do §8
+- **P8 retenção silenciosa** → configurável (padrão 20 recentes + 5 melhores por
+  pista); `0` desliga. O recorde nunca é apagado, mesmo saindo da janela
+- **Composition root** → `gt7app/application.py` monta o grafo inteiro; o Qt só
+  entra nos dois últimos passos
 
 ---
 
