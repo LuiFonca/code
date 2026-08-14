@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Ferramentas
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Segredos — nunca commitar (ver .env.example)
+.env
+.env.local
+*.key
+
+# Dados locais do usuário
+*.db
+*.sqlite3
+data/sessions/
+data/laps/
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
