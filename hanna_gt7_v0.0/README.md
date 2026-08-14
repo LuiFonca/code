@@ -4,9 +4,11 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 1 concluída.** O núcleo (`gt7core`) roda headless, tem 102 testes
-e 85% de cobertura. A interface (`src/`) é a versão anterior, funcional, ainda
-sobre a arquitetura antiga — a Fase 2 a reconecta ao núcleo novo.
+**Estado: Fase 2 concluída.** O núcleo (`gt7core`) roda headless com 157 testes
+e 80% de cobertura, e já tem as três fontes de telemetria (ao vivo, sintética e
+replay) atrás do mesmo contrato. A interface (`src/`) ainda é a versão anterior:
+o adaptador que a liga ao núcleo novo (`gt7app/adapters/qt_bus.py`) está pronto e
+testado, mas a migração das abas é trabalho da Fase 3.
 
 ---
 
@@ -95,9 +97,9 @@ instalado.
 ### Fluxo de dados
 
 ```
-    fonte de telemetria          MockTelemetrySource   (sintética)
-    (mesma interface)            Gt7UdpTelemetrySource (PS5 real)     ← Fase 2
-                                 ReplayTelemetrySource (arquivo)      ← Fase 2
+    fonte de telemetria          Gt7UdpTelemetrySource (PS5 real)
+    (mesma interface)            MockTelemetrySource   (sintética)
+                                 ReplayTelemetrySource (arquivo gravado)
               │
               ▼
     TelemetryEngine        valida → decodifica → normaliza
@@ -111,8 +113,25 @@ instalado.
 ```
 
 A aplicação **não sabe** se a fonte é ao vivo, sintética ou replay. As três
-satisfazem o mesmo contrato — é o que atende ao replay (§40) e ao suporte a
-outros simuladores (§42) sem código adicional.
+satisfazem o mesmo contrato e a escolha acontece num único lugar
+(`sources/factory.py`), a partir da configuração — é o que atende ao replay
+(§40) e ao suporte a outros simuladores (§42) sem código adicional.
+
+### Gravar e reproduzir uma sessão
+
+```python
+from gt7core.telemetry.recording import SessionRecorder, ReplayTelemetrySource
+
+with SessionRecorder("sessao.gt7rec") as recorder:
+    source.on_frame(recorder.record)      # grava enquanto pilota
+    source.start()
+
+replay = ReplayTelemetrySource("sessao.gt7rec", speed_multiplier=4.0)
+```
+
+O replay entrega **exatamente os mesmos quadros** da captura original — há um
+teste que compara os dois lado a lado. Como respeita os intervalos originais,
+exercita watchdogs e taxas de repintura no mesmo ritmo do ao vivo.
 
 ---
 
@@ -141,8 +160,8 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 |---|---|---|
 | 0 | Auditoria arquitetural | ✅ concluída (`docs/ARCHITECTURE_REVIEW.md`) |
 | 1 | Núcleo headless, config, logging, testes, mock | ✅ concluída |
-| 2 | Fonte UDP no novo contrato, replay, adaptador Qt | ⬜ |
-| 3 | Sessões persistidas, Parquet, recuperação após falha | ⬜ |
+| 2 | Fonte UDP no novo contrato, replay, adaptador Qt, métricas | ✅ concluída |
+| 3 | Migrar as abas para o núcleo; sessões persistidas, Parquet | ⬜ |
 | 4 | Frenagem, throttle, curvas, pneus, perfil do piloto | ⬜ |
 | 5 | Design system, navegação por páginas, command palette | ⬜ |
 | 6 | Mapa de pista, detecção de curvas, perda de tempo | ⬜ |
@@ -158,6 +177,13 @@ O que a Fase 1 resolveu, com a numeração da auditoria:
 - **P11** sem logging estruturado → formatter JSON, `print()` eliminado
 - **P12** strings mágicas de estado → `ConnectionState` (StrEnum)
 - **P14** 56 `.pyc` e `.DS_Store` versionados → `.gitignore`, índice limpo
+
+E o que a Fase 2 acrescentou:
+
+- **§40 replay** → `SessionRecorder` + `ReplayTelemetrySource` + formato `.gt7rec`
+- **§35 observabilidade** → contadores de pacote (recebidos, inválidos, descartados, pkt/s)
+- **P2 (continuação)** → fonte UDP portada para `threading` puro, sem `QThread`
+- **Adaptador Qt** → a garantia de thread da interface preservada numa peça só
 
 ---
 

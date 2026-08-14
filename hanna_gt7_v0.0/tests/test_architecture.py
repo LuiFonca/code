@@ -21,7 +21,8 @@ CORE_ROOT = Path(__file__).resolve().parent.parent / "gt7core"
 
 # Nada disto pode aparecer num import de `gt7core`. Qt é o motivo original;
 # os outros existem para que o núcleo não passe a depender dos plugins que
-# deveriam depender dele.
+# deveriam depender dele. `gt7app` entrou na lista quando o adaptador Qt
+# nasceu — é justamente o tipo de dependência invertida que se quer barrar.
 FORBIDDEN_PREFIXES = ("PySide6", "PyQt5", "PyQt6", "gt7app", "gt7ai", "gt7discord")
 
 
@@ -74,23 +75,54 @@ def test_gt7core_nao_importa_qt_nem_camadas_superiores(module_path: Path) -> Non
     )
 
 
-def test_nucleo_importa_sem_qt_instalado() -> None:
-    """Prova viva: com PySide6 ausente do ambiente, o núcleo importa.
+CORE_MODULES = (
+    "gt7core.domain.models",
+    "gt7core.events.bus",
+    "gt7core.telemetry.protocol",
+    "gt7core.telemetry.engine",
+    "gt7core.telemetry.recording",
+    "gt7core.telemetry.sources.base",
+    "gt7core.telemetry.sources.mock",
+    "gt7core.telemetry.sources.udp",
+    "gt7core.telemetry.sources.factory",
+    "gt7core.analytics.delta",
+    "gt7core.analytics.series",
+    "gt7core.config.settings",
+    "gt7core.observability.logging",
+    "gt7core.observability.metrics",
+)
 
-    Este ambiente de teste não tem PySide6 instalado, então o import abaixo só
-    passa porque a extração foi feita de verdade.
+
+class _BlockImport:
+    """Meta path finder que recusa um pacote, esteja ele instalado ou não."""
+
+    def __init__(self, *blocked: str) -> None:
+        self._blocked = blocked
+
+    def find_spec(self, name: str, path: object = None, target: object = None) -> None:
+        if name.split(".")[0] in self._blocked:
+            raise ImportError(f"{name} bloqueado pelo teste de arquitetura")
+        return None
+
+
+def test_nucleo_importa_com_qt_bloqueado() -> None:
+    """Prova viva: com PySide6 **impossível de importar**, o núcleo sobe.
+
+    A versão anterior deste teste apenas confiava em o ambiente não ter PySide6
+    instalado — o que deixou de ser verdade assim que passamos a testar o
+    adaptador Qt. Bloquear o import ativamente prova a propriedade em qualquer
+    ambiente, e continuaria valendo mesmo num container com Qt instalado.
     """
     import importlib
+    import sys
 
-    for module in (
-        "gt7core.domain.models",
-        "gt7core.events.bus",
-        "gt7core.telemetry.protocol",
-        "gt7core.telemetry.engine",
-        "gt7core.telemetry.sources.mock",
-        "gt7core.analytics.delta",
-        "gt7core.analytics.series",
-        "gt7core.config.settings",
-        "gt7core.observability.logging",
-    ):
-        assert importlib.import_module(module) is not None
+    blocker = _BlockImport("PySide6", "PyQt5", "PyQt6")
+    saved = {name: sys.modules.pop(name) for name in CORE_MODULES if name in sys.modules}
+    sys.meta_path.insert(0, blocker)  # type: ignore[arg-type]
+
+    try:
+        for module in CORE_MODULES:
+            assert importlib.import_module(module) is not None
+    finally:
+        sys.meta_path.remove(blocker)  # type: ignore[arg-type]
+        sys.modules.update(saved)
