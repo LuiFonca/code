@@ -58,7 +58,7 @@ python3 src/tools/diagnose.py <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 102 testes
+python3 -m pytest tests/            # 157 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core)
 ```
@@ -74,11 +74,14 @@ gt7core/          Núcleo — Python puro, ZERO Qt. Roda headless.
   analytics/        delta alinhado por distância, consulta de canais
   events/           barramento publish/subscribe thread-safe
   config/           configuração centralizada + segredos mascarados
-  observability/    logging estruturado (console e JSON)
+  observability/    logging estruturado + métricas de captura
   demo.py           demonstração executável
 
+gt7app/           Casca de interface — a única parte que conhece Qt
+  adapters/         QtEventBusAdapter (entrega eventos na thread da UI)
+
 src/              Interface PySide6 (arquitetura anterior, funcional)
-tests/            102 testes
+tests/            157 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -90,9 +93,10 @@ Discord e por um worker de IA, todos previstos no roadmap.
 
 A regra não depende de disciplina: `tests/test_architecture.py` varre cada
 módulo do núcleo por AST e falha o build se alguém reintroduzir `PySide6`,
-`gt7app`, `gt7ai` ou `gt7discord`. Um teste adicional prova a propriedade de
-forma viva, importando o núcleo inteiro num ambiente onde PySide6 não está
-instalado.
+`gt7app`, `gt7ai` ou `gt7discord`. Um segundo teste prova a propriedade de forma
+viva — bloqueia o import de Qt por meta path finder e verifica que o núcleo
+inteiro sobe assim mesmo. Vale em qualquer ambiente, inclusive num container
+onde o Qt está instalado (que é o caso quando se testa o adaptador).
 
 ### Fluxo de dados
 
@@ -170,7 +174,7 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 
 O que a Fase 1 resolveu, com a numeração da auditoria:
 
-- **P1** zero testes → 102 testes, 85% de cobertura
+- **P1** zero testes → 102 testes na Fase 1 (157 hoje)
 - **P2** domínio dependia de Qt → núcleo headless + teste de arquitetura
 - **P3** sem configuração; IP de LAN commitado → `Settings` + `SecretStr` + `.env.example`
 - **P4** só a fonte UDP real → gerador sintético determinístico
