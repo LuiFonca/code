@@ -42,5 +42,11 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
 python_version = "3.11"
-packages = ["gt7core"]
+packages = ["gt7core", "gt7app"]
 strict = true
+
+# O PySide6 não publica stubs completos; sem isto, cada import de Qt vira erro
+# e o strict fica inutilizável justamente na camada que mais precisa dele.
+[[tool.mypy.overrides]]
+module = "PySide6.*"
+ignore_missing_imports = true

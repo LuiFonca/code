@@ -126,6 +126,20 @@ class LoggingConfig:
 
 
 @dataclass(slots=True)
+class UIConfig:
+    """Preferências de interface.
+
+    Moram no núcleo, e não em `gt7app`, porque configuração é configuração —
+    quebrar a precedência ambiente > .env > padrão só para o tema seria
+    inventar um segundo mecanismo. O núcleo guarda o **nome** do tema, uma
+    string opaca para ele; quem sabe o que significa é o design system.
+    """
+
+    theme: str = "dark"
+    start_page: str = "live"
+
+
+@dataclass(slots=True)
 class Settings:
     """Configuração da aplicação inteira, montada num lugar só."""
 
@@ -134,6 +148,7 @@ class Settings:
     ai: AIConfig = field(default_factory=AIConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    ui: UIConfig = field(default_factory=UIConfig)
 
     @classmethod
     def load(cls, env_file: Path | None = None) -> Settings:
@@ -219,12 +234,18 @@ class Settings:
             file_path=Path(log_file) if log_file else None,
         )
 
+        ui = UIConfig(
+            theme=(get("UI_THEME") or "dark").strip().lower(),
+            start_page=(get("UI_START_PAGE") or "live").strip().lower(),
+        )
+
         return cls(
             telemetry=telemetry,
             storage=storage,
             ai=ai,
             discord=discord,
             logging=logging_config,
+            ui=ui,
         )
 
     def describe(self) -> dict[str, object]:

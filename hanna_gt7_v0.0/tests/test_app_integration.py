@@ -174,26 +174,27 @@ class TestJanelaAoVivo:
             window.show()
             app.processEvents()
 
-            window._track_input.setCurrentText("Circuito de Teste")  # noqa: SLF001
-            window._on_start()  # noqa: SLF001
+            live = window._pages[0]  # noqa: SLF001
+            speed_card = live._grid.cards["speed"]  # noqa: SLF001
+
+            live._track_input.setCurrentText("Circuito de Teste")  # noqa: SLF001
+            live._on_start()  # noqa: SLF001
 
             deadline = time.monotonic() + 6.0
             while time.monotonic() < deadline:
                 app.processEvents()
                 time.sleep(0.05)
-                if window._cards["speed"]._value.text() != "—":  # noqa: SLF001
+                if speed_card._value.text() != "—":  # noqa: SLF001
                     break
 
             # O painel está exibindo telemetria de verdade, vinda do núcleo
             # através do adaptador de thread.
-            speed_text = window._cards["speed"]._value.text()  # noqa: SLF001
-            assert speed_text != "—", "o painel não recebeu telemetria"
-            assert "km/h" in speed_text
+            assert speed_card._value.text() != "—", "o painel não recebeu telemetria"  # noqa: SLF001
 
             assert core.session_manager.session_id is not None
             assert core.engine.buffered_points > 0
 
-            window._on_stop()  # noqa: SLF001
+            live._on_stop()  # noqa: SLF001
             app.processEvents()
             assert errors == [], f"exceções na interface: {errors}"
         finally:

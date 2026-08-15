@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from gt7core.config.settings import Settings
 from gt7core.events.bus import EventBus
@@ -36,6 +37,11 @@ from gt7core.storage.repositories import (
 from gt7core.telemetry.engine import TelemetryEngine, TelemetryReceived
 from gt7core.telemetry.sources.base import ConnectionState, TelemetrySource
 from gt7core.telemetry.sources.factory import create_telemetry_source
+
+if TYPE_CHECKING:
+    # Só para tipagem: importar a casca aqui em tempo de execução arrastaria o
+    # Qt para dentro deste módulo, que precisa ser importável sem interface.
+    from .shell import AppShell
 
 _log = get_logger(__name__)
 
@@ -153,7 +159,7 @@ def build_core(
     )
 
 
-def build_gui(core: CoreApplication):  # noqa: ANN201  (tipo Qt, importado tarde)
+def build_gui(core: CoreApplication) -> AppShell:
     """Monta a casca gráfica sobre um núcleo já pronto.
 
     O import do Qt acontece **dentro da função** de propósito: assim este módulo
@@ -161,8 +167,8 @@ def build_gui(core: CoreApplication):  # noqa: ANN201  (tipo Qt, importado tarde
     gráfica instalada — que é exatamente o caso de um servidor ou de um teste.
     """
     from .adapters.qt_bus import QtEventBusAdapter
+    from .shell import AppShell
     from .viewmodels.live import LiveViewModel
-    from .window import LiveWindow
 
     adapter = QtEventBusAdapter(core.bus)
     live_vm = LiveViewModel(adapter)
@@ -175,4 +181,4 @@ def build_gui(core: CoreApplication):  # noqa: ANN201  (tipo Qt, importado tarde
         )
     )
 
-    return LiveWindow(core, live_vm, adapter)
+    return AppShell(core, live_vm, adapter)

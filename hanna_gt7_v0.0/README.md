@@ -4,14 +4,15 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 4 concluída.** O núcleo (`gt7core`) roda headless com 270 testes,
-tem as três fontes de telemetria atrás do mesmo contrato, persiste sessões e
-voltas, e já existe uma interface completa rodando sobre ele
-(`python3 -m gt7app`). A Fase 4 acrescentou a camada de engenharia de pista:
-detecção de curvas, frenagem, acelerador, pneus, atribuição de perda de tempo e
-perfil do piloto — tudo em Python puro e coberto por testes. A aplicação antiga
-em `src/` continua funcionando e intacta — as três abas restantes (histórico,
-telemetria, comparação) seguem o molde de `gt7app/window.py` para migrar.
+**Estado: Fase 5 concluída.** O núcleo (`gt7core`) roda headless com 303 testes
+e mypy strict sobre 60 arquivos. As três fontes de telemetria ficam atrás do
+mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
+pista da Fase 4 está completa — e agora tem interface: cinco páginas sobre um
+design system, com navegação lateral e paleta de comandos (⌘K).
+
+A migração das abas terminou junto: `histórico`, `telemetria` e `comparação`
+agora rodam sobre o núcleo, e a aplicação em `src/` deixou de ser necessária —
+segue no repositório como referência até a Fase 6.
 
 ---
 
@@ -79,9 +80,9 @@ python3 src/tools/diagnose.py <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 270 testes
+python3 -m pytest tests/            # 303 testes
 python3 -m ruff check gt7core/      # lint
-python3 -m mypy                     # tipos (strict em gt7core)
+python3 -m mypy                     # tipos (strict em gt7core e gt7app)
 ```
 
 ---
@@ -104,13 +105,17 @@ gt7core/
   storage/          SQLite: banco, migrações e repositórios
 
 gt7app/           Casca de interface — a única parte que conhece Qt
+  design/           tokens + folha de estilo (Python puro, sem Qt)
+  widgets/          cartões, gráficos, mapa de pista, paleta de comandos
+  pages/            ao vivo, análise, comparação, histórico, piloto
   adapters/         QtEventBusAdapter (entrega eventos na thread da UI)
   viewmodels/       estado de tela, sem widgets
   application.py    composition root: monta o grafo de baixo para cima
-  window.py         painel ao vivo
+  commands.py       registro de comandos (Python puro)
+  shell.py          janela: navegação lateral + páginas + ⌘K
 
 src/              Interface PySide6 (arquitetura anterior, funcional)
-tests/            270 testes
+tests/            303 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -195,9 +200,9 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 1 | Núcleo headless, config, logging, testes, mock | ✅ concluída |
 | 2 | Fonte UDP no novo contrato, replay, adaptador Qt, métricas | ✅ concluída |
 | 3 | Sessões persistidas, retenção, composition root | ✅ concluída |
-| 3b | Migrar as 3 abas restantes para o núcleo; Parquet | ⬜ pendente |
+| 3b | Migrar as 3 abas restantes para o núcleo | ✅ concluída na Fase 5 |
 | 4 | Curvas, frenagem, throttle, pneus, perda de tempo, perfil | ✅ concluída |
-| 5 | Design system, navegação por páginas, command palette | ⬜ |
+| 5 | Design system, navegação por páginas, command palette | ✅ concluída |
 | 6 | Mapa de pista 2D, sobreposição de traçados | ⬜ |
 | 7 | Race Engineer (IA em três níveis) | ⬜ |
 | 8-10 | Discord, voz, hardening | ⬜ |
@@ -282,6 +287,41 @@ aceleração — inversão de causalidade, já que na realidade o pedal é a ent
 interpolação suave, faixa morta de inércia entre freio e acelerador, e uma
 catraca no pedal. Sem isso o mock não exercitaria nenhum dos detectores novos —
 os saturaria.
+
+E a Fase 5 — a interface:
+
+- **Design system** → `gt7app/design/`: tokens (paleta, espaçamento, tipografia)
+  e a folha de estilo gerada a partir deles. **Python puro, sem Qt**, o que
+  permite testar a coerência visual headless
+- **Cinco páginas** → ao vivo, análise de volta, comparação, histórico e perfil
+  do piloto, todas sobre o núcleo. A Fase 4 deixou de existir só no terminal
+- **Paleta de comandos (⌘K)** → busca por subsequência (`cmp` acha "Comparar");
+  o registro é Python puro e servirá ao Discord e à voz, que operam sobre o
+  mesmo vocabulário de ações
+- **Widgets próprios** → gráfico por distância com cursor sincronizado e mapa de
+  pista, ambos em QPainter
+- **mypy estendido ao `gt7app`** → 35 → 60 arquivos em strict
+
+### Duas escolhas da Fase 5 que valem explicação
+
+**Páginas em vez de abas.** Com abas, as quatro telas ficam vivas o tempo todo e
+as quatro se atualizam enquanto se olha para uma só. O contrato de `Page` tem
+`on_enter`/`on_leave`, e só a página visível trabalha.
+
+**QPainter em vez de QtCharts.** O QtCharts está disponível e a aplicação
+anterior o usava. A troca não é gosto: o QtCharts traz a própria linguagem
+visual — margens, fontes de eixo, cor de grade — que só se dobra aos tokens até
+certo ponto. Misturar as duas produz telas que *quase* combinam, que é pior do
+que duas telas assumidamente diferentes. Custou ~200 linhas e entregou controle
+total; o que se perde é zoom e pan, que o QtCharts dava de graça.
+
+### O guarda que mantém o sistema sendo um sistema
+
+`tests/test_design_system.py` varre a folha de estilo atrás de hexadecimais que
+não venham da paleta e falha o build se encontrar algum. É o equivalente visual
+do teste de arquitetura que impede o núcleo de importar Qt — sem ele, um ajuste
+apressado escreve `#2a2e3a` direto no QSS, ninguém percebe, e seis meses depois
+existem três bordas cinza levemente diferentes que ninguém escolheu.
 
 ---
 
