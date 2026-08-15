@@ -23,12 +23,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from gt7core.analytics.corners import detect_corners
 from gt7core.analytics.series import LapSeries, compute_delta_series
 from gt7core.analytics.timeloss import TimeLossReport, analyse_time_loss
 from gt7core.domain.models import TelemetryPoint
 
 from ..application import CoreApplication
 from ..design.tokens import Space, Theme
+from ..widgets.advice import AdviceCard
 from ..widgets.cards import Card, MetricCard, MetricGrid
 from ..widgets.charts import DistanceChart, Series
 from ..widgets.selectors import TrackLapSelector
@@ -124,6 +126,21 @@ class ComparePage(Page):
         self._table.itemSelectionChanged.connect(self._on_row_selected)
         table_card.add(self._table)
         self.content.addWidget(table_card)
+
+        # O engenheiro fica **abaixo** da tabela de propósito. A tabela é o
+        # fato medido; o conselho é interpretação em cima dela. Pôr a
+        # interpretação primeiro convidaria a ler o texto e não conferir os
+        # números — que é a inversão que este projeto inteiro tenta evitar.
+        self._advice = AdviceCard(self.theme)
+        self.content.addWidget(self._advice)
+
+        service = self.core.engineer_service
+        if service is None or not service.is_available:
+            self._advice.show_unavailable()
+        else:
+            service.started.connect(self._on_engineer_started)
+            service.ready.connect(self._on_advice)
+            service.failed.connect(self._advice.show_error)
 
         self._hint = QLabel("")
         self._hint.setWordWrap(True)
@@ -255,11 +272,55 @@ class ComparePage(Page):
         )
 
         self._fill_table(report)
+        self._request_debrief(report)
         self._hint.setText(
             "O tempo de cada trecho é a variação do delta dentro dele — "
             "não o delta acumulado. Por isso um trecho ruim não contamina os "
             "seguintes."
         )
+
+    # ---------- engenheiro ----------
+
+    def _request_debrief(self, report: TimeLossReport) -> None:
+        """Pede o debrief da comparação exibida. Não bloqueia nada.
+
+        O pedido sai a cada troca de volta, e é o `EngineerService` que resolve
+        a corrida: pedidos que chegam com outro em andamento substituem o
+        pendente, e resposta de volta que já não está na tela é descartada.
+        """
+        service = self.core.engineer_service
+        if service is None or not service.is_available:
+            return
+
+        session = self.core.session_manager.session
+        car = session.car.name if session.car else ""
+        service.request_debrief(
+            report,
+            track=self._track_name(),
+            car=car,
+            lap_time_ms=self._analysed[-1].elapsed_ms if self._analysed else 0,
+            reference_time_ms=(
+                self._reference[-1].elapsed_ms if self._reference else None
+            ),
+            corners=detect_corners(self._analysed),
+        )
+
+    def _track_name(self) -> str:
+        track_id = self._analysed_selector.current_track_id()
+        for track in self.core.tracks.get_all():
+            if track.id == track_id:
+                return track.name
+        return ""
+
+    def _on_engineer_started(self, level: str) -> None:
+        if level == "debrief":
+            self._advice.show_thinking()
+
+    def _on_advice(self, advice: object) -> None:
+        # Só o debrief interessa a esta página: o serviço é compartilhado, e a
+        # nota de rádio pedida pela página ao vivo chega aqui também.
+        if str(getattr(getattr(advice, "level", ""), "value", "")) == "debrief":
+            self._advice.show_advice(advice)
 
     def _fill_table(self, report: TimeLossReport) -> None:
         palette = self.theme.palette

@@ -4,13 +4,13 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 7 concluída.** O núcleo (`gt7core`) roda headless com 437 testes
-e mypy strict sobre 73 arquivos. As três fontes de telemetria ficam atrás do
+**Estado: Fase 8 concluída.** O núcleo (`gt7core`) roda headless com 454 testes
+e mypy strict sobre 76 arquivos. As três fontes de telemetria ficam atrás do
 mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
 pista da Fase 4 está completa, a interface tem cinco páginas sobre um design
 system com navegação lateral e paleta de comandos (⌘K) — e agora existe o Race
-Engineer com IA em três níveis, rodando **local e de graça**, que funciona até
-com o modelo desligado.
+Engineer com IA em três níveis, rodando **local e de graça**, entregando o
+conselho na tela sem nunca congelar a janela.
 
 A árvore antiga (`src/`, `hanna_gt7_ai/`) **foi removida**: a migração terminou
 na Fase 5, e o que ainda tinha valor — o catálogo do jogo e o diagnóstico de
@@ -81,7 +81,7 @@ python3 -m gt7core.tools.diagnose <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 437 testes
+python3 -m pytest tests/            # 454 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core, gt7app e gt7ai)
 ```
@@ -109,7 +109,8 @@ gt7core/
 
 gt7app/           Casca de interface — a única parte que conhece Qt
   design/           tokens + folha de estilo (Python puro, sem Qt)
-  widgets/          cartões, gráficos, mapa de pista, paleta de comandos
+  services/         engenheiro fora da thread da UI (mitiga R2)
+  widgets/          cartões, gráficos, mapa de pista, conselho, ⌘K
   pages/            ao vivo, análise, comparação, histórico, piloto
   adapters/         QtEventBusAdapter (entrega eventos na thread da UI)
   viewmodels/       estado de tela, sem widgets
@@ -126,7 +127,7 @@ gt7ai/            Race Engineer — plugin, nunca núcleo
   budget.py         custo por sessão + cadência do rádio
   engineer.py       os três níveis, todos com resposta local garantida
 
-tests/            437 testes
+tests/            454 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -217,7 +218,7 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 6 | Mapa de pista: calor por velocidade, cursor sincronizado, setores | ✅ concluída |
 | 7 | Race Engineer (IA local em três níveis, sem custo) | ✅ concluída |
 | 7b | IA local gratuita como padrão + remoção da árvore antiga | ✅ concluída |
-| 8 | Engenheiro na tela + fronteira assíncrona (R2 da auditoria) | ⬜ |
+| 8 | Engenheiro na tela + fronteira assíncrona (R2 da auditoria) | ✅ concluída |
 | 9 | Disparo automático da nota de rádio (detectores em volta parcial) | ⬜ |
 | 10-12 | Discord, voz, hardening | ⬜ |
 
@@ -435,6 +436,37 @@ informa: compara a distância medida da volta com o catálogo. Devolve **lista**
 não palpite — circuitos de comprimento parecido são indistinguíveis só pela
 distância, e arquivar uma volta na pista errada contamina a comparação para
 sempre, em silêncio.
+
+### O engenheiro na tela (Fase 8)
+
+O conselho aparece na Comparação, no Perfil do piloto e por ⌘K — e **a janela
+nunca para para esperar o modelo**. É a mitigação do R2 da auditoria, o último
+risco que continuava aberto.
+
+O cartão mostra de onde veio o conselho: selo em cor de acento quando o modelo
+respondeu, `análise local` apagado quando saiu da aritmética da Fase 4. Numa
+máquina apertada o segundo caso é frequente, e a confiança que se deposita em
+cada um deveria ser diferente.
+
+Medido com um engenheiro artificialmente lento (3 s), a janela repintando a 60 Hz:
+
+| | antes | depois |
+|---|---|---|
+| pior bloqueio do laço de eventos | 938 ms | **37 ms** |
+| bloqueios acima de 100 ms | 2 | **0** |
+
+### O defeito que a medição revelou
+
+Os 938 ms **não eram a IA** — ela já rodava no pool de threads. Era
+`DistanceChart._to_pixel` chamando `_y_bounds()` uma vez por ponto, e
+`_y_bounds` varre todas as séries inteiras. Com ~6000 amostras por volta, cada
+repintura era quadrática.
+
+Estava lá desde a Fase 5 e passou despercebido porque só a troca de volta
+forçava repintura. Apareceu quando o cartão do engenheiro passou a crescer no
+meio da página ao receber a resposta. A faixa vertical agora é calculada uma vez
+por conjunto de séries, e um teste conta as chamadas durante a pintura para a
+propriedade não se perder de novo.
 
 ### A nuvem continua disponível, mas não é grátis
 

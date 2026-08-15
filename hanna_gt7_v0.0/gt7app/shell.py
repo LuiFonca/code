@@ -191,6 +191,15 @@ class AppShell(QMainWindow):
             category="Captura",
             keywords=("parar", "stop", "desconectar"),
         )
+        service = getattr(self._core, "engineer_service", None)
+        if service is not None and service.is_available:
+            self._commands.add(
+                "engineer.debrief",
+                "Pedir debrief ao engenheiro",
+                self._ask_debrief,
+                keywords=("ia", "conselho", "análise", "engenheiro"),
+            )
+
         self._commands.add(
             "view.refresh",
             "Recarregar a página atual",
@@ -230,6 +239,20 @@ class AppShell(QMainWindow):
             button.setChecked(True)
         self._pages[index].on_enter()
 
+    def _ask_debrief(self) -> None:
+        """Leva à comparação e recalcula — é lá que o debrief é montado.
+
+        O comando não chama o engenheiro direto de propósito: o debrief precisa
+        de uma volta e de uma referência escolhidas, e quem sabe quais são é a
+        página. Pedir daqui, sem contexto, produziria um conselho sobre a volta
+        errada — ou sobre nenhuma.
+        """
+        for index, page in enumerate(self._pages):
+            if page.page_id == "compare":
+                self._activate(index)
+                page.refresh()
+                return
+
     def _refresh_current(self) -> None:
         index = self._stack.currentIndex()
         if 0 <= index < len(self._pages):
@@ -258,7 +281,16 @@ class AppShell(QMainWindow):
         super().changeEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802  (API do Qt)
-        """Desmonta na ordem inversa da montagem."""
+        """Desmonta na ordem inversa da montagem.
+
+        O engenheiro sai **primeiro**: uma inferência em voo segura uma thread
+        que toca objetos Qt na volta, e fechar a janela antes de ela terminar é
+        o modo de falha que o adaptador de barramento existe para evitar — só
+        que no sentido contrário.
+        """
+        service = getattr(self._core, "engineer_service", None)
+        if service is not None:
+            service.shutdown()
         for page in self._pages:
             page.close_page()
         self._vm.close()

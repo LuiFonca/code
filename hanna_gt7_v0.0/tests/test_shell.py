@@ -191,6 +191,67 @@ class TestPaletaDeComandos:
             assert f"go.{page.page_id}" in registered
 
 
+class TestEngenheiroNaTela:
+    """Fase 8: o conselho existe na interface, não só no plugin."""
+
+    def test_a_comparacao_tem_cartao_do_engenheiro(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(2)  # noqa: SLF001
+        app.processEvents()
+        assert window._pages[2]._advice is not None  # noqa: SLF001
+
+    def test_o_perfil_tem_cartao_de_relatorio(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(4)  # noqa: SLF001
+        app.processEvents()
+        assert window._pages[4]._advice is not None  # noqa: SLF001
+
+    def test_o_servico_existe_e_e_qt(self, shell) -> None:  # noqa: ANN001
+        """`build_core` monta o engenheiro; `build_gui` monta a ponte Qt."""
+        from PySide6.QtCore import QObject
+
+        _window, core, _app = shell
+        assert isinstance(core.engineer_service, QObject)
+        assert core.engineer_service.is_available == (core.engineer is not None)
+
+    def test_o_comando_do_engenheiro_leva_a_comparacao(self, shell) -> None:  # noqa: ANN001
+        window, core, app = shell
+        if not core.engineer_service.is_available:
+            pytest.skip("gt7ai não instalado")
+
+        window._activate(0)  # noqa: SLF001
+        command = window._commands.get("engineer.debrief")  # noqa: SLF001
+        assert command is not None
+        command.run()
+        app.processEvents()
+        assert window._pages[window._stack.currentIndex()].page_id == "compare"  # noqa: SLF001
+
+    def test_a_volta_reseta_a_cota_do_radio(self, tmp_path: Path, qt_app) -> None:  # noqa: ANN001
+        """Sem alguém chamando `new_lap`, o rádio emudece após as primeiras notas."""
+        from gt7app.application import build_core
+        from gt7core.domain.models import Track
+        from gt7core.telemetry.sources.mock import synthetic_session
+
+        core = build_core(make_settings(tmp_path))
+        if core.engineer is None:
+            pytest.skip("gt7ai não instalado")
+
+        track_id = core.tracks.get_or_create("Pista")
+        core.session_manager.set_track(Track(id=track_id, name="Pista"))
+        core.session_manager.start_session()
+
+        seen: list[int] = []
+        original = core.engineer.new_lap
+        core.engineer.new_lap = lambda: (seen.append(1), original())  # type: ignore[method-assign]
+
+        for frame in synthetic_session(lap_count=3):
+            core.engine.on_frame(frame)
+        core.session_manager.end_session()
+        core.close()
+
+        assert seen, "ninguém virou a página da cota de notas"
+
+
 class TestMapaDePista:
     """Fase 6: mapa de calor, cursor sincronizado e interação."""
 

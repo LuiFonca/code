@@ -21,11 +21,12 @@ from PySide6.QtWidgets import (
 
 from gt7core.analytics.driver import DriverProfile, build_profile
 from gt7core.analytics.tyres import stint_degradation
-from gt7core.domain.models import TelemetryPoint
+from gt7core.domain.models import Lap, TelemetryPoint
 
 from ..application import CoreApplication
 from ..design.theme import OBJ_SECTION_TITLE
 from ..design.tokens import Palette, Space, Theme
+from ..widgets.advice import AdviceCard
 from ..widgets.cards import Badge, Card, MetricCard, MetricGrid, StatRow
 from ..widgets.charts import DistanceChart, Series
 from ..widgets.selectors import format_lap_time
@@ -96,6 +97,18 @@ class DriverPage(Page):
         )
         pace_card.add(self._pace_chart)
         self.content.addWidget(pace_card)
+
+        self._advice = AdviceCard(self.theme, "Relatório de sessão")
+        self.content.addWidget(self._advice)
+
+        service = self.core.engineer_service
+        if service is None or not service.is_available:
+            self._advice.show_unavailable()
+        else:
+            self._advice.show_idle("Selecione uma pista para o relatório.")
+            service.started.connect(self._on_engineer_started)
+            service.ready.connect(self._on_advice)
+            service.failed.connect(self._advice.show_error)
         self.content.addStretch(1)
 
     def _build_toolbar(self) -> QWidget:
@@ -151,6 +164,7 @@ class DriverPage(Page):
             return
 
         self._populate(profile, point_lists)
+        self._request_report(profile, laps)
 
     def _clear(self, message: str) -> None:
         self._summary.clear_values(self.theme)
@@ -161,6 +175,34 @@ class DriverPage(Page):
         for row in self._rows.values():
             row.set_value("—")
         self._pace_chart.clear()
+
+    # ---------- engenheiro ----------
+
+    def _request_report(self, profile: DriverProfile, laps: list[Lap]) -> None:
+        """Pede o relatório da janela de voltas exibida.
+
+        Nível 3 é a única chamada que olha o conjunto, e por isso a única que
+        pode falar de tendência — os tempos volta a volta vão junto porque
+        média e desvio não mostram **forma**: três voltas boas seguidas de queda
+        conta uma história diferente de oscilação constante com a mesma média.
+        """
+        service = self.core.engineer_service
+        if service is None or not service.is_available:
+            return
+
+        service.request_session_report(
+            profile,
+            track=self._track_combo.currentText(),
+            lap_times_ms=[lap.lap_time_ms for lap in laps if lap.lap_time_ms > 0],
+        )
+
+    def _on_engineer_started(self, level: str) -> None:
+        if level == "session":
+            self._advice.show_thinking()
+
+    def _on_advice(self, advice: object) -> None:
+        if str(getattr(getattr(advice, "level", ""), "value", "")) == "session":
+            self._advice.show_advice(advice)
 
     def _populate(
         self, profile: DriverProfile, point_lists: list[list[TelemetryPoint]]

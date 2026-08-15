@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from gt7core.catalog import GameCatalog
 from gt7core.config.settings import Settings
@@ -36,7 +36,11 @@ from gt7core.storage.repositories import (
     SqliteSessionRepository,
     SqliteTrackRepository,
 )
-from gt7core.telemetry.engine import TelemetryEngine, TelemetryReceived
+from gt7core.telemetry.engine import (
+    LapBoundaryDetected,
+    TelemetryEngine,
+    TelemetryReceived,
+)
 from gt7core.telemetry.sources.base import ConnectionState, TelemetrySource
 from gt7core.telemetry.sources.factory import create_telemetry_source
 
@@ -69,12 +73,32 @@ class CoreApplication:
     source: TelemetrySource
     metrics: TelemetryMetrics
     catalog: GameCatalog
+    engineer: Any | None
+    """O Race Engineer, ou None se o pacote `gt7ai` não estiver instalado.
+
+    Tipado como `Any` de propósito: anotar com `RaceEngineer` exigiria importar
+    `gt7ai` no topo deste módulo, e a aplicação deixaria de subir sem o plugin —
+    que é justamente o oposto do que o §49 pede.
+    """
+
+    engineer_service: Any | None = None
+    """Ponte Qt para o engenheiro. Preenchida por `build_gui`, nunca aqui.
+
+    O engenheiro em si é Python puro e nasce em `build_core`; o serviço é um
+    `QObject` e não pode nascer junto, porque este grafo precisa subir num bot
+    ou num teste headless. A separação é a mesma que existe entre `EventBus` e
+    `QtEventBusAdapter`: o núcleo produz, a casca entrega na thread certa.
+    """
 
     def start(self) -> None:
         """Abre a sessão e liga a captura."""
         self.engine.reset()
         self.recording.reload_reference()
         self.session_manager.start_session()
+        if self.engineer is not None:
+            # Zera livro-caixa e cadência: o teto de gasto e o silêncio mínimo
+            # entre notas são por sessão, não por execução do programa.
+            self.engineer.new_session()
         self.source.start()
 
     def stop(self) -> None:
@@ -87,6 +111,39 @@ class CoreApplication:
     def close(self) -> None:
         self.stop()
         self.database.close()
+
+
+def _build_engineer(settings: Settings) -> Any | None:
+    """Monta o Race Engineer, ou devolve None se o plugin não existir.
+
+    O import é local e protegido por duas razões distintas, e as duas importam:
+
+    `ImportError` cobre o pacote não estar instalado — a aplicação tem que subir
+    sem `gt7ai`, que é o §49 aplicado ao nível de empacotamento e não só de
+    arquitetura.
+
+    A exceção larga cobre o resto. `RaceEngineer.from_settings` já promete não
+    estourar, mas isto roda na inicialização: se a promessa falhar por qualquer
+    motivo, o preço não pode ser o programa inteiro não abrir — é justamente o
+    tipo de acoplamento que a IA como módulo adicional existe para evitar.
+    """
+    try:
+        from gt7ai import RaceEngineer
+    except ImportError:
+        _log.info("gt7ai não instalado — a aplicação roda sem engenheiro")
+        return None
+
+    try:
+        engineer = RaceEngineer.from_settings(settings)
+    except Exception:  # pragma: no cover - from_settings já degrada sozinho
+        _log.exception("falha ao montar o engenheiro; seguindo sem ele")
+        return None
+
+    _log.info(
+        "engenheiro montado",
+        extra={"online": engineer.is_online, "provider": settings.ai.provider},
+    )
+    return engineer
 
 
 def build_core(
@@ -117,6 +174,7 @@ def build_core(
     cars = SqliteCarRepository(database)
 
     catalog = GameCatalog()
+    engineer = _build_engineer(settings)
 
     bus = EventBus()
     engine = TelemetryEngine(bus)
@@ -169,6 +227,13 @@ def build_core(
 
     bus.subscribe(TelemetryReceived, name_car)
 
+    # A cota de notas de rádio é por volta, e alguém precisa virar a página. É
+    # fiação de ciclo de vida, então mora aqui e não dentro de um plugin: o bot
+    # do Discord e a interface consomem a mesma política em vez de cada um
+    # inventar a sua.
+    if engineer is not None:
+        bus.subscribe(LapBoundaryDetected, lambda _event: engineer.new_lap())
+
     unfinished = sessions.find_unfinished()
     if unfinished:
         # §8: recuperação após falha. Não fecha automaticamente — a sessão pode
@@ -194,6 +259,7 @@ def build_core(
         source=source,
         metrics=metrics,
         catalog=catalog,
+        engineer=engineer,
     )
 
 
@@ -205,11 +271,17 @@ def build_gui(core: CoreApplication) -> AppShell:
     gráfica instalada — que é exatamente o caso de um servidor ou de um teste.
     """
     from .adapters.qt_bus import QtEventBusAdapter
+    from .services.engineer import EngineerService
     from .shell import AppShell
     from .viewmodels.live import LiveViewModel
 
     adapter = QtEventBusAdapter(core.bus)
     live_vm = LiveViewModel(adapter)
+
+    # O serviço existe mesmo sem engenheiro: as páginas perguntam
+    # `is_available` e mostram "não instalado" em vez de checarem None por toda
+    # parte.
+    core.engineer_service = EngineerService(core.engineer)
 
     # Estado de conexão vem direto da fonte, não do barramento: é um fato da
     # captura, não do domínio, e não faz sentido um bot de Discord assiná-lo.

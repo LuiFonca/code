@@ -84,6 +84,9 @@ class DistanceChart(QWidget):
         self._x_unit = x_unit
         self._forced_range = y_range
         self._series: list[Series] = []
+        # Faixa vertical memorizada. Recalculada só quando as séries mudam —
+        # ver a nota em `_y_bounds`.
+        self._bounds: tuple[float, float] = y_range or (0.0, 1.0)
         self._cursor_m: float | None = None
         self._max_distance = 0.0
         self._markers: list[tuple[float, str, str]] = []
@@ -100,6 +103,7 @@ class DistanceChart(QWidget):
         self._max_distance = max(
             (s.points[-1][0] for s in series if not s.is_empty), default=0.0
         )
+        self._bounds = self._y_bounds()
         self.update()
 
     def set_markers(self, markers: list[tuple[float, str, str]]) -> None:
@@ -117,6 +121,7 @@ class DistanceChart(QWidget):
         self._markers = []
         self._cursor_m = None
         self._max_distance = 0.0
+        self._bounds = self._forced_range or (0.0, 1.0)
         self.update()
 
     @property
@@ -143,6 +148,20 @@ class DistanceChart(QWidget):
         )
 
     def _y_bounds(self) -> tuple[float, float]:
+        """Faixa vertical do gráfico.
+
+        **Percorre todas as séries inteiras**, então é O(n) e não pode ser
+        chamada por ponto. O resultado é memorizado em `set_series`; quem pinta
+        usa `self._bounds`.
+
+        Isto já foi um defeito real e caro: `_to_pixel` chamava esta função a
+        cada ponto, o que tornava a repintura quadrática. Com ~6000 amostras por
+        volta e duas séries, uma repintura levava **800 ms** — meio segundo de
+        janela congelada toda vez que qualquer coisa mudava o layout da página.
+        Passou despercebido enquanto nada além da troca de volta forçava
+        repintura; apareceu na Fase 8, quando o cartão do engenheiro passou a
+        crescer no meio da tela ao receber a resposta.
+        """
         if self._forced_range is not None:
             return self._forced_range
 
@@ -159,7 +178,7 @@ class DistanceChart(QWidget):
         return low - padding, high + padding
 
     def _to_pixel(self, distance_m: float, value: float, rect: QRectF) -> QPointF:
-        low, high = self._y_bounds()
+        low, high = self._bounds
         span = high - low or 1.0
         x = rect.left() + (distance_m / (self._max_distance or 1.0)) * rect.width()
         y = rect.bottom() - ((value - low) / span) * rect.height()
@@ -198,7 +217,7 @@ class DistanceChart(QWidget):
         # Grade horizontal: quatro divisões bastam para dar referência sem
         # transformar o fundo em papel milimetrado.
         painter.setPen(QPen(QColor(palette.border), 1))
-        low, high = self._y_bounds()
+        low, high = self._bounds
         for i in range(5):
             y = rect.bottom() - (i / 4) * rect.height()
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
