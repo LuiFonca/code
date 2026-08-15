@@ -17,7 +17,9 @@ dependencies = [
 [project.optional-dependencies]
 app = ["PySide6>=6.6,<7"]
 storage = ["pyarrow>=15"]
-ai = ["anthropic>=0.40"]
+# `output_config` (esforço e saída estruturada) só existe a partir da 0.120.
+# Um piso mais baixo instalaria uma SDK que rejeita o parâmetro em TypeError.
+ai = ["anthropic>=0.120"]
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
@@ -27,7 +29,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["gt7core*", "gt7app*"]
+include = ["gt7core*", "gt7app*", "gt7ai*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -42,7 +44,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
 python_version = "3.11"
-packages = ["gt7core", "gt7app"]
+packages = ["gt7core", "gt7app", "gt7ai"]
 strict = true
 
 # O PySide6 não publica stubs completos; sem isto, cada import de Qt vira erro

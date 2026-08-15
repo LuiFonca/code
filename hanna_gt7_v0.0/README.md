@@ -4,15 +4,16 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 6 concluída.** O núcleo (`gt7core`) roda headless com 315 testes
-e mypy strict sobre 60 arquivos. As três fontes de telemetria ficam atrás do
+**Estado: Fase 7 concluída.** O núcleo (`gt7core`) roda headless com 376 testes
+e mypy strict sobre 66 arquivos. As três fontes de telemetria ficam atrás do
 mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
-pista da Fase 4 está completa — e agora tem interface: cinco páginas sobre um
-design system, com navegação lateral e paleta de comandos (⌘K).
+pista da Fase 4 está completa, a interface tem cinco páginas sobre um design
+system com navegação lateral e paleta de comandos (⌘K) — e agora existe o Race
+Engineer com IA, em três níveis, que **funciona com a IA desligada**.
 
 A migração das abas terminou junto: `histórico`, `telemetria` e `comparação`
 agora rodam sobre o núcleo, e a aplicação em `src/` deixou de ser necessária —
-segue no repositório como referência até a Fase 6.
+segue no repositório como referência.
 
 ---
 
@@ -114,8 +115,15 @@ gt7app/           Casca de interface — a única parte que conhece Qt
   commands.py       registro de comandos (Python puro)
   shell.py          janela: navegação lateral + páginas + ⌘K
 
+gt7ai/            Race Engineer — plugin, nunca núcleo
+  client.py         fronteira com a API (tudo específico da Anthropic mora aqui)
+  prompts.py        o que sobe: análise, nunca telemetria bruta
+  models.py         o que desce: Advice, com ações e proveniência
+  budget.py         custo por sessão + cadência do rádio
+  engineer.py       os três níveis, todos com resposta local garantida
+
 src/              Interface PySide6 (arquitetura anterior, funcional)
-tests/            315 testes
+tests/            376 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -204,7 +212,7 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 4 | Curvas, frenagem, throttle, pneus, perda de tempo, perfil | ✅ concluída |
 | 5 | Design system, navegação por páginas, command palette | ✅ concluída |
 | 6 | Mapa de pista: calor por velocidade, cursor sincronizado, setores | ✅ concluída |
-| 7 | Race Engineer (IA em três níveis) | ⬜ |
+| 7 | Race Engineer (IA em três níveis) | ✅ concluída |
 | 8-10 | Discord, voz, hardening | ⬜ |
 
 O que a Fase 1 resolveu, com a numeração da auditoria:
@@ -352,6 +360,88 @@ ponta "perto de zero" pode recuar até desaparecer no fundo, porque zero
 significa "sem dado". Aqui não — a ponta é a **curva lenta**, exatamente onde o
 piloto olha. A escala fica numa faixa em que a linha continua visível na volta
 inteira, ao custo de menos alcance dinâmico.
+
+---
+
+## O Race Engineer (Fase 7)
+
+Três níveis, que diferem em latência, custo e formato:
+
+| Nível | Quando | Modelo | Formato |
+|---|---|---|---|
+| `quick_note` | com o piloto na pista | `claude-haiku-4-5` | uma frase, para o rádio |
+| `debrief` | volta terminada | `claude-opus-5` | JSON com ações e ganho estimado |
+| `session_report` | fim da sessão | `claude-opus-5` | quatro parágrafos de texto |
+
+```python
+from gt7ai import RaceEngineer
+
+engineer = RaceEngineer.from_settings(settings)
+advice = engineer.debrief(report, track="Suzuka", lap_time_ms=132_450)
+print(advice.full_text())
+```
+
+### A IA nunca vê telemetria bruta
+
+É a decisão central da fase. Uma volta tem ~6.270 amostras de 27 canais —
+**169.290 números**. O que sobe para o modelo são **1.234 caracteres**: o
+resultado da análise da Fase 4.
+
+Não é só economia. Um modelo de linguagem lendo uma coluna de 6.000 velocidades
+não vai descobrir que o piloto soltou o freio cedo demais na curva 3 — os
+detectores da Fase 4 já descobriram, com aritmética, de graça e sem alucinar. O
+modelo faz o que ele faz bem (priorizar, explicar, transformar diagnóstico em
+instrução) sobre números que não precisou inferir.
+
+O prompt de sistema é **estável e longo de propósito**: estável porque qualquer
+variação (um horário, o nome da pista) invalidaria o prefixo de cache; longo
+porque o mínimo cacheável no `claude-opus-5` é 512 tokens, e um prompt de 300
+tokens é marcado para cache e ignorado *em silêncio* — sem erro, só sem
+economia. Medido: **88% da entrada vindo do cache, US$ 0,0063 por debrief**.
+
+### A IA é opcional de verdade
+
+Sem chave, sem rede, sem crédito, com a API fora do ar ou com o modelo
+recusando — **todos os caminhos terminam num conselho utilizável**, porque a
+análise da Fase 4 já sabia responder sozinha. `Advice.source` diz de onde veio.
+
+Isto não é tratamento de erro: é a resposta padrão do sistema, e a chamada
+remota é o caminho que tenta melhorá-la. O debrief local até faz a síntese que
+importa — se três trechos perdidos têm a mesma causa, ele diz *"é um problema
+só, não 3"*, o que é contagem, não linguagem:
+
+```
++2.500 s no total; 2.500 s recuperáveis, a maior parte em Curva 1.
+
+O mesmo padrão aparece em 3 trechos (Curva 1, Curva 2, Curva 3): 4 km/h a
+menos saindo. Somados, valem 1.752 s — é um problema só, não 3.
+
+• Curva 1: 4 km/h a menos saindo (~0.65 s)
+• Curva 2: 4 km/h a menos saindo (~0.57 s)
+• Curva 3: 4 km/h a menos saindo (~0.53 s)
+```
+
+### Orçamento e cadência são problemas diferentes
+
+O teto de gasto por sessão evita que a soma de chamadas pequenas vire uma conta
+grande sem ninguém notar. Mas o intervalo mínimo entre notas de rádio existe por
+**ergonomia**, não por dinheiro: a nota em pilotagem dispara por evento, e numa
+volta ruim isso acontece oito vezes em noventa segundos. Mesmo de graça seria
+errado falar oito vezes — o piloto não consegue aplicar uma correção antes da
+próxima chegar. A economia é efeito colateral.
+
+### Um defeito que só apareceu ao olhar o que seria enviado
+
+O perfil do piloto dizia "8 travamentos por volta" numa volta com quatro
+frenagens. A detecção de pneus é **por roda** de propósito (travar só a
+dianteira esquerda é outro diagnóstico), mas o perfil somava eventos — e travar
+as duas dianteiras juntas, que é o normal numa frenagem em linha reta, contava
+duas vezes.
+
+Errado por um fator de dois já era ruim na tela. A partir da Fase 7 esse número
+vai no prompt do engenheiro, que foi instruído a nunca inventar grandeza e
+repetiria a inflação com toda a confiança. `_incident_count` passou a agrupar
+eventos que se sobrepõem em distância.
 
 ---
 

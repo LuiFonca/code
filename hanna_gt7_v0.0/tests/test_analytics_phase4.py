@@ -30,6 +30,7 @@ from gt7core.analytics.throttle import analyse_throttle, compare_throttle
 from gt7core.analytics.timeloss import analyse_time_loss
 from gt7core.analytics.tyres import (
     SlipConvention,
+    TyreEvent,
     detect_tyre_events,
     infer_slip_convention,
     slip_ratio,
@@ -775,6 +776,75 @@ class TestDriverProfile:
         assert profile is not None
         assert profile.consistency_label == "irregular"
         assert any("nconsistência" in note for note in profile.weaknesses())
+
+    def test_incidente_nas_duas_rodas_conta_uma_vez(
+        self, reference_lap: list[TelemetryPoint]
+    ) -> None:
+        """O perfil conta ocorrências; a detecção continua sendo por roda.
+
+        Travar as duas dianteiras na mesma frenagem é **um** travamento para o
+        piloto, e dois eventos para o detector — que precisa dessa granularidade
+        porque travar só uma roda é outro diagnóstico. Somar eventos aqui
+        dobrava o número: uma volta com quatro frenagens virava "8 travamentos".
+
+        Errar por um fator de dois já era ruim na tela; a partir da Fase 7 o
+        número vai no prompt do engenheiro, que é instruído a não inventar
+        grandeza e repetiria a inflação com toda a confiança.
+        """
+        events = detect_tyre_events(reference_lap)
+        por_roda = sum(1 for e in events if e.kind == "travamento")
+        assert por_roda > 0, "a volta de referência precisa ter travamentos"
+
+        profile = build_profile([reference_lap])
+        assert profile is not None
+        assert profile.lockups_per_lap < por_roda, "contou por roda, não por incidente"
+
+        # Cada incidente é um intervalo de distância distinto.
+        spans = {
+            (e.start_distance_m, e.end_distance_m)
+            for e in events
+            if e.kind == "travamento"
+        }
+        assert profile.lockups_per_lap == len(spans)
+
+    def test_agrupamento_de_incidentes_separa_o_que_e_separado(self) -> None:
+        """Agrupar por sobreposição não pode fundir frenagens distintas.
+
+        Casos montados à mão porque a volta sintética é simétrica demais para
+        distinguir "as duas rodas na mesma frenagem" de "duas frenagens".
+        """
+        from gt7core.analytics.driver import _incident_count
+
+        def event(wheel: str, start: float, end: float, kind: str = "travamento") -> TyreEvent:
+            return TyreEvent(
+                kind=kind,
+                wheel=wheel,
+                start_distance_m=start,
+                end_distance_m=end,
+                start_time_ms=0,
+                end_time_ms=100,
+                peak_ratio=0.6,
+            )
+
+        # Mesmo eixo, mesma frenagem: um incidente.
+        assert _incident_count(
+            [event("fl", 700, 880), event("fr", 700, 880)], "travamento"
+        ) == 1
+        # Uma roda só, ainda é um incidente — não pode sumir.
+        assert _incident_count([event("fl", 700, 880)], "travamento") == 1
+        # Duas frenagens distintas, em pontos distintos da pista: dois.
+        assert _incident_count(
+            [event("fl", 700, 880), event("fl", 1600, 1750)], "travamento"
+        ) == 2
+        # Sobreposição parcial (uma roda trava um pouco depois): ainda um.
+        assert _incident_count(
+            [event("fl", 700, 880), event("fr", 820, 910)], "travamento"
+        ) == 1
+        # Espécies diferentes não se misturam.
+        assert _incident_count(
+            [event("fl", 700, 880), event("rl", 700, 880, "patinagem")], "patinagem"
+        ) == 1
+        assert _incident_count([], "travamento") == 0
 
     def test_estilo_de_frenagem_reflete_o_trail_braking(
         self, reference_lap: list[TelemetryPoint]

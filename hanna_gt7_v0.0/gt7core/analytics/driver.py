@@ -29,7 +29,7 @@ from ..domain.models import TelemetryPoint
 from .braking import detect_braking_zones
 from .corners import Corner, detect_corners
 from .throttle import analyse_throttle
-from .tyres import detect_tyre_events, infer_slip_convention
+from .tyres import TyreEvent, detect_tyre_events, infer_slip_convention
 
 # Abaixo disto o perfil é preliminar: as médias existem, mas o desvio padrão de
 # três amostras não descreve um piloto.
@@ -191,11 +191,9 @@ def build_profile(laps: list[list[TelemetryPoint]]) -> DriverProfile | None:
         throttle_delays.extend(a.delay_from_apex_m for a in applications)
         lifts += sum(a.lift_count for a in applications)
 
-        for event in detect_tyre_events(lap, convention=convention):
-            if event.kind == "travamento":
-                lockups += 1
-            else:
-                wheelspins += 1
+        events = detect_tyre_events(lap, convention=convention)
+        lockups += _incident_count(events, "travamento")
+        wheelspins += _incident_count(events, "patinagem")
 
     count = len(usable)
     return DriverProfile(
@@ -215,6 +213,41 @@ def build_profile(laps: list[list[TelemetryPoint]]) -> DriverProfile | None:
         lifts_per_lap=lifts / count,
         pace_trend_ms_per_lap=_slope([float(t) for t in lap_times]),
     )
+
+
+def _incident_count(events: list[TyreEvent], kind: str) -> int:
+    """Quantos **incidentes** houve, não quantas rodas foram afetadas.
+
+    `detect_tyre_events` é por roda de propósito: travar só a dianteira
+    esquerda é um diagnóstico diferente de travar as duas, e a detecção não
+    pode apagar essa distinção. Mas o perfil do piloto conta ocorrências, e
+    somar eventos aqui dobra o número toda vez que as duas rodas de um eixo
+    travam juntas — que é o caso normal numa frenagem em linha reta.
+
+    O sintoma que revelou isto: uma volta com quatro frenagens saía do perfil
+    como "8 travamentos por volta". Errado por um fator de dois, e alarmante
+    para quem lê. Pior ainda a partir da Fase 7, porque esse número vai no
+    prompt do engenheiro — que foi instruído a nunca inventar grandeza e
+    repetiria fielmente a inflação.
+
+    Eventos que se sobrepõem em distância são o mesmo incidente visto por rodas
+    diferentes.
+    """
+    spans = sorted(
+        (event.start_distance_m, event.end_distance_m)
+        for event in events
+        if event.kind == kind
+    )
+
+    incidents = 0
+    current_end = float("-inf")
+    for start, end in spans:
+        if start > current_end:
+            incidents += 1
+            current_end = end
+        else:
+            current_end = max(current_end, end)
+    return incidents
 
 
 def _braking_repeatability(starts_per_lap: list[list[float]]) -> float | None:
