@@ -22,7 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from gt7core.catalog import GameCatalog
 from gt7core.config.settings import Settings
+from gt7core.domain.models import Car
 from gt7core.events.bus import EventBus
 from gt7core.observability.logging import configure_logging, get_logger
 from gt7core.observability.metrics import TelemetryMetrics
@@ -66,6 +68,7 @@ class CoreApplication:
     recording: RecordingService
     source: TelemetrySource
     metrics: TelemetryMetrics
+    catalog: GameCatalog
 
     def start(self) -> None:
         """Abre a sessão e liga a captura."""
@@ -113,6 +116,8 @@ def build_core(
     tracks = SqliteTrackRepository(database)
     cars = SqliteCarRepository(database)
 
+    catalog = GameCatalog()
+
     bus = EventBus()
     engine = TelemetryEngine(bus)
     session_manager = SessionManager(bus, sessions)
@@ -131,6 +136,38 @@ def build_core(
         recording.publish_delta(event.point.distance_m, event.point.elapsed_ms)
 
     bus.subscribe(TelemetryReceived, publish_delta)
+
+    # O carro se identifica sozinho. O protocolo manda um `car_id` numérico e
+    # mais nada; sem o catálogo, o histórico inteiro fica com "carro 24" e o
+    # debrief do engenheiro nunca preenche o campo do carro.
+    #
+    # Este retorno de chamada é **puro**: consulta um dicionário em memória e
+    # publica. Nenhum acesso a banco, e a razão é concreta. A primeira versão
+    # chamava `cars.get_or_create()` aqui, e isto roda na thread de captura —
+    # a mesma conexão SQLite passou a ser usada por duas threads ao mesmo tempo,
+    # e o sintoma não foi exceção: foi segmentation fault. Pior, um quadro
+    # atrasado chegando depois de `close()` tocava um banco já fechado.
+    #
+    # O id local do carro fica para quando alguma tela precisar dele; hoje o que
+    # se usa é o **nome**, que viaja em `CarChanged` e na sessão em memória.
+    last_game_car: list[int] = []
+
+    def name_car(event: TelemetryReceived) -> None:
+        # O id vem do quadro cru, não da amostra: `TelemetryPoint` guarda o que
+        # descreve a pilotagem, e qual carro é não muda de amostra para amostra.
+        game_car_id = event.frame.car_id
+        if game_car_id < 0 or last_game_car[-1:] == [game_car_id]:
+            return
+        last_game_car.append(game_car_id)
+
+        session_manager.set_car(
+            Car(
+                name=catalog.car_name(game_car_id) or f"Carro {game_car_id}",
+                maker=catalog.car_maker(game_car_id),
+            )
+        )
+
+    bus.subscribe(TelemetryReceived, name_car)
 
     unfinished = sessions.find_unfinished()
     if unfinished:
@@ -156,6 +193,7 @@ def build_core(
         recording=recording,
         source=source,
         metrics=metrics,
+        catalog=catalog,
     )
 
 

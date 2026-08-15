@@ -31,6 +31,13 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["gt7core*", "gt7app*", "gt7ai*"]
 
+# Sem isto, um `pip install .` monta o pacote **sem** os CSVs: setuptools só
+# empacota `.py` por padrão. O catálogo sumiria em silêncio — o programa subiria
+# normalmente e todo carro apareceria como "Carro 2001", porque o catálogo
+# ausente é modo de operação e não erro.
+[tool.setuptools.package-data]
+gt7core = ["catalog/data/*.csv"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

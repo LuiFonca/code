@@ -136,10 +136,30 @@ class LivePage(Page):
     # ---------- ações ----------
 
     def _reload_tracks(self) -> None:
+        """As pistas já usadas primeiro, depois o catálogo do jogo.
+
+        Nesta ordem porque quem volta ao programa costuma voltar ao mesmo
+        circuito. O catálogo entra embaixo para que digitar continue funcionando
+        e, principalmente, para que o nome venha escrito igual toda vez — sem
+        ele, "Suzuka" e "suzuka circuit" viram duas pistas distintas no banco e
+        o histórico se parte em dois sem ninguém perceber.
+        """
         current = self._track_input.currentText() if self._track_input.count() else ""
         self._track_input.clear()
+
+        seen: set[str] = set()
         for track in self.core.tracks.get_all():
             self._track_input.addItem(track.name, track.id)
+            seen.add(track.name.lower())
+
+        catalog_names = sorted(
+            (t.name for t in self.core.catalog.tracks.values() if t.name),
+            key=str.lower,
+        )
+        for name in catalog_names:
+            if name.lower() not in seen:
+                self._track_input.addItem(name, None)
+
         if current:
             self._track_input.setCurrentText(current)
 

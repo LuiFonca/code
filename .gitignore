@@ -5,6 +5,10 @@ __pycache__/
 .venv/
 venv/
 
+# Artefatos de build — `pip wheel .` cria estes e eles não vão para o repo
+build/
+dist/
+
 # Ferramentas
 .pytest_cache/
 .ruff_cache/

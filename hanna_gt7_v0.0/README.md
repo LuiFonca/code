@@ -4,17 +4,17 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 7 concluída.** O núcleo (`gt7core`) roda headless com 411 testes
-e mypy strict sobre 68 arquivos. As três fontes de telemetria ficam atrás do
+**Estado: Fase 7 concluída.** O núcleo (`gt7core`) roda headless com 437 testes
+e mypy strict sobre 73 arquivos. As três fontes de telemetria ficam atrás do
 mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
 pista da Fase 4 está completa, a interface tem cinco páginas sobre um design
 system com navegação lateral e paleta de comandos (⌘K) — e agora existe o Race
 Engineer com IA em três níveis, rodando **local e de graça**, que funciona até
 com o modelo desligado.
 
-A migração das abas terminou junto: `histórico`, `telemetria` e `comparação`
-agora rodam sobre o núcleo, e a aplicação em `src/` deixou de ser necessária —
-segue no repositório como referência.
+A árvore antiga (`src/`, `hanna_gt7_ai/`) **foi removida**: a migração terminou
+na Fase 5, e o que ainda tinha valor — o catálogo do jogo e o diagnóstico de
+rede — foi portado para o núcleo antes de apagar.
 
 ---
 
@@ -55,8 +55,7 @@ de velocidade, delta e o relatório de engenharia de pista — o pipeline inteir
 ```bash
 pip3 install PySide6 pycryptodome
 
-python3 -m gt7app          # interface nova, sobre o núcleo
-python3 -m src.main        # aplicação anterior, com as 4 abas
+python3 -m gt7app
 ```
 
 A interface nova sobe com telemetria sintética por padrão — dá para ver o painel
@@ -70,7 +69,7 @@ Requer um PlayStation com GT7 na mesma rede. Se não receber telemetria,
 diagnostique a rede antes de mexer em qualquer coisa:
 
 ```bash
-python3 src/tools/diagnose.py <IP-do-PlayStation>
+python3 -m gt7core.tools.diagnose <IP-do-PlayStation>
 ```
 
 > **macOS:** a partir do Sonoma o sistema exige permissão de *Rede Local* por
@@ -82,7 +81,7 @@ python3 src/tools/diagnose.py <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 411 testes
+python3 -m pytest tests/            # 437 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core, gt7app e gt7ai)
 ```
@@ -99,7 +98,9 @@ gt7core/          Núcleo — Python puro, ZERO Qt. Roda headless.
                     perda de tempo, perfil do piloto
   events/           barramento publish/subscribe thread-safe
   config/           configuração centralizada + segredos mascarados
+  catalog/          527 carros e 105 circuitos do GT7 + dados
   observability/    logging estruturado + métricas de captura
+  tools/            diagnóstico de rede, sem interface gráfica
   demo.py           demonstração executável
 
 gt7core/
@@ -125,8 +126,7 @@ gt7ai/            Race Engineer — plugin, nunca núcleo
   budget.py         custo por sessão + cadência do rádio
   engineer.py       os três níveis, todos com resposta local garantida
 
-src/              Interface PySide6 (arquitetura anterior, funcional)
-tests/            411 testes
+tests/            437 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -216,7 +216,10 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 5 | Design system, navegação por páginas, command palette | ✅ concluída |
 | 6 | Mapa de pista: calor por velocidade, cursor sincronizado, setores | ✅ concluída |
 | 7 | Race Engineer (IA local em três níveis, sem custo) | ✅ concluída |
-| 8-10 | Discord, voz, hardening | ⬜ |
+| 7b | IA local gratuita como padrão + remoção da árvore antiga | ✅ concluída |
+| 8 | Engenheiro na tela + fronteira assíncrona (R2 da auditoria) | ⬜ |
+| 9 | Disparo automático da nota de rádio (detectores em volta parcial) | ⬜ |
+| 10-12 | Discord, voz, hardening | ⬜ |
 
 O que a Fase 1 resolveu, com a numeração da auditoria:
 
@@ -415,6 +418,23 @@ Duas adaptações reais para modelo pequeno, não configuração:
   na decodificação pelo esquema; "não invente número" virou `guard.py`, que
   confere se todo número citado tem origem no contexto e descarta a resposta
   quando não tem. Restrição executada vale mais que restrição escrita.
+
+### O catálogo do jogo
+
+O protocolo do GT7 manda um `car_id` **numérico** e nada sobre a pista — nem
+nome, nem comprimento. `gt7core/catalog/` é a tabela que preenche a lacuna: 527
+carros, 72 montadoras e 105 circuitos.
+
+```python
+catalog.car_name(24)          # "Nissan 180SX Type X '96"
+catalog.guess_by_length(5807) # [Suzuka Circuit, Lago Maggiore, Monza, ...]
+```
+
+`guess_by_length` é a única forma de saber onde o piloto está, já que o jogo não
+informa: compara a distância medida da volta com o catálogo. Devolve **lista**, e
+não palpite — circuitos de comprimento parecido são indistinguíveis só pela
+distância, e arquivar uma volta na pista errada contamina a comparação para
+sempre, em silêncio.
 
 ### A nuvem continua disponível, mas não é grátis
 

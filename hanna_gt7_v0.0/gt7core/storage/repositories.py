@@ -388,15 +388,21 @@ class SqliteTrackRepository:
         clean = name.strip()
         if not clean:
             raise ValueError("nome de pista vazio")
+        # A leitura fica **dentro** do lock, junto da escrita. Deixá-la fora
+        # parecia inofensivo — é só um SELECT — mas a conexão é uma só,
+        # compartilhada com `check_same_thread=False`, e ler por ela enquanto
+        # outra thread escreve é uso concorrente do mesmo objeto sqlite3. O
+        # sintoma não é exceção: é segmentation fault, e só aparece quando
+        # alguém passa a chamar isto fora da thread da interface.
         with self._db.lock:
             self._conn.execute(
                 "INSERT OR IGNORE INTO tracks (name, created_at) VALUES (?, ?)",
                 (clean, time.time()),
             )
             self._conn.commit()
-        row = self._conn.execute(
-            "SELECT id FROM tracks WHERE name = ?", (clean,)
-        ).fetchone()
+            row = self._conn.execute(
+                "SELECT id FROM tracks WHERE name = ?", (clean,)
+            ).fetchone()
         return int(row[0])
 
     def get_by_id(self, track_id: int) -> Track | None:
@@ -435,9 +441,10 @@ class SqliteCarRepository:
                 (clean, time.time()),
             )
             self._conn.commit()
-        row = self._conn.execute(
-            "SELECT id FROM cars WHERE name = ?", (clean,)
-        ).fetchone()
+            # Dentro do lock, pelo mesmo motivo de `SqliteTrackRepository`.
+            row = self._conn.execute(
+                "SELECT id FROM cars WHERE name = ?", (clean,)
+            ).fetchone()
         return int(row[0])
 
     def get_by_id(self, car_id: int) -> Car | None:

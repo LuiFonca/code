@@ -25,6 +25,7 @@ import threading
 import time
 from collections.abc import Iterator
 
+from ...observability.logging import get_logger
 from ..protocol import FLAG_CAR_ON_TRACK, FLAG_IN_GEAR, TelemetryFrame
 from .base import ConnectionState, TelemetrySource
 
@@ -51,6 +52,8 @@ _SPEED_PROFILE: tuple[tuple[float, float], ...] = (
 
 DEFAULT_TRACK_LENGTH_M = 3800.0
 DEFAULT_SAMPLE_RATE_HZ = 60
+_log = get_logger(__name__)
+
 DEFAULT_CAR_ID = 2001
 
 # Aceleração abaixo da qual o piloto sintético está de inércia — nem freio nem
@@ -337,6 +340,21 @@ class MockTelemetrySource(TelemetrySource):
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                # Órfã: `join` expirou e a thread continua publicando quadros
+                # num grafo que quem chamou `stop()` considera desligado. Antes
+                # isto passava despercebido porque um quadro atrasado só
+                # engordava uma lista; virou visível quando um assinante passou
+                # a tocar recursos que `close()` já havia liberado.
+                #
+                # Não dá para matar uma thread em Python, então o que se pode
+                # fazer é não mentir sobre o estado: avisa e **mantém** a
+                # referência, para que `is_running` continue dizendo a verdade.
+                _log.warning(
+                    "a thread da fonte sintética não parou em 2 s; segue viva"
+                )
+                self._emit_status(ConnectionState.DISCONNECTED)
+                return
         self._thread = None
         self._emit_status(ConnectionState.DISCONNECTED)
 
