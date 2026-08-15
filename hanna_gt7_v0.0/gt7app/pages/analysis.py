@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from gt7core.analytics.braking import BrakingZone, detect_braking_zones
 from gt7core.analytics.corners import Corner, corner_at, detect_corners
+from gt7core.analytics.series import sector_boundaries_m
 from gt7core.analytics.throttle import ThrottleApplication, analyse_throttle
 from gt7core.analytics.tyres import detect_tyre_events, temperature_balance
 from gt7core.domain.models import TelemetryPoint
@@ -40,6 +41,9 @@ from ..widgets.trackmap import TrackMap, TrackMarker, TrackPath
 from .base import Page
 
 CORNER_COLUMNS = ("Curva", "Ápice", "Vel. mín.", "Raio", "Freada", "Saída")
+
+# Os mesmos setores do histórico — o corte precisa ser o mesmo entre telas.
+NUM_SECTORS = 3
 
 
 class AnalysisPage(Page):
@@ -91,8 +95,12 @@ class AnalysisPage(Page):
         right = QVBoxLayout()
         right.setSpacing(Space.LG.px)
 
-        map_card = Card("Traçado")
-        self._map = TrackMap(self.theme, height=240)
+        map_card = Card("Traçado — cor por velocidade")
+        self._map = TrackMap(self.theme, height=240, heatmap_label="km/h")
+        # A ligação nos dois sentidos é o que faz o mapa e os gráficos serem uma
+        # leitura só: os gráficos dizem *o que* aconteceu, o mapa diz *onde*.
+        self._map.hovered.connect(self._on_hover)
+        self._map.hover_left.connect(self._on_hover_left)
         map_card.add(self._map)
         right.addWidget(map_card)
 
@@ -244,22 +252,40 @@ class AnalysisPage(Page):
                     "traçado",
                     palette.accent,
                     [(p.position_x, p.position_z) for p in points],
+                    values=[p.speed_kmh for p in points],
+                    distances=[p.distance_m for p in points],
                 )
             ]
         )
-        self._map.set_markers(
-            [
-                TrackMarker(
-                    x=marker_point.position_x,
-                    z=marker_point.position_z,
-                    color=palette.purple,
-                    label=f"C{corner.index}",
+
+        markers = [
+            TrackMarker(
+                x=apex.position_x,
+                z=apex.position_z,
+                color=palette.purple,
+                label=f"C{corner.index}",
+                hollow=True,
+            )
+            for corner in self._corners
+            if (apex := _point_at(points, corner.apex_distance_m)) is not None
+        ]
+        # Limites de setor: os mesmos cortes por distância que o histórico usa,
+        # para que "setor 2" signifique o mesmo pedaço de asfalto nas duas telas.
+        for number, boundary in enumerate(
+            sector_boundaries_m(points[-1].distance_m, NUM_SECTORS)[:-1], start=1
+        ):
+            edge = _point_at(points, boundary)
+            if edge is not None:
+                markers.append(
+                    TrackMarker(
+                        x=edge.position_x,
+                        z=edge.position_z,
+                        color=palette.text_muted,
+                        label=f"S{number}",
+                        radius=3.0,
+                    )
                 )
-                for corner in self._corners
-                if (marker_point := _point_at(points, corner.apex_distance_m))
-                is not None
-            ]
-        )
+        self._map.set_markers(markers)
 
         self._fill_table(zones, applications)
 
@@ -300,6 +326,7 @@ class AnalysisPage(Page):
     def _on_hover(self, distance_m: float) -> None:
         for chart in self._charts:
             chart.set_cursor(distance_m)
+        self._map.set_cursor(distance_m)
 
         point = _point_at(self._points, distance_m)
         if point is None:
@@ -320,6 +347,7 @@ class AnalysisPage(Page):
     def _on_hover_left(self) -> None:
         for chart in self._charts:
             chart.set_cursor(None)
+        self._map.set_cursor(None)
 
     def _on_row_selected(self) -> None:
         """Selecionar uma curva na tabela move o cursor dos gráficos até ela."""

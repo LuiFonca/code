@@ -32,7 +32,7 @@ from ..design.tokens import Space, Theme
 from ..widgets.cards import Card, MetricCard, MetricGrid
 from ..widgets.charts import DistanceChart, Series
 from ..widgets.selectors import TrackLapSelector
-from ..widgets.trackmap import TrackMap, TrackPath
+from ..widgets.trackmap import TrackMap, TrackMarker, TrackPath
 from .base import Page
 
 SEGMENT_COLUMNS = ("Trecho", "Início", "Δ tempo", "Diagnóstico")
@@ -95,12 +95,13 @@ class ComparePage(Page):
         )
         charts.add(self._delta_chart)
         charts.add(self._speed_chart)
-        self._delta_chart.hovered.connect(self._speed_chart.set_cursor)
-        self._speed_chart.hovered.connect(self._delta_chart.set_cursor)
+        self._delta_chart.hovered.connect(self._on_hover)
+        self._speed_chart.hovered.connect(self._on_hover)
         middle.addWidget(charts, stretch=3)
 
         map_card = Card("Traçados sobrepostos")
         self._map = TrackMap(self.theme, height=300)
+        self._map.hovered.connect(self._on_hover)
         map_card.add(self._map)
         middle.addWidget(map_card, stretch=2)
         self.content.addLayout(middle)
@@ -225,13 +226,31 @@ class ComparePage(Page):
                     "referência",
                     palette.purple,
                     [(p.position_x, p.position_z) for p in self._reference],
+                    distances=[p.distance_m for p in self._reference],
                 ),
                 TrackPath(
                     "comparada",
                     palette.channel_speed,
                     [(p.position_x, p.position_z) for p in self._analysed],
                     dashed=True,
+                    distances=[p.distance_m for p in self._analysed],
                 ),
+            ]
+        )
+        # Marca no mapa os três piores trechos: ver *onde* na pista se perdeu
+        # tempo é a informação que a tabela sozinha não dá.
+        self._map.set_markers(
+            [
+                TrackMarker(
+                    x=spot.position_x,
+                    z=spot.position_z,
+                    color=palette.yellow,
+                    label=segment.label,
+                    hollow=True,
+                )
+                for segment in report.worst(3)
+                if (spot := _point_at(self._reference, segment.start_distance_m))
+                is not None
             ]
         )
 
@@ -267,6 +286,12 @@ class ComparePage(Page):
                     QColor(palette.yellow if segment.is_loss else palette.green)
                 )
 
+    def _on_hover(self, distance_m: float) -> None:
+        """Um cursor só, compartilhado pelos dois gráficos e pelo mapa."""
+        self._delta_chart.set_cursor(distance_m)
+        self._speed_chart.set_cursor(distance_m)
+        self._map.set_cursor(distance_m)
+
     def _on_row_selected(self) -> None:
         rows = self._table.selectionModel().selectedRows()
         if not rows:
@@ -278,5 +303,13 @@ class ComparePage(Page):
             distance = float(item.text().split()[0])
         except (ValueError, IndexError):
             return
-        self._delta_chart.set_cursor(distance)
-        self._speed_chart.set_cursor(distance)
+        self._on_hover(distance)
+
+
+def _point_at(
+    points: list[TelemetryPoint], distance_m: float
+) -> TelemetryPoint | None:
+    """Amostra mais próxima da distância informada."""
+    if not points:
+        return None
+    return min(points, key=lambda p: abs(p.distance_m - distance_m))

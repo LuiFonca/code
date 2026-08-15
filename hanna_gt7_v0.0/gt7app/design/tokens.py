@@ -28,6 +28,55 @@ from enum import StrEnum
 
 
 @dataclass(frozen=True, slots=True)
+class SequentialRamp:
+    """Escala sequencial de **uma cor só**, do menor valor ao maior.
+
+    Serve à magnitude — velocidade ao longo do traçado, no caso. Uma cor só com
+    claridade monotônica, nunca arco-íris: num arco-íris o leitor não sabe se
+    verde é mais ou menos que laranja sem consultar a legenda, e a ordem deixa
+    de estar na cor.
+
+    Os passos vêm de uma escala documentada e **validada**, não escolhidos a
+    olho. As duas versões (clara e escura) foram verificadas contra a superfície
+    de cada tema para claridade monotônica, separação visível entre passos e
+    contraste mínimo da ponta que encosta no fundo.
+
+    Uma diferença deliberada em relação a um mapa de calor comum: normalmente a
+    ponta "perto de zero" pode recuar até sumir no fundo, porque zero significa
+    "sem dado". Aqui não — a ponta é a **curva lenta**, exatamente onde o piloto
+    olha. Por isso a escala fica numa faixa em que a linha continua visível na
+    volta inteira, ao custo de menos alcance dinâmico.
+    """
+
+    steps: tuple[str, ...]
+
+    def at(self, ratio: float) -> str:
+        """Cor na posição informada (0 = menor valor, 1 = maior).
+
+        Interpola em sRGB entre passos vizinhos. Não é o espaço perceptualmente
+        correto para grandes saltos, mas os passos são da mesma matiz e ficam
+        próximos — a diferença contra OKLab aqui é invisível, e a conta cabe no
+        laço de pintura.
+        """
+        clamped = min(max(ratio, 0.0), 1.0)
+        if len(self.steps) < 2:
+            return self.steps[0]
+
+        position = clamped * (len(self.steps) - 1)
+        index = min(int(position), len(self.steps) - 2)
+        blend = position - index
+        return _mix(self.steps[index], self.steps[index + 1], blend)
+
+
+def _mix(start: str, end: str, ratio: float) -> str:
+    """Mistura dois hexadecimais em sRGB."""
+    a = tuple(int(start[i : i + 2], 16) for i in (1, 3, 5))
+    b = tuple(int(end[i : i + 2], 16) for i in (1, 3, 5))
+    mixed = tuple(round(x + (y - x) * ratio) for x, y in zip(a, b, strict=True))
+    return "#{:02x}{:02x}{:02x}".format(*mixed)
+
+
+@dataclass(frozen=True, slots=True)
 class Palette:
     """Cores de um tema. Todas explícitas — nada herda do sistema.
 
@@ -85,6 +134,13 @@ class Palette:
     channel_gear: str
     channel_steering: str
 
+    speed_ramp: SequentialRamp
+    """Escala de magnitude para o mapa de calor de velocidade.
+
+    A matiz é a mesma de `channel_speed` de propósito: velocidade já é azul nos
+    gráficos, e trocar de cor no mapa obrigaria o leitor a reaprender.
+    """
+
     def wheel(self, code: str) -> str:
         """Cor da roda pelo código (`fl`, `fr`, `rl`, `rr`)."""
         return str(getattr(self, f"wheel_{code}"))
@@ -131,6 +187,11 @@ DARK = Palette(
     channel_brake="#ff5c5c",
     channel_gear="#b47cff",
     channel_steering="#f2c94c",
+    # No tema escuro a ponta lenta é a escura (encosta no fundo) e a rápida é a
+    # clara. A escala é **escolhida** para o escuro, não invertida do claro.
+    speed_ramp=SequentialRamp(
+        ("#184f95", "#256abf", "#3987e5", "#86b6ef", "#cde2fb")
+    ),
 )
 
 LIGHT = Palette(
@@ -160,6 +221,9 @@ LIGHT = Palette(
     channel_brake="#d93636",
     channel_gear="#7b3fd4",
     channel_steering="#b8860b",
+    speed_ramp=SequentialRamp(
+        ("#86b6ef", "#5598e7", "#2a78d6", "#184f95", "#0d366b")
+    ),
 )
 
 

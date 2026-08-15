@@ -4,7 +4,7 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 5 concluída.** O núcleo (`gt7core`) roda headless com 303 testes
+**Estado: Fase 6 concluída.** O núcleo (`gt7core`) roda headless com 315 testes
 e mypy strict sobre 60 arquivos. As três fontes de telemetria ficam atrás do
 mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
 pista da Fase 4 está completa — e agora tem interface: cinco páginas sobre um
@@ -80,7 +80,7 @@ python3 src/tools/diagnose.py <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 303 testes
+python3 -m pytest tests/            # 315 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core e gt7app)
 ```
@@ -115,7 +115,7 @@ gt7app/           Casca de interface — a única parte que conhece Qt
   shell.py          janela: navegação lateral + páginas + ⌘K
 
 src/              Interface PySide6 (arquitetura anterior, funcional)
-tests/            303 testes
+tests/            315 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -203,7 +203,7 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 3b | Migrar as 3 abas restantes para o núcleo | ✅ concluída na Fase 5 |
 | 4 | Curvas, frenagem, throttle, pneus, perda de tempo, perfil | ✅ concluída |
 | 5 | Design system, navegação por páginas, command palette | ✅ concluída |
-| 6 | Mapa de pista 2D, sobreposição de traçados | ⬜ |
+| 6 | Mapa de pista: calor por velocidade, cursor sincronizado, setores | ✅ concluída |
 | 7 | Race Engineer (IA em três níveis) | ⬜ |
 | 8-10 | Discord, voz, hardening | ⬜ |
 
@@ -322,6 +322,36 @@ não venham da paleta e falha o build se encontrar algum. É o equivalente visua
 do teste de arquitetura que impede o núcleo de importar Qt — sem ele, um ajuste
 apressado escreve `#2a2e3a` direto no QSS, ninguém percebe, e seis meses depois
 existem três bordas cinza levemente diferentes que ninguém escolheu.
+
+E a Fase 6 — o mapa de pista como instrumento de leitura:
+
+- **Mapa de calor por velocidade** → o traçado pintado por magnitude, com escala
+  sequencial de uma cor só e legenda com os valores das pontas
+- **Cursor nos dois sentidos** → passar o mouse num gráfico marca a posição no
+  mapa; clicar no mapa move o cursor dos gráficos. Os gráficos dizem *o que*
+  aconteceu, o mapa diz *onde*
+- **Setores no traçado** → os mesmos cortes por distância que o histórico usa,
+  para "setor 2" significar o mesmo asfalto nas duas telas
+- **Piores trechos marcados** na comparação — ver onde na pista se perdeu tempo
+  é o que a tabela sozinha não dá
+
+### A escala de cor foi validada, não escolhida a olho
+
+Uma cor só, claridade monotônica, **nunca arco-íris**: num arco-íris o leitor
+não sabe se verde é mais ou menos que laranja sem consultar a legenda, e a ordem
+deixa de estar na cor. Os passos saíram de uma escala documentada e passaram por
+um validador que mede claridade monotônica, separação entre passos e contraste
+contra a superfície — uma vez para cada tema.
+
+A escala do tema escuro é **escolhida**, não invertida da clara: no escuro a
+ponta lenta é a escura (encosta no fundo) e no claro é a clara. Inverter uma na
+outra faria a ponta errada sumir.
+
+Uma diferença deliberada em relação a um mapa de calor comum: normalmente a
+ponta "perto de zero" pode recuar até desaparecer no fundo, porque zero
+significa "sem dado". Aqui não — a ponta é a **curva lenta**, exatamente onde o
+piloto olha. A escala fica numa faixa em que a linha continua visível na volta
+inteira, ao custo de menos alcance dinâmico.
 
 ---
 

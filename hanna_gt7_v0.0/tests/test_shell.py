@@ -189,3 +189,92 @@ class TestPaletaDeComandos:
         registered = {c.id for c in window._commands.all()}  # noqa: SLF001
         for page in window._pages:  # noqa: SLF001
             assert f"go.{page.page_id}" in registered
+
+
+class TestMapaDePista:
+    """Fase 6: mapa de calor, cursor sincronizado e interação."""
+
+    def test_mapa_recebe_mapa_de_calor_e_distancias(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(1)  # noqa: SLF001
+        app.processEvents()
+
+        track_map = window._pages[1]._map  # noqa: SLF001
+        paths = track_map._paths  # noqa: SLF001
+        assert paths, "o mapa não recebeu traçado"
+        assert paths[0].has_heatmap, "sem valores, não há mapa de calor"
+        assert paths[0].is_locatable, "sem distâncias, o cursor não funciona"
+
+    def test_cursor_do_grafico_alcanca_o_mapa(self, shell) -> None:  # noqa: ANN001
+        """Os gráficos dizem *o que*; o mapa diz *onde*. Um cursor só."""
+        window, _core, app = shell
+        window._activate(1)  # noqa: SLF001
+        app.processEvents()
+
+        page = window._pages[1]  # noqa: SLF001
+        target = page._corners[2].apex_distance_m  # noqa: SLF001
+        page._on_hover(target)  # noqa: SLF001
+        app.processEvents()
+
+        assert page._map._cursor_m == target  # noqa: SLF001
+        for chart in page._charts:  # noqa: SLF001
+            assert chart._cursor_m == target  # noqa: SLF001
+
+        page._on_hover_left()  # noqa: SLF001
+        assert page._map._cursor_m is None  # noqa: SLF001
+
+    def test_localiza_o_ponto_pela_distancia(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(1)  # noqa: SLF001
+        app.processEvents()
+
+        path = window._pages[1]._map._paths[0]  # noqa: SLF001
+        target = path.distances[len(path.distances) // 3]
+        index = path.index_at_distance(target)
+        assert index is not None
+        assert abs(path.distances[index] - target) < 1.0
+
+        # Fora das pontas satura em vez de estourar.
+        assert path.index_at_distance(-100.0) == 0
+        assert path.index_at_distance(1e9) == len(path.points) - 1
+
+    def test_setores_e_apices_aparecem_como_marcadores(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(1)  # noqa: SLF001
+        app.processEvents()
+
+        labels = {m.label for m in window._pages[1]._map._markers}  # noqa: SLF001
+        assert {"C1", "C2", "C3", "C4"} <= labels, "ápices faltando no mapa"
+        # Três setores produzem dois limites internos.
+        assert {"S1", "S2"} <= labels, "limites de setor faltando"
+
+    def test_comparacao_marca_os_piores_trechos_no_mapa(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(2)  # noqa: SLF001
+        app.processEvents()
+
+        page = window._pages[2]  # noqa: SLF001
+        assert page._map._markers, "os piores trechos não foram marcados"  # noqa: SLF001
+        assert len(page._map._markers) <= 3  # noqa: SLF001
+
+    def test_cursor_unico_na_comparacao(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(2)  # noqa: SLF001
+        app.processEvents()
+
+        page = window._pages[2]  # noqa: SLF001
+        page._on_hover(1500.0)  # noqa: SLF001
+        assert page._delta_chart._cursor_m == 1500.0  # noqa: SLF001
+        assert page._speed_chart._cursor_m == 1500.0  # noqa: SLF001
+        assert page._map._cursor_m == 1500.0  # noqa: SLF001
+
+    def test_clique_longe_do_tracado_nao_move_o_cursor(self, shell) -> None:  # noqa: ANN001
+        """Clicar no canto vazio não deve saltar para o outro lado da pista."""
+        from PySide6.QtCore import QPointF
+
+        window, _core, app = shell
+        window._activate(1)  # noqa: SLF001
+        app.processEvents()
+
+        track_map = window._pages[1]._map  # noqa: SLF001
+        assert track_map._distance_at_pixel(QPointF(-500.0, -500.0)) is None  # noqa: SLF001

@@ -41,7 +41,7 @@ HEX_PATTERN = re.compile(r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
 class TestTokens:
     def test_os_dois_temas_definem_todas_as_cores(self) -> None:
         """Um tema com um campo a menos quebraria só na tela que o usa."""
-        names = {f.name for f in fields(Palette)}
+        names = {f.name for f in fields(Palette)} - {"speed_ramp"}
         for theme in (DARK_THEME, LIGHT_THEME):
             for name in names:
                 value = getattr(theme.palette, name)
@@ -115,7 +115,9 @@ class TestStylesheet:
 
         assert isinstance(theme, Theme)
         allowed = {
-            getattr(theme.palette, f.name).lower() for f in fields(Palette)
+            value.lower()
+            for f in fields(Palette)
+            if isinstance(value := getattr(theme.palette, f.name), str)
         }
         found = {match.lower() for match in HEX_PATTERN.findall(build_stylesheet(theme))}
 
@@ -211,3 +213,73 @@ class TestCommandRegistry:
     def test_limite_de_resultados(self) -> None:
         registry, _ = self._registry()
         assert len(registry.search("", limit=2)) == 2
+
+
+class TestSequentialRamp:
+    """A escala de magnitude do mapa de calor.
+
+    Os passos vieram de uma escala documentada e foram validados contra a
+    superfície de cada tema (claridade monotônica, separação entre passos,
+    contraste da ponta que encosta no fundo). Estes testes fixam as
+    propriedades que um ajuste futuro não pode quebrar sem perceber.
+    """
+
+    def test_extremos_e_interpolacao(self) -> None:
+        ramp = DARK_THEME.palette.speed_ramp
+        assert ramp.at(0.0) == ramp.steps[0]
+        assert ramp.at(1.0) == ramp.steps[-1]
+        # Um valor entre passos produz cor nova, não o passo mais próximo.
+        middle = ramp.at(0.125)
+        assert middle not in ramp.steps
+
+    def test_valores_fora_da_faixa_saturam(self) -> None:
+        """Velocidade fora do intervalo não deve produzir cor inválida."""
+        ramp = LIGHT_THEME.palette.speed_ramp
+        assert ramp.at(-5.0) == ramp.steps[0]
+        assert ramp.at(9.9) == ramp.steps[-1]
+
+    def test_a_escala_e_de_uma_cor_so(self) -> None:
+        """Nunca arco-íris: a ordem tem que estar na claridade, não na matiz.
+
+        Num arco-íris o leitor não sabe se verde é mais ou menos que laranja
+        sem consultar a legenda.
+        """
+        import colorsys
+
+        for theme in (DARK_THEME, LIGHT_THEME):
+            hues = []
+            for step in theme.palette.speed_ramp.steps:
+                r, g, b = (int(step[i : i + 2], 16) / 255 for i in (1, 3, 5))
+                hues.append(colorsys.rgb_to_hls(r, g, b)[0])
+            spread = (max(hues) - min(hues)) * 360
+            assert spread < 20, f"{theme.name}: matiz varia {spread:.0f}°"
+
+    def test_claridade_e_monotonica(self) -> None:
+        """Do menor ao maior valor, a claridade só anda numa direção."""
+        import colorsys
+
+        for theme in (DARK_THEME, LIGHT_THEME):
+            lightness = []
+            for step in theme.palette.speed_ramp.steps:
+                r, g, b = (int(step[i : i + 2], 16) / 255 for i in (1, 3, 5))
+                lightness.append(colorsys.rgb_to_hls(r, g, b)[1])
+            assert lightness == sorted(lightness) or lightness == sorted(
+                lightness, reverse=True
+            ), f"{theme.name}: claridade não é monotônica"
+
+    def test_cada_tema_ancora_no_seu_fundo(self) -> None:
+        """A escala é escolhida por tema, não invertida automaticamente.
+
+        No escuro a ponta lenta é a escura (encosta no fundo); no claro é a
+        clara. Inverter uma na outra produziria a ponta errada sumindo.
+        """
+        import colorsys
+
+        def lightness(hex_color: str) -> float:
+            r, g, b = (int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5))
+            return colorsys.rgb_to_hls(r, g, b)[1]
+
+        dark = DARK_THEME.palette.speed_ramp
+        light = LIGHT_THEME.palette.speed_ramp
+        assert lightness(dark.steps[0]) < lightness(dark.steps[-1])
+        assert lightness(light.steps[0]) > lightness(light.steps[-1])
