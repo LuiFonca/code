@@ -53,9 +53,27 @@ DEFAULT_TRACK_LENGTH_M = 3800.0
 DEFAULT_SAMPLE_RATE_HZ = 60
 DEFAULT_CAR_ID = 2001
 
+# Aceleração abaixo da qual o piloto sintético está de inércia — nem freio nem
+# acelerador. Em m/s².
+COAST_ACCEL_MS2 = 0.35
+
 
 def _target_speed(lap_fraction: float) -> float:
-    """Velocidade alvo na fração informada da volta, interpolada linearmente."""
+    """Velocidade alvo na fração informada da volta.
+
+    A interpolação é **smoothstep**, não linear, e isso não é cosmético: com
+    interpolação linear a velocidade é uma poligonal, a aceleração é constante
+    dentro de cada trecho, e os pedais — que o gerador deriva da aceleração —
+    saem como platôs perfeitamente retangulares. O resultado é um piloto
+    sintético que pisa no freio de uma vez, mantém pressão constante e solta de
+    uma vez: `trail_braking_ratio` zero em toda freada, throttle que nunca chega
+    a fundo.
+
+    Isso tornaria o mock inútil justamente para a análise da Fase 4. Com
+    smoothstep a aceleração varia continuamente (zero nos extremos de cada
+    trecho, máxima no meio), que é a forma que um piloto de verdade produz:
+    pressão que sobe rápido e alivia progressivamente até o ápice.
+    """
     fraction = lap_fraction % 1.0
     previous_f, previous_v = _SPEED_PROFILE[0]
     for point_f, point_v in _SPEED_PROFILE[1:]:
@@ -64,7 +82,8 @@ def _target_speed(lap_fraction: float) -> float:
             if span <= 0:
                 return point_v
             ratio = (fraction - previous_f) / span
-            return previous_v + ratio * (point_v - previous_v)
+            eased = ratio * ratio * (3.0 - 2.0 * ratio)
+            return previous_v + eased * (point_v - previous_v)
         previous_f, previous_v = point_f, point_v
     return _SPEED_PROFILE[-1][1]
 
@@ -116,6 +135,7 @@ def synthetic_lap(
 
     fuel = 60.0
     previous_speed_ms = 0.0
+    throttle_hold = 0.0
 
     for index in range(frame_count):
         elapsed_ms = int(index * dt_ms)
@@ -127,14 +147,36 @@ def synthetic_lap(
         # Pedais derivados da variação de velocidade: acelerando → throttle,
         # desacelerando → brake. É o que produz zonas de frenagem coerentes com
         # o perfil, em vez de valores inventados.
+        #
+        # A faixa morta reproduz a **fase de inércia** entre soltar o freio e
+        # abrir o acelerador. Sem ela os dois pedais se tocam: o acelerador já
+        # estaria aberto no ápice, e a distância entre ápice e retomada — que é
+        # o que o §14 mede — daria zero em toda curva.
         accel = (speed_ms - previous_speed_ms) / (dt_ms / 1000.0)
         previous_speed_ms = speed_ms
-        if accel >= 0:
-            throttle = min(100.0, 45.0 + accel * 18.0)
+        # A catraca do acelerador corrige uma inversão de causalidade. Derivar o
+        # pedal da aceleração é razoável na frenagem, mas errado na retomada: na
+        # realidade o acelerador é a **entrada** e a aceleração é a resposta, e é
+        # o arrasto que faz a aceleração cair enquanto o pé segue no fundo. Sem a
+        # catraca, o gerador produzia um pedal que subia e descia a cada trecho
+        # do perfil, e os detectores liam isso — corretamente — como dez alívios
+        # por saída de curva.
+        if accel > COAST_ACCEL_MS2:
+            throttle = max(throttle_hold, min(100.0, 12.0 + accel * 30.0))
+            throttle_hold = throttle
             brake = 0.0
-        else:
+        elif accel < -COAST_ACCEL_MS2:
             throttle = 0.0
+            throttle_hold = 0.0
             brake = min(100.0, -accel * 22.0)
+        else:
+            # Inércia. O pedal **não** volta a zero aqui: numa reta longa a
+            # aceleração cai a quase nada com o pé no fundo, e zerar o acelerador
+            # nesse ponto inventaria um alívio que o piloto não fez. Quem zera a
+            # catraca é a frenagem — e é isso que cria a fase de inércia de
+            # verdade, entre soltar o freio e voltar a acelerar.
+            throttle = throttle_hold
+            brake = 0.0
 
         gear = _gear_for_speed(speed_kmh)
         rpm = 2200.0 + (speed_kmh / max(1, gear)) * 52.0
@@ -151,12 +193,27 @@ def synthetic_lap(
         velocity_x = speed_ms * math.cos(heading)
         velocity_z = speed_ms * math.sin(heading)
 
-        # Escorregamento cresce onde há carga lateral (curvas lentas) e sob
-        # frenagem forte — o suficiente para os detectores de travamento e
-        # patinagem terem sinal real para achar.
+        # Escorregamento: o campo `tire_slip_*` do pacote GT7 é a **velocidade
+        # da superfície do pneu em m/s**, não uma razão adimensional (ver
+        # `analytics/tyres.py`, que trata a ambiguidade num lugar só). O gerador
+        # emite m/s para que a análise de pneus rode aqui exatamente como roda
+        # com um PS5 — que é a razão de o mock existir.
+        #
+        # A razão é construída primeiro, porque é nela que o comportamento é
+        # legível: sob freio forte a roda gira mais devagar que o carro
+        # (travamento), sob acelerador a traseira gira mais rápido (patinagem).
         cornering = 1.0 - (speed_kmh / 240.0)
-        slip_front = 1.0 + cornering * 0.06 + (brake / 100.0) * 0.05
-        slip_rear = 1.0 + cornering * 0.04 + (throttle / 100.0) * 0.05
+        # Os coeficientes são calibrados para que a patinagem apareça só na saída
+        # das curvas lentas — onde o carro de fato não aceita o acelerador — e
+        # não na saída de qualquer curva. Um gerador que patina o tempo todo não
+        # testa o detector, só o satura.
+        # O quadrado da pressão faz o travamento aparecer só nas freadas de
+        # pressão máxima, não em toda frenagem: é a diferença entre um detector
+        # exercitado e um detector saturado.
+        front_ratio = 1.0 - (brake / 100.0) ** 2 * 0.11 + cornering * 0.01
+        rear_ratio = 1.0 + (throttle / 100.0) * 0.07 + cornering * 0.035
+        slip_front = front_ratio * speed_ms
+        slip_rear = rear_ratio * speed_ms
 
         fuel = max(0.0, fuel - speed_ms * (dt_ms / 1000.0) * 0.00018)
         tire_base = 78.0 + cornering * 22.0

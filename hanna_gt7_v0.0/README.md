@@ -4,12 +4,14 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 3 concluída.** O núcleo (`gt7core`) roda headless com 197 testes,
+**Estado: Fase 4 concluída.** O núcleo (`gt7core`) roda headless com 270 testes,
 tem as três fontes de telemetria atrás do mesmo contrato, persiste sessões e
 voltas, e já existe uma interface completa rodando sobre ele
-(`python3 -m gt7app`). A aplicação antiga em `src/` continua funcionando e
-intacta — as três abas restantes (histórico, telemetria, comparação) seguem o
-molde de `gt7app/window.py` para migrar.
+(`python3 -m gt7app`). A Fase 4 acrescentou a camada de engenharia de pista:
+detecção de curvas, frenagem, acelerador, pneus, atribuição de perda de tempo e
+perfil do piloto — tudo em Python puro e coberto por testes. A aplicação antiga
+em `src/` continua funcionando e intacta — as três abas restantes (histórico,
+telemetria, comparação) seguem o molde de `gt7app/window.py` para migrar.
 
 ---
 
@@ -20,18 +22,27 @@ pip3 install pycryptodome
 python3 -m gt7core.demo
 ```
 
-Isso simula uma sessão completa e imprime tempos de volta, melhor volta,
-perfil de velocidade e delta — o pipeline inteiro (fonte → motor → eventos →
-analytics) rodando em Python puro:
+Isso simula uma sessão completa e imprime tempos de volta, melhor volta, perfil
+de velocidade, delta e o relatório de engenharia de pista — o pipeline inteiro
+(fonte → motor → eventos → analytics) rodando em Python puro:
 
 ```
   ★  Volta  2   1:42.000    3799.1 m    6120 amostras
      Volta  3   1:42.512    3799.1 m    6150 amostras   +0.512s vs melhor
 
-  Delta da volta 4 contra a melhor:
-        950 m   +0.208 s
-       1900 m   +0.488 s
-       2849 m   +0.783 s
+  4 curvas detectadas na melhor volta:
+    Curva 1  ápice    900 m   78.2 km/h  raio   224 m  lenta
+    Curva 3  ápice   2580 m   61.7 km/h  raio   147 m  lenta
+
+  Frenagens:
+    Zona 1  início    669 m  0.56 g  pico 100%  trail 0.19
+
+  Saídas de curva:
+    Curva 3  acelera +4 m do ápice, não chegou a pedal cheio, 2 patinagem(ns)
+
+  ONDE A VOLTA 4 FOI PERDIDA (contra a melhor)
+    Diferença total: +1.030 s (recuperáveis: 1.030 s)
+      Curva 1: 0.268 s perdidos — velocidade de passagem
 ```
 
 `--laps N` muda o número de voltas; `--verbose` liga o log detalhado.
@@ -68,7 +79,7 @@ python3 src/tools/diagnose.py <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 197 testes
+python3 -m pytest tests/            # 270 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core)
 ```
@@ -81,7 +92,8 @@ python3 -m mypy                     # tipos (strict em gt7core)
 gt7core/          Núcleo — Python puro, ZERO Qt. Roda headless.
   domain/           modelos (TelemetryPoint, Lap, Session, Car, Track)
   telemetry/        protocolo GT7, motor, fontes (mock/udp/replay)
-  analytics/        delta alinhado por distância, consulta de canais
+  analytics/        delta, curvas, frenagem, acelerador, pneus,
+                    perda de tempo, perfil do piloto
   events/           barramento publish/subscribe thread-safe
   config/           configuração centralizada + segredos mascarados
   observability/    logging estruturado + métricas de captura
@@ -98,7 +110,7 @@ gt7app/           Casca de interface — a única parte que conhece Qt
   window.py         painel ao vivo
 
 src/              Interface PySide6 (arquitetura anterior, funcional)
-tests/            197 testes
+tests/            270 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -182,10 +194,11 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 0 | Auditoria arquitetural | ✅ concluída (`docs/ARCHITECTURE_REVIEW.md`) |
 | 1 | Núcleo headless, config, logging, testes, mock | ✅ concluída |
 | 2 | Fonte UDP no novo contrato, replay, adaptador Qt, métricas | ✅ concluída |
-| 3 | Migrar as abas para o núcleo; sessões persistidas, Parquet | ⬜ |
-| 4 | Frenagem, throttle, curvas, pneus, perfil do piloto | ⬜ |
+| 3 | Sessões persistidas, retenção, composition root | ✅ concluída |
+| 3b | Migrar as 3 abas restantes para o núcleo; Parquet | ⬜ pendente |
+| 4 | Curvas, frenagem, throttle, pneus, perda de tempo, perfil | ✅ concluída |
 | 5 | Design system, navegação por páginas, command palette | ⬜ |
-| 6 | Mapa de pista, detecção de curvas, perda de tempo | ⬜ |
+| 6 | Mapa de pista 2D, sobreposição de traçados | ⬜ |
 | 7 | Race Engineer (IA em três níveis) | ⬜ |
 | 8-10 | Discord, voz, hardening | ⬜ |
 
@@ -214,6 +227,61 @@ E a Fase 3:
   pista); `0` desliga. O recorde nunca é apagado, mesmo saindo da janela
 - **Composition root** → `gt7app/application.py` monta o grafo inteiro; o Qt só
   entra nos dois últimos passos
+
+E a Fase 4 — a camada de engenharia de pista:
+
+- **§12 curvas** → `detect_corners()` pelos mínimos locais do perfil de
+  velocidade, com raio estimado pela curvatura do traçado
+- **§13 frenagem** → zonas contínuas, pressão de pico, `trail_braking_ratio`,
+  desaceleração em g e comparação com a referência
+- **§14 acelerador** → ponto de retomada em relação ao ápice, tempo até pedal
+  cheio, contagem de alívios e patinagem na saída
+- **§15 pneus** → temperatura por roda e desequilíbrio entre eixos/lados,
+  travamento e patinagem como eventos localizados, degradação ao longo do stint
+- **§20/§31 perda de tempo** → `analyse_time_loss()` fatia a volta em curvas e
+  retas e atribui a cada trecho o tempo ganho ou perdido ali dentro
+- **§16 perfil do piloto** → estatística sobre a janela de voltas: consistência,
+  repetibilidade das referências, estilo de frenagem, taxa de erro, tendência
+
+### Analisar uma volta
+
+```python
+from gt7core.analytics import analyse_time_loss, build_profile, detect_corners
+
+corners = detect_corners(melhor_volta)
+print(analyse_time_loss(melhor_volta, volta_de_hoje).summary())
+print(build_profile(ultimas_20_voltas).summary())
+```
+
+### Três coisas que a Fase 4 corrigiu no que já existia
+
+**O campo de escorregamento não tinha convenção definida.** `tire_slip_*` não
+tem especificação oficial e a aplicação anterior o tratava como um valor
+adimensional, admitindo no comentário que era aproximação. Como a análise de
+pneus depende disso, a escolha virou explícita: `SlipConvention` nomeia as duas
+leituras plausíveis (velocidade de superfície em m/s ou razão já normalizada) e
+`infer_slip_convention()` decide olhando uma volta inteira — as duas hipóteses
+estão a ordens de grandeza de distância, então a inferência é segura. O gerador
+sintético passou a emitir m/s, que é a leitura fisicamente derivável. **Se algum
+dia um pacote real resolver a questão, há um lugar só para corrigir.**
+
+**O casamento de eventos entre voltas permitia atribuição dupla.** A versão
+ingênua — "para cada curva, pegue a mais próxima na outra volta" — deixa duas
+referências reclamarem o mesmo evento. Numa chicane isso acontece de verdade, e
+o relatório apontaria a mesma freada duas vezes enquanto a que sumiu passaria
+despercebida. `matching.py` centraliza a atribuição gulosa por proximidade
+global, com cada evento consumido uma vez só.
+
+**O gerador sintético produzia um piloto fisicamente impossível.** A velocidade
+era interpolada linearmente entre os pontos do perfil, o que torna a aceleração
+constante em cada trecho e os pedais retângulos perfeitos: freio que nunca é
+liberado progressivamente (`trail_braking_ratio` zero em toda freada) e
+acelerador que nunca chega a fundo. Pior, o acelerador era derivado da
+aceleração — inversão de causalidade, já que na realidade o pedal é a entrada e
+é o arrasto que faz a aceleração cair com o pé no fundo. O gerador ganhou
+interpolação suave, faixa morta de inércia entre freio e acelerador, e uma
+catraca no pedal. Sem isso o mock não exercitaria nenhum dos detectores novos —
+os saturaria.
 
 ---
 

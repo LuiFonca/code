@@ -19,8 +19,14 @@ import argparse
 import sys
 import time
 
+from .analytics.braking import detect_braking_zones
+from .analytics.corners import detect_corners
 from .analytics.delta import LapComparator
+from .analytics.driver import build_profile
 from .analytics.series import LapSeries
+from .analytics.throttle import analyse_throttle
+from .analytics.timeloss import analyse_time_loss
+from .analytics.tyres import detect_tyre_events, temperature_balance
 from .config.settings import Settings
 from .events.bus import EventBus
 from .observability.logging import configure_logging
@@ -121,6 +127,87 @@ def analyse_best_lap(report: DemoReport) -> None:
                 print(f"    {distance:>7.0f} m   {sign}{delta_ms / 1000:.3f} s")
 
 
+def analyse_driving(report: DemoReport) -> None:
+    """Engenharia de pista sobre as voltas capturadas — o que a Fase 4 entrega.
+
+    A diferença entre esta seção e a anterior é a pergunta que responde. A de
+    cima descreve a volta ("foi tão rápida, tão longa"); esta diz o que fazer
+    diferente na próxima.
+    """
+    if report.best is None:
+        return
+
+    best = report.best.points
+    corners = detect_corners(best)
+
+    print()
+    print("─" * 74)
+    print("ENGENHARIA DE PISTA")
+    print("─" * 74)
+
+    print(f"  {len(corners)} curvas detectadas na melhor volta:")
+    zones = detect_braking_zones(best)
+    applications = analyse_throttle(best, corners)
+    by_corner = {a.corner_index: a for a in applications}
+
+    for corner in corners:
+        radius = f"{corner.radius_m:>5.0f} m" if corner.radius_m else "    —"
+        print(
+            f"    Curva {corner.index}  ápice {corner.apex_distance_m:>6.0f} m  "
+            f"{corner.minimum_speed_kmh:>5.1f} km/h  raio {radius}  {corner.severity}"
+        )
+
+    if zones:
+        print()
+        print("  Frenagens:")
+        for number, zone in enumerate(zones, start=1):
+            print(
+                f"    Zona {number}  início {zone.start_distance_m:>6.0f} m  "
+                f"{zone.average_deceleration_g:>4.2f} g  "
+                f"pico {zone.max_pressure_pct:>3.0f}%  "
+                f"trail {zone.trail_braking_ratio:.2f}"
+            )
+
+    if applications:
+        print()
+        print("  Saídas de curva:")
+        for corner in corners:
+            application = by_corner.get(corner.index)
+            if application is not None:
+                print(f"    Curva {corner.index}  {application.describe()}")
+
+    events = detect_tyre_events(best)
+    if events:
+        print()
+        print(f"  Perdas de aderência: {len(events)}")
+        for event in events[:4]:
+            print(f"    {event.describe()}")
+
+    balance = temperature_balance(best)
+    if balance is not None:
+        print()
+        print(f"  Pneus: {balance.describe()}")
+
+    # Onde a última volta se perdeu contra a melhor — a pergunta do §20.
+    last = report.laps[-1] if report.laps else None
+    if last is not None and last is not report.best:
+        print()
+        print("─" * 74)
+        print(f"ONDE A VOLTA {last.lap_number} FOI PERDIDA (contra a melhor)")
+        print("─" * 74)
+        for line in analyse_time_loss(best, last.points).summary().splitlines():
+            print(f"  {line}")
+
+    profile = build_profile([lap.points for lap in report.laps])
+    if profile is not None:
+        print()
+        print("─" * 74)
+        print("PERFIL DO PILOTO")
+        print("─" * 74)
+        for line in profile.summary().splitlines():
+            print(f"  {line}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="gt7core.demo",
@@ -154,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     duration = time.monotonic() - started
 
     analyse_best_lap(report)
+    analyse_driving(report)
 
     print()
     print("─" * 74)
