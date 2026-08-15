@@ -8,12 +8,19 @@ redação e priorização em cima do diagnóstico; ela não produz o diagnóstic
 
 Ordem de leitura:
 
-1. `client` — a fronteira com a API. Tudo o que é específico da Anthropic mora
-   aqui, e só aqui;
-2. `prompts` — o que sobe: **resultado de análise, nunca telemetria bruta**;
-3. `models` — o que desce: `Advice`, com ações e proveniência;
-4. `budget` — quanto custou e de quanto em quanto tempo é aceitável falar;
-5. `engineer` — os três níveis, todos com resposta local garantida.
+1. `local` — o provedor **padrão**: um modelo pequeno na máquina do piloto,
+   via endpoint compatível com OpenAI (Ollama, llama.cpp, LM Studio). Sem
+   custo, sem chave, sem rede;
+2. `client` — o provedor de nuvem, opcional, que só é montado com chave paga.
+   Tudo o que é específico da Anthropic mora ali, e só ali;
+3. `guard` — verifica que a resposta não citou número que não estava no
+   contexto. É a regra "não invente número" imposta por aritmética, para os
+   modelos pequenos que não a seguem sozinhos;
+4. `prompts` — o que sobe: **resultado de análise, nunca telemetria bruta**.
+   Em duas versões, porque um modelo de 4B segue três regras e não seis;
+5. `models` — o que desce: `Advice`, com ações e proveniência;
+6. `budget` — quanto custou e de quanto em quanto tempo é aceitável falar;
+7. `engineer` — os três níveis, todos com resposta local garantida.
 
 Uso típico:
 
@@ -23,8 +30,10 @@ Uso típico:
     advice = engineer.debrief(report, track="Suzuka", lap_time_ms=132_450)
     print(advice.full_text())
 
-Sem chave configurada isso ainda imprime um debrief — montado a partir da
-análise da Fase 4, marcado com `advice.source == AdviceSource.LOCAL`.
+Por padrão isso fala com um modelo local e não custa nada. Sem servidor de IA
+no ar, ainda imprime um debrief — montado a partir da análise da Fase 4 e
+marcado com `advice.source == AdviceSource.LOCAL`. Nunca há um caminho em que
+o piloto fica sem resposta.
 """
 
 from .budget import Budget, BudgetLedger, BudgetLimits
@@ -38,9 +47,15 @@ from .client import (
     ScriptedClient,
 )
 from .engineer import RaceEngineer
+from .guard import is_grounded, unsupported_numbers
+from .local import LocalClient, LocalEndpoint
 from .models import Action, Advice, AdviceLevel, AdviceSource
 
 __all__ = [
+    "LocalClient",
+    "LocalEndpoint",
+    "is_grounded",
+    "unsupported_numbers",
     "Action",
     "Advice",
     "AdviceLevel",

@@ -102,13 +102,41 @@ class StorageConfig:
 
 @dataclass(slots=True)
 class AIConfig:
-    """IA. `api_key` nunca tem padrão — é `SecretStr` vinda do ambiente."""
+    """IA. O padrão é **local e gratuito**; a nuvem é opção com chave paga.
 
-    provider: str = "anthropic"
+    A inversão em relação à primeira versão é deliberada. A análise da Fase 4
+    já roda offline e de graça, e o que sobra para o modelo é redigir algumas
+    linhas de diagnóstico — trabalho que um modelo pequeno rodando na máquina
+    do piloto faz sem custo, sem rede e sem conta em lugar nenhum.
+
+    `api_key` nunca tem padrão: é `SecretStr` vinda do ambiente, e sem ela o
+    provedor `anthropic` simplesmente não é montado.
+    """
+
+    provider: str = "local"
+    """`local` (padrão) ou `anthropic`."""
+
+    # --- provedor local -----------------------------------------------------
+    local_url: str = "http://localhost:11434/v1"
+    """Endpoint compatível com OpenAI. Serve Ollama, llama.cpp, LM Studio."""
+
+    local_model: str = "qwen3:4b"
+    local_fast_model: str = "qwen3:4b"
+    """Mesmo modelo nos dois níveis por padrão: com 4B, carregar um segundo
+    modelo custa mais em troca de memória do que economiza em latência."""
+
+    local_timeout_s: float = 30.0
+
+    # --- provedor de nuvem (opcional, exige chave paga) ---------------------
     model: str = "claude-opus-5"
-    fast_model: str = "claude-haiku-4-5"   # nível 2, respostas em pilotagem
+    fast_model: str = "claude-haiku-4-5"   # nível 1, respostas em pilotagem
     api_key: SecretStr = field(default_factory=SecretStr)
-    enabled: bool = False
+
+    enabled: bool = True
+
+    @property
+    def is_local(self) -> bool:
+        return self.provider != "anthropic"
 
 
 @dataclass(slots=True)
@@ -210,14 +238,25 @@ class Settings:
         )
 
         ai_key = get("AI_API_KEY") or ""
+        # Sem `GT7_AI_PROVIDER` explícito, a presença da chave decide: quem
+        # exportou uma chave paga quer usá-la; quem não exportou quer o local.
+        ai_provider = get("AI_PROVIDER") or ("anthropic" if ai_key else "local")
         ai = AIConfig(
-            provider=get("AI_PROVIDER") or "anthropic",
+            provider=ai_provider,
+            local_url=get("AI_LOCAL_URL") or "http://localhost:11434/v1",
+            local_model=get("AI_LOCAL_MODEL") or "qwen3:4b",
+            local_fast_model=(
+                get("AI_LOCAL_FAST_MODEL") or get("AI_LOCAL_MODEL") or "qwen3:4b"
+            ),
+            local_timeout_s=get_float("AI_LOCAL_TIMEOUT_S", 30.0),
             model=get("AI_MODEL") or "claude-opus-5",
             fast_model=get("AI_FAST_MODEL") or "claude-haiku-4-5",
             api_key=SecretStr(ai_key),
-            # Só liga se houver chave: assim "IA desligada" é o padrão seguro e
-            # o núcleo continua funcionando sem ela (§49).
-            enabled=bool(ai_key) and get_bool("AI_ENABLED", True),
+            # O local pode ligar sozinho: é gratuito, offline, e se o servidor
+            # não estiver de pé a resposta cai na análise da Fase 4 sem alarde.
+            # A nuvem exige chave — sem ela, "ligada" não significaria nada.
+            enabled=get_bool("AI_ENABLED", True)
+            and (ai_provider != "anthropic" or bool(ai_key)),
         )
 
         discord_token = get("DISCORD_TOKEN") or ""

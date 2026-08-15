@@ -4,12 +4,13 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 7 concluída.** O núcleo (`gt7core`) roda headless com 376 testes
-e mypy strict sobre 66 arquivos. As três fontes de telemetria ficam atrás do
+**Estado: Fase 7 concluída.** O núcleo (`gt7core`) roda headless com 411 testes
+e mypy strict sobre 68 arquivos. As três fontes de telemetria ficam atrás do
 mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
 pista da Fase 4 está completa, a interface tem cinco páginas sobre um design
 system com navegação lateral e paleta de comandos (⌘K) — e agora existe o Race
-Engineer com IA, em três níveis, que **funciona com a IA desligada**.
+Engineer com IA em três níveis, rodando **local e de graça**, que funciona até
+com o modelo desligado.
 
 A migração das abas terminou junto: `histórico`, `telemetria` e `comparação`
 agora rodam sobre o núcleo, e a aplicação em `src/` deixou de ser necessária —
@@ -81,9 +82,9 @@ python3 src/tools/diagnose.py <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 315 testes
+python3 -m pytest tests/            # 411 testes
 python3 -m ruff check gt7core/      # lint
-python3 -m mypy                     # tipos (strict em gt7core e gt7app)
+python3 -m mypy                     # tipos (strict em gt7core, gt7app e gt7ai)
 ```
 
 ---
@@ -116,14 +117,16 @@ gt7app/           Casca de interface — a única parte que conhece Qt
   shell.py          janela: navegação lateral + páginas + ⌘K
 
 gt7ai/            Race Engineer — plugin, nunca núcleo
-  client.py         fronteira com a API (tudo específico da Anthropic mora aqui)
-  prompts.py        o que sobe: análise, nunca telemetria bruta
+  local.py          provedor PADRÃO: modelo na máquina do piloto, custo zero
+  client.py         provedor de nuvem, opcional (exige chave paga)
+  guard.py          recusa resposta que cite número fora do contexto
+  prompts.py        o que sobe: análise, nunca telemetria bruta (2 tamanhos)
   models.py         o que desce: Advice, com ações e proveniência
   budget.py         custo por sessão + cadência do rádio
   engineer.py       os três níveis, todos com resposta local garantida
 
 src/              Interface PySide6 (arquitetura anterior, funcional)
-tests/            376 testes
+tests/            411 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -212,7 +215,7 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 4 | Curvas, frenagem, throttle, pneus, perda de tempo, perfil | ✅ concluída |
 | 5 | Design system, navegação por páginas, command palette | ✅ concluída |
 | 6 | Mapa de pista: calor por velocidade, cursor sincronizado, setores | ✅ concluída |
-| 7 | Race Engineer (IA em três níveis) | ✅ concluída |
+| 7 | Race Engineer (IA local em três níveis, sem custo) | ✅ concluída |
 | 8-10 | Discord, voz, hardening | ⬜ |
 
 O que a Fase 1 resolveu, com a numeração da auditoria:
@@ -365,13 +368,11 @@ inteira, ao custo de menos alcance dinâmico.
 
 ## O Race Engineer (Fase 7)
 
-Três níveis, que diferem em latência, custo e formato:
+**Roda local e de graça.** Um modelo pequeno na máquina do piloto, via Ollama:
 
-| Nível | Quando | Modelo | Formato |
-|---|---|---|---|
-| `quick_note` | com o piloto na pista | `claude-haiku-4-5` | uma frase, para o rádio |
-| `debrief` | volta terminada | `claude-opus-5` | JSON com ações e ganho estimado |
-| `session_report` | fim da sessão | `claude-opus-5` | quatro parágrafos de texto |
+```bash
+ollama pull qwen3:4b && ollama serve
+```
 
 ```python
 from gt7ai import RaceEngineer
@@ -380,6 +381,51 @@ engineer = RaceEngineer.from_settings(settings)
 advice = engineer.debrief(report, track="Suzuka", lap_time_ms=132_450)
 print(advice.full_text())
 ```
+
+Sem o Ollama no ar isso **continua imprimindo um debrief** — montado pela
+análise da Fase 4. Por isso a IA vem ligada por padrão: não custa nada e não
+tem como quebrar.
+
+Três níveis, que diferem em latência e formato:
+
+| Nível | Quando | Formato |
+|---|---|---|
+| `quick_note` | com o piloto na pista | uma frase, para o rádio |
+| `debrief` | volta terminada | JSON com ações e ganho estimado |
+| `session_report` | fim da sessão | quatro parágrafos de texto |
+
+### Local por quê
+
+Porque o trabalho difícil não é do modelo. Detectar a curva, atribuir a perda,
+medir o trail braking — tudo isso é aritmética da Fase 4, roda offline e é
+exata. O que sobra para o modelo é redigir e priorizar **1.234 caracteres** de
+diagnóstico, e isso um 4B faz.
+
+O cliente fala o dialeto compatível com OpenAI, então serve Ollama, llama.cpp,
+LM Studio e vLLM sem mudar nada além da URL — e usa só a biblioteca padrão.
+Instalar um cliente HTTP para falar com `localhost` seria pagar uma dependência
+por conveniência nenhuma.
+
+Duas adaptações reais para modelo pequeno, não configuração:
+
+- **Prompt de três regras, não seis.** Um modelo grande usa as seis; um 4B
+  segue as três primeiras e perde o resto — e regra que o modelo não segue é
+  pior que regra ausente, porque dá falsa sensação de proteção.
+- **O que saiu do prompt virou mecanismo.** "Devolva JSON" passou a ser imposto
+  na decodificação pelo esquema; "não invente número" virou `guard.py`, que
+  confere se todo número citado tem origem no contexto e descarta a resposta
+  quando não tem. Restrição executada vale mais que restrição escrita.
+
+### A nuvem continua disponível, mas não é grátis
+
+A assinatura do claude.ai **não** dá acesso à API — são produtos separados, e a
+API exige créditos comprados no `console.anthropic.com`. Não existe camada
+gratuita que sustente isto.
+
+Exportar `GT7_AI_API_KEY` troca o provedor para `claude-opus-5` sozinho. Custo
+medido: US$ 0,0063 por debrief com 88% de acerto de cache, ~US$ 0,13 numa sessão
+de 20 voltas. Vale para comparar as duas saídas na mesma volta e decidir com
+evidência.
 
 ### A IA nunca vê telemetria bruta
 

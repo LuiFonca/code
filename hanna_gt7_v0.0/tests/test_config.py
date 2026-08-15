@@ -57,9 +57,13 @@ class TestPrecedencia:
 
         assert settings.telemetry.ps_ip == ""
         assert settings.telemetry.source == "mock"
-        assert settings.ai.enabled is False
         assert settings.discord.enabled is False
         assert not settings.ai.api_key
+        # A IA vem ligada, mas no provedor **local**: nada sai da máquina e
+        # nada é cobrado. O que este teste protege é "o padrão não fala com o
+        # mundo", e essa propriedade continua valendo.
+        assert settings.ai.is_local
+        assert settings.ai.local_url.startswith("http://localhost")
 
     def test_ambiente_sobrescreve_o_padrao(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("GT7_PS_IP", "10.0.0.42")
@@ -112,10 +116,26 @@ class TestAtivacaoDeModulos:
         assert settings.ai.enabled is True
         assert settings.ai.api_key.reveal() == "sk-ant-exemplo"
 
-    def test_ia_fica_desligada_sem_chave(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """§49: a aplicação funciona perfeitamente sem IA — é o padrão seguro."""
-        monkeypatch.setenv("GT7_AI_ENABLED", "true")
+    def test_sem_chave_a_ia_e_local_e_nao_a_nuvem(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§49 continua valendo, com a política invertida.
 
+        Antes: sem chave, IA desligada. Agora: sem chave, IA **local** — porque
+        o provedor local é gratuito, offline e degrada para a análise da Fase 4
+        se o servidor não estiver de pé. Ligá-lo não gasta nem expõe nada.
+
+        O que não pode acontecer, e é o que este teste guarda, é a nuvem subir
+        sem chave: aí "ligada" significaria uma chamada que falha toda vez.
+        """
+        monkeypatch.setenv("GT7_AI_ENABLED", "true")
+        monkeypatch.delenv("GT7_AI_API_KEY", raising=False)
+
+        ai = Settings.load(env_file=Path("/nao/existe")).ai
+        assert ai.is_local
+        assert ai.enabled is True
+
+        monkeypatch.setenv("GT7_AI_PROVIDER", "anthropic")
         assert Settings.load(env_file=Path("/nao/existe")).ai.enabled is False
 
     def test_discord_liga_quando_ha_token(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -28,7 +28,7 @@ from gt7core.analytics.timeloss import TimeLossReport
 from gt7core.config.settings import AIConfig, Settings
 from gt7core.observability.logging import get_logger
 
-from . import prompts
+from . import guard, prompts
 from .budget import Budget
 from .client import AIClient, AIRequest, AIResponse, AIUnavailable
 from .models import Action, Advice, AdviceLevel, AdviceSource
@@ -70,6 +70,16 @@ class RaceEngineer:
             return cls(None, config, budget=budget)
 
         try:
+            if config.is_local:
+                from .local import LocalClient
+
+                # Nada de rede aqui: montar o cliente local só guarda uma URL.
+                # Se o servidor não estiver de pé, descobre-se na primeira
+                # chamada e ela vira conselho local — não vale checar agora e
+                # atrasar a abertura do programa por um servidor que pode subir
+                # depois.
+                return cls(LocalClient.from_config(config), config, budget=budget)
+
             from .client import AnthropicClient
 
             return cls(AnthropicClient(config), config, budget=budget)
@@ -89,6 +99,30 @@ class RaceEngineer:
     def is_online(self) -> bool:
         """Se há um cliente. Falso não significa quebrado — significa local."""
         return self._client is not None
+
+    @property
+    def _compact(self) -> bool:
+        """Modelo pequeno pede prompt pequeno e verificação de números.
+
+        As duas coisas andam juntas porque têm a mesma causa: um modelo de 4B
+        segue três regras, não seis. O que não cabe no prompt vira verificação
+        depois da resposta.
+        """
+        return self._config.is_local
+
+    @property
+    def _main_model(self) -> str:
+        return (
+            self._config.local_model if self._config.is_local else self._config.model
+        )
+
+    @property
+    def _quick_model(self) -> str:
+        return (
+            self._config.local_fast_model
+            if self._config.is_local
+            else self._config.fast_model
+        )
 
     def new_lap(self) -> None:
         self._budget.new_lap()
@@ -114,7 +148,9 @@ class RaceEngineer:
 
         response = self._call(
             prompts.build_quick_request(
-                model=self._config.fast_model, situation=situation
+                model=self._quick_model,
+                situation=situation,
+                compact=self._compact,
             ),
             AdviceLevel.QUICK,
         )
@@ -129,7 +165,7 @@ class RaceEngineer:
             level=AdviceLevel.QUICK,
             headline=_one_line(text),
             source=AdviceSource.AI,
-            model=self._config.fast_model,
+            model=self._quick_model,
             usage=response.usage,
         )
 
@@ -156,7 +192,7 @@ class RaceEngineer:
 
         response = self._call(
             prompts.build_debrief_request(
-                model=self._config.model,
+                model=self._main_model,
                 header=prompts.format_header(
                     track=track,
                     car=car,
@@ -166,13 +202,14 @@ class RaceEngineer:
                 time_loss=prompts.format_time_loss(report),
                 corners=prompts.format_corners(corners or []),
                 profile=prompts.format_profile(profile),
+                compact=self._compact,
             ),
             AdviceLevel.DEBRIEF,
         )
         if response is None:
             return local
 
-        advice = _advice_from_payload(response, self._config.model)
+        advice = _advice_from_payload(response, self._main_model)
         return advice if advice is not None else local
 
     # ------------------------------------------------------------------
@@ -196,11 +233,12 @@ class RaceEngineer:
 
         response = self._call(
             prompts.build_session_request(
-                model=self._config.model,
+                model=self._main_model,
                 header=prompts.format_header(track=track, car=car),
                 pace=prompts.format_pace(lap_times_ms or []),
                 profile=prompts.format_profile(profile),
                 recurring=recurring,
+                compact=self._compact,
             ),
             AdviceLevel.SESSION,
         )
@@ -214,7 +252,7 @@ class RaceEngineer:
             headline=_one_line(headline),
             detail=detail.strip() or text,
             source=AdviceSource.AI,
-            model=self._config.model,
+            model=self._main_model,
             usage=response.usage,
         )
 
@@ -249,7 +287,38 @@ class RaceEngineer:
         if response.was_refused:
             _log.warning("a IA recusou o pedido (%s)", level)
             return None
+
+        if self._compact and not self._is_grounded(response, request):
+            return None
         return response
+
+    def _is_grounded(self, response: AIResponse, request: AIRequest) -> bool:
+        """Confere se a resposta só cita números que estavam no contexto.
+
+        Ativo apenas no provedor local, e a assimetria é intencional. Um modelo
+        pequeno erra a regra "não invente número" com frequência que importa; um
+        grande a segue, e nele o guarda passaria a atrapalhar — porque somar
+        duas perdas do contexto produz um número novo e **legítimo**, que a
+        verificação não tem como distinguir de um inventado.
+
+        No local esse mesmo caso continua sendo recusado, e é a escolha certa
+        pelo mesmo motivo: um 4B somando 0,652 com 0,574 erra a conta com
+        frequência parecida com a que acerta. Recusar custa um debrief da
+        análise da Fase 4 — que é gratuito, correto, e já estava pronto.
+        """
+        answer = response.text
+        if response.parsed:
+            answer = " ".join(
+                str(value) for value in _flatten(response.parsed)
+            )
+
+        invented = guard.unsupported_numbers(answer, request.user)
+        if invented:
+            _log.warning(
+                "resposta descartada: números sem origem no contexto %s", invented
+            )
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # As respostas locais
@@ -409,6 +478,20 @@ def _advice_from_payload(response: AIResponse, model: str) -> Advice | None:
         model=model,
         usage=response.usage,
     )
+
+
+def _flatten(payload: Any) -> list[Any]:
+    """Todos os valores escalares de uma estrutura aninhada.
+
+    O guarda precisa ver os números que estão dentro das ações, não só os do
+    título — é justamente no `gain_ms` de uma ação que um número inventado
+    passaria despercebido.
+    """
+    if isinstance(payload, dict):
+        return [item for value in payload.values() for item in _flatten(value)]
+    if isinstance(payload, list):
+        return [item for value in payload for item in _flatten(value)]
+    return [payload]
 
 
 def _actions_from_payload(raw: Any) -> list[Action]:

@@ -70,7 +70,15 @@ def corners():  # noqa: ANN201
 
 
 def make_config(**overrides: object) -> AIConfig:
-    config = AIConfig(enabled=True, api_key=SecretStr("test-key"))
+    """Configuração do provedor de **nuvem**.
+
+    Explícita desde que o padrão passou a ser local: sem `provider`, estes
+    testes passariam a exercitar os nomes de modelo locais e o guarda de
+    números, que é outro caminho e tem arquivo próprio (`test_ai_local.py`).
+    """
+    config = AIConfig(
+        provider="anthropic", enabled=True, api_key=SecretStr("test-key")
+    )
     for name, value in overrides.items():
         setattr(config, name, value)
     return config
@@ -555,9 +563,10 @@ class TestDegradacao:
         engineer = RaceEngineer.from_settings(settings)
         assert not engineer.is_online
 
-    def test_ligada_sem_chave_nao_estoura(self) -> None:
+    def test_nuvem_ligada_sem_chave_nao_estoura(self) -> None:
         """Marcar `enabled` sem exportar a chave é o engano mais comum."""
         settings = Settings()
+        settings.ai.provider = "anthropic"
         settings.ai.enabled = True
         engineer = RaceEngineer.from_settings(settings)
         assert not engineer.is_online

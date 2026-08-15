@@ -96,6 +96,47 @@ quebrar o que está certo. Nunca abra com "Ótimo trabalho!". Nunca feche \
 perguntando se ele quer mais detalhes."""
 
 
+
+# ---------------------------------------------------------------------------
+# A versão curta, para modelo pequeno
+# ---------------------------------------------------------------------------
+
+COMPACT_SYSTEM_PROMPT = """\
+Você é o engenheiro de corrida de um piloto no Gran Turismo 7. Recebe a análise \
+já pronta de uma volta e diz o que corrigir na próxima.
+
+REGRAS:
+1. Nunca escreva um número que não esteja no texto recebido.
+2. Sempre diga o trecho, com o nome exato usado na análise ("Curva 3").
+3. Uma correção por vez — a de maior ganho. Ignore o resto.
+
+Português do Brasil, direto. Sem saudação, sem elogio, sem perguntar se ele quer \
+mais detalhes. Velocidade em km/h, distância em metros, tempo em segundos."""
+"""Prompt para modelos pequenos, rodando na máquina do piloto.
+
+Não é o prompt principal encurtado por preguiça: é outro projeto de prompt.
+
+O de cima tem seis regras numeradas, glossário e seção de tom, e um modelo
+grande usa tudo. Um de 4B segue as três primeiras e vai perdendo as últimas —
+e regra que o modelo não segue é pior que regra ausente, porque dá a impressão
+de que a saída está protegida quando não está.
+
+Três regras é o que cabe. As que sobraram foram para onde funcionam melhor:
+"não invente número" ganhou um verificador aritmético em `guard.py`, e o
+formato do debrief é imposto na decodificação pelo esquema JSON, não pedido em
+prosa. Restrição executada vale mais que restrição escrita.
+
+Cache de prefixo não some por ser local: llama.cpp e Ollama reaproveitam o KV
+do prefixo estável, então um prompt de sistema fixo continua economizando —
+tempo, em vez de dinheiro.
+"""
+
+
+def system_prompt_for(*, compact: bool) -> str:
+    """O prompt do tamanho do modelo que vai lê-lo."""
+    return COMPACT_SYSTEM_PROMPT if compact else SYSTEM_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # Instruções por nível (mensagem do usuário, para não sujar o prefixo cacheado)
 # ---------------------------------------------------------------------------
@@ -320,6 +361,7 @@ def build_quick_request(
     *,
     model: str,
     situation: str,
+    compact: bool = False,
 ) -> AIRequest:
     """Nível 1: a nota curta, com o piloto ainda na pista.
 
@@ -328,7 +370,7 @@ def build_quick_request(
     de ela existir. `effort="low"` é o que de fato mantém a latência baixa.
     """
     return AIRequest(
-        system=SYSTEM_PROMPT,
+        system=system_prompt_for(compact=compact),
         user=f"{_QUICK_INSTRUCTION}\n\n{situation}",
         model=model,
         max_tokens=400,
@@ -343,6 +385,7 @@ def build_debrief_request(
     time_loss: str,
     corners: str = "",
     profile: str = "",
+    compact: bool = False,
 ) -> AIRequest:
     """Nível 2: o debrief estruturado, entre voltas."""
     blocks = [_DEBRIEF_INSTRUCTION, header, time_loss]
@@ -352,7 +395,7 @@ def build_debrief_request(
         blocks.append(profile)
 
     return AIRequest(
-        system=SYSTEM_PROMPT,
+        system=system_prompt_for(compact=compact),
         user="\n\n".join(blocks),
         model=model,
         max_tokens=3000,
@@ -368,6 +411,7 @@ def build_session_request(
     pace: str,
     profile: str,
     recurring: str = "",
+    compact: bool = False,
 ) -> AIRequest:
     """Nível 3: o relatório do fim da sessão.
 
@@ -380,7 +424,7 @@ def build_session_request(
         blocks.append(recurring)
 
     return AIRequest(
-        system=SYSTEM_PROMPT,
+        system=system_prompt_for(compact=compact),
         user="\n\n".join(blocks),
         model=model,
         max_tokens=4000,
