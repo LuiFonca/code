@@ -16,6 +16,23 @@ migração v6 cria a tabela e liga as voltas a ela.
 `KEEP_BEST_PER_TRACK` eram literais aqui dentro, e toda gravação apagava o que
 sobrasse sem aviso. Agora vêm da configuração (padrão: 20 recentes + 5 melhores
 por pista) e `0` desliga a exclusão automática.
+
+Uma conexão por thread
+----------------------
+A versão anterior compartilhava **uma** conexão entre todas as threads, com
+`check_same_thread=False` e um lock aplicado só às escritas. O comentário dizia
+que "as leituras o próprio SQLite trata" — e isso é verdade do SQLite, mas não
+do objeto `sqlite3.Connection` do Python, que não é feito para uso concorrente.
+
+O sintoma não foi exceção: foi **segmentation fault**, na Fase 6, quando um
+assinante passou a ler da thread de captura enquanto a interface lia da sua. Um
+processo morrendo no meio de uma sessão, sem traceback, é o pior modo de falha
+possível para quem está gravando dados que não voltam.
+
+Agora cada thread abre a sua conexão, que é o modelo que o `sqlite3` documenta
+como seguro. Junto vem o **WAL**: sem ele, um escritor bloquearia todos os
+leitores, e trocar um segfault raro por uma interface que trava durante a
+gravação da volta seria um mau negócio.
 """
 
 from __future__ import annotations
@@ -39,17 +56,29 @@ class SqliteDatabase:
     """Dona da conexão e do schema. Os repositórios recebem esta instância."""
 
     def __init__(self, db_path: str | Path = ":memory:") -> None:
-        self._db_path = str(db_path)
+        raw_path = str(db_path)
         self._lock = threading.RLock()
+        self._local = threading.local()
+        self._all: list[sqlite3.Connection] = []
+        self._closed = False
 
-        if self._db_path != ":memory:":
+        if raw_path == ":memory:":
+            # Um banco em memória privado morre com a conexão que o abriu, o que
+            # tornaria "uma conexão por thread" um banco por thread. A URI de
+            # cache compartilhado dá o comportamento esperado: mesma base, várias
+            # conexões. O nome é único por instância para dois `SqliteDatabase`
+            # em memória não se enxergarem — que é o que os testes assumem.
+            self._db_path = f"file:gt7mem{id(self)}?mode=memory&cache=shared"
+            self._uri = True
+            # Uma conexão âncora mantida aberta: com cache compartilhado, o banco
+            # é destruído quando a **última** conexão fecha, e sem esta o schema
+            # sumiria entre duas threads.
+            self._anchor: sqlite3.Connection | None = self._open()
+        else:
+            self._db_path = raw_path
+            self._uri = False
+            self._anchor = None
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-
-        # check_same_thread=False: a conexão é compartilhada entre a thread da
-        # interface e tarefas de fundo. As escritas são serializadas pelo lock
-        # abaixo; as leituras o próprio SQLite trata.
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.execute("PRAGMA foreign_keys = ON")
 
         self._create_schema()
         self._run_migrations()
@@ -58,22 +87,63 @@ class SqliteDatabase:
         # antes falha com "no such column" e o app não abre — foi um bug real.
         self._create_indexes()
 
+    def _open(self) -> sqlite3.Connection:
+        """Abre uma conexão nova, já com os PRAGMAs desta aplicação."""
+        conn = sqlite3.connect(self._db_path, uri=self._uri, timeout=10.0)
+        conn.execute("PRAGMA foreign_keys = ON")
+        # WAL: leitores não bloqueiam o escritor nem vice-versa. É o que permite
+        # a interface continuar consultando o histórico durante os ~40 ms em que
+        # a volta está sendo gravada.
+        with contextlib.suppress(sqlite3.DatabaseError):
+            conn.execute("PRAGMA journal_mode=WAL")
+        # NORMAL em vez de FULL: com WAL, a diferença é entre perder ou não os
+        # últimos commits num corte de energia do sistema **operacional** — não
+        # numa queda do programa. Para telemetria de jogo é uma troca óbvia.
+        conn.execute("PRAGMA synchronous=NORMAL")
+        with self._lock:
+            self._all.append(conn)
+        return conn
+
     @property
     def connection(self) -> sqlite3.Connection:
-        return self._conn
+        """A conexão **desta** thread, aberta sob demanda.
+
+        Os repositórios já acessavam o banco por esta propriedade, então passar
+        de compartilhada para local por thread não exigiu tocar em nenhum deles.
+        """
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            if self._closed:
+                raise sqlite3.ProgrammingError("banco já fechado")
+            conn = self._open()
+            self._local.conn = conn
+        return conn
 
     @property
     def lock(self) -> threading.RLock:
-        """Protege blocos de escrita. Os repositórios usam com `with`."""
+        """Serializa blocos de escrita.
+
+        Continua existindo mesmo com uma conexão por thread: o WAL admite um
+        escritor por vez, e sem o lock duas gravações concorrentes viram
+        `database is locked` depois do timeout. Com ele, a segunda espera.
+        """
         return self._lock
 
     def close(self) -> None:
-        self._conn.close()
+        """Fecha todas as conexões abertas, de todas as threads."""
+        with self._lock:
+            self._closed = True
+            connections, self._all = list(self._all), []
+        for conn in connections:
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
+        self._local = threading.local()
+        self._anchor = None
 
     # ---------- schema ----------
 
     def _create_schema(self) -> None:
-        conn = self._conn
+        conn = self.connection
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS tracks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,7 +207,7 @@ class SqliteDatabase:
     def _create_indexes(self) -> None:
         """Índices das consultas quentes: melhor volta da pista, listagem por
         recência, carga das amostras e voltas de uma sessão."""
-        self._conn.executescript("""
+        self.connection.executescript("""
             CREATE INDEX IF NOT EXISTS idx_laps_track_time
                 ON laps(track_id, is_player, lap_time_ms);
             CREATE INDEX IF NOT EXISTS idx_laps_track_recent
@@ -149,7 +219,7 @@ class SqliteDatabase:
             CREATE INDEX IF NOT EXISTS idx_sectors_lap
                 ON sector_times(lap_id, sector_index);
         """)
-        self._conn.commit()
+        self.connection.commit()
 
     def _run_migrations(self) -> None:
         """Migrações incrementais guiadas por `PRAGMA user_version`.
@@ -159,7 +229,7 @@ class SqliteDatabase:
         `ALTER TABLE` é tolerante a "coluna já existe" porque a mesma coluna
         pode ter vindo tanto da criação quanto da migração.
         """
-        conn = self._conn
+        conn = self.connection
         current = conn.execute("PRAGMA user_version").fetchone()[0]
 
         if current and current < 6:
@@ -186,7 +256,7 @@ class SqliteDatabase:
     def _try_alter(self, table: str, column_def: str) -> None:
         """ADD COLUMN tolerante a coluna já existente."""
         with contextlib.suppress(sqlite3.OperationalError):
-            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+            self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
 
 
 def reference_lap_distance(

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -458,3 +459,154 @@ class TestPipelineCompleto:
 
         assert len(failures) == 1
         assert "Falha ao salvar" in failures[0].message
+
+
+class TestConexaoPorThread:
+    """A correção da Fase 11: uma conexão por thread, não uma compartilhada.
+
+    A versão anterior compartilhava um `sqlite3.Connection` entre a thread da
+    interface e a de captura, com lock só nas escritas. O objeto do Python não é
+    feito para uso concorrente, e o sintoma **não foi exceção**: foi segmentation
+    fault, com o processo morrendo no meio de uma sessão sem traceback.
+    """
+
+    def test_cada_thread_recebe_a_sua_conexao(self, tmp_path: Path) -> None:
+        import threading
+
+        db = SqliteDatabase(tmp_path / "x.db")
+        try:
+            principal = db.connection
+            outra: list[object] = []
+
+            def trabalho() -> None:
+                outra.append(db.connection)
+
+            thread = threading.Thread(target=trabalho)
+            thread.start()
+            thread.join()
+
+            assert outra and outra[0] is not principal, (
+                "duas threads compartilharam a mesma conexão"
+            )
+            # Mas a mesma thread reaproveita a sua.
+            assert db.connection is principal
+        finally:
+            db.close()
+
+    def test_o_banco_usa_wal(self, tmp_path: Path) -> None:
+        """Sem WAL, o escritor bloqueia todos os leitores.
+
+        Trocar um segfault raro por uma interface que congela durante a gravação
+        da volta seria um mau negócio.
+        """
+        db = SqliteDatabase(tmp_path / "x.db")
+        try:
+            modo = db.connection.execute("PRAGMA journal_mode").fetchone()[0]
+            assert modo.lower() == "wal"
+        finally:
+            db.close()
+
+    def test_leitura_e_escrita_concorrentes(self, tmp_path: Path) -> None:
+        """O cenário real: a interface consulta enquanto a captura grava."""
+        import threading
+
+        db = SqliteDatabase(tmp_path / "x.db")
+        laps = SqliteLapRepository(db)
+        tracks = SqliteTrackRepository(db)
+        track_id = tracks.get_or_create("Pista")
+
+        erros: list[str] = []
+        parar = threading.Event()
+
+        def escrever() -> None:
+            for i in range(20):
+                try:
+                    laps.save(make_lap(track_id=track_id, lap_time_ms=100_000 + i))
+                except Exception as exc:  # noqa: BLE001
+                    erros.append(f"escrita: {exc}")
+            parar.set()
+
+        def ler() -> None:
+            while not parar.is_set():
+                try:
+                    laps.get_by_track(track_id, limit=5)
+                    laps.get_best(track_id)
+                except Exception as exc:  # noqa: BLE001
+                    erros.append(f"leitura: {exc}")
+
+        threads = [threading.Thread(target=escrever)] + [
+            threading.Thread(target=ler) for _ in range(3)
+        ]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=20)
+            assert erros == []
+            assert len(laps.get_by_track(track_id, limit=50)) > 0
+        finally:
+            parar.set()
+            db.close()
+
+    def test_fechar_derruba_as_conexoes_de_todas_as_threads(
+        self, tmp_path: Path
+    ) -> None:
+        """Fechar só a da thread que chamou deixaria arquivos abertos."""
+        import sqlite3
+        import threading
+
+        db = SqliteDatabase(tmp_path / "x.db")
+        pronto = threading.Event()
+
+        def abrir() -> None:
+            db.connection.execute("SELECT 1")
+            pronto.set()
+
+        thread = threading.Thread(target=abrir)
+        thread.start()
+        thread.join()
+        assert pronto.is_set()
+
+        db.close()
+        with pytest.raises(sqlite3.ProgrammingError):
+            db.connection.execute("SELECT 1")
+
+    def test_memoria_compartilhada_entre_threads(self) -> None:
+        """`:memory:` privado daria um banco por thread, não um banco.
+
+        Os testes usam banco em memória; sem cache compartilhado, uma tabela
+        criada na thread principal simplesmente não existiria na outra.
+        """
+        import threading
+
+        db = SqliteDatabase(":memory:")
+        try:
+            tracks = SqliteTrackRepository(db)
+            track_id = tracks.get_or_create("Pista")
+
+            visto: list[int] = []
+
+            def consultar() -> None:
+                row = db.connection.execute(
+                    "SELECT COUNT(*) FROM tracks WHERE id = ?", (track_id,)
+                ).fetchone()
+                visto.append(int(row[0]))
+
+            thread = threading.Thread(target=consultar)
+            thread.start()
+            thread.join()
+
+            assert visto == [1], "a outra thread não enxergou o mesmo banco"
+        finally:
+            db.close()
+
+    def test_dois_bancos_em_memoria_nao_se_enxergam(self) -> None:
+        """Cache compartilhado não pode virar cache global entre instâncias."""
+        primeiro = SqliteDatabase(":memory:")
+        segundo = SqliteDatabase(":memory:")
+        try:
+            SqliteTrackRepository(primeiro).get_or_create("Só no primeiro")
+            assert SqliteTrackRepository(segundo).get_all() == []
+        finally:
+            primeiro.close()
+            segundo.close()
