@@ -85,6 +85,14 @@ class CoreApplication:
     live_detector: LiveEventDetector = field(default_factory=LiveEventDetector)
     """Detector de eventos da volta em andamento. Python puro, sem Qt."""
 
+    discord_bot: Any | None = None
+    """Bot do Discord, ou None quando desligado, sem token ou sem a biblioteca.
+
+    Mora fora de `build_core` pelo mesmo motivo do `engineer_service`: subir uma
+    conexão de rede não é responsabilidade de montar o grafo. Quem liga é
+    `start()`, e falhar não impede a captura.
+    """
+
     engineer_service: Any | None = None
     """Ponte Qt para o engenheiro. Preenchida por `build_gui`, nunca aqui.
 
@@ -96,6 +104,7 @@ class CoreApplication:
 
     def start(self) -> None:
         """Abre a sessão e liga a captura."""
+        self._start_discord()
         self.engine.reset()
         self.recording.reload_reference()
         self.session_manager.start_session()
@@ -115,8 +124,33 @@ class CoreApplication:
         self.session_manager.end_session()
         self.engine.reset()
 
+    def _start_discord(self) -> None:
+        """Sobe o bot, se houver. Nada aqui pode impedir a captura de começar.
+
+        O `try` largo é deliberado: entre token inválido, rede indisponível e
+        biblioteca com versão incompatível há muitas formas de o Discord falhar,
+        e nenhuma delas justifica o piloto não conseguir gravar a sessão.
+        """
+        if self.discord_bot is not None:
+            return
+        try:
+            from gt7discord import build_bot
+        except ImportError:
+            return
+
+        try:
+            bot = build_bot(self)
+            if bot is not None:
+                bot.start()
+                self.discord_bot = bot
+        except Exception:
+            _log.warning("o bot do Discord não pôde subir", exc_info=True)
+
     def close(self) -> None:
         self.stop()
+        if self.discord_bot is not None:
+            self.discord_bot.stop()
+            self.discord_bot = None
         self.database.close()
 
 

@@ -180,7 +180,20 @@ class SessionManager:
         return True
 
     def set_car(self, car: Car | None) -> bool:
-        if (car.id if car else None) == self.car_id:
+        """Troca o carro da sessão. Devolve se algo mudou.
+
+        A comparação inclui o **nome**, e não só o id. Desde que a identificação
+        automática passou a montar o carro a partir do catálogo — em memória,
+        sem tocar o banco —, o objeto chega sem id; comparando só por id, um
+        carro novo (`id=None`) parecia idêntico a "nenhum carro" (`None`) e a
+        troca era descartada em silêncio. O sintoma era o painel e o Discord
+        mostrarem "Carro: —" a sessão inteira, com a telemetria correta.
+        """
+        same_id = (car.id if car else None) == self.car_id
+        same_name = (car.name if car else None) == (
+            self._car.name if self._car else None
+        )
+        if same_id and same_name:
             return False
         self._car = car
         self._session.car = car

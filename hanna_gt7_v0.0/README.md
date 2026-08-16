@@ -4,8 +4,8 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 9 concluída.** O núcleo (`gt7core`) roda headless com 482 testes
-e mypy strict sobre 78 arquivos. As três fontes de telemetria ficam atrás do
+**Estado: Fase 10 concluída.** O núcleo (`gt7core`) roda headless com 519 testes
+e mypy strict sobre 89 arquivos. As três fontes de telemetria ficam atrás do
 mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
 pista da Fase 4 está completa, a interface tem cinco páginas sobre um design
 system com navegação lateral e paleta de comandos (⌘K) — e agora existe o Race
@@ -81,7 +81,7 @@ python3 -m gt7core.tools.diagnose <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 482 testes
+python3 -m pytest tests/            # 519 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core, gt7app e gt7ai)
 ```
@@ -118,6 +118,13 @@ gt7app/           Casca de interface — a única parte que conhece Qt
   commands.py       registro de comandos (Python puro)
   shell.py          janela: navegação lateral + páginas + ⌘K
 
+gt7discord/       Bot do Discord — plugin, nunca núcleo
+  sink.py           para onde a mensagem vai (é o que dispensa a rede nos testes)
+  formatting.py     do domínio para o texto
+  notifier.py       política: o que vira mensagem e o que NÃO vira
+  commands/         um arquivo por comando, descobertos por varredura (§23)
+  bot.py            a única parte que conhece discord.py
+
 gt7ai/            Race Engineer — plugin, nunca núcleo
   local.py          provedor PADRÃO: modelo na máquina do piloto, custo zero
   client.py         provedor de nuvem, opcional (exige chave paga)
@@ -127,7 +134,7 @@ gt7ai/            Race Engineer — plugin, nunca núcleo
   budget.py         custo por sessão + cadência do rádio
   engineer.py       os três níveis, todos com resposta local garantida
 
-tests/            482 testes
+tests/            519 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -220,7 +227,9 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 7b | IA local gratuita como padrão + remoção da árvore antiga | ✅ concluída |
 | 8 | Engenheiro na tela + fronteira assíncrona (R2 da auditoria) | ✅ concluída |
 | 9 | Rádio automático: detecção em volta parcial | ✅ concluída |
-| 10-12 | Discord, voz, hardening | ⬜ |
+| 10 | Discord: notificações e comandos, custo zero | ✅ concluída |
+| 11 | Voz (STT/TTS atrás de protocolo) | ⬜ |
+| 12 | Hardening: conexão SQLite por thread, empacotamento | ⬜ |
 
 O que a Fase 1 resolveu, com a numeração da auditoria:
 
@@ -448,6 +457,42 @@ travamento que o relatório não lista, o piloto deixaria de confiar nos dois.
 O núcleo **publica** `RaceEventDetected` e para por aí — quem pede a nota é a
 interface, e quem mandará no Discord será o bot. Essa indiferença é o que faz o
 mesmo detector servir aos três.
+
+### O bot do Discord (Fase 10)
+
+**Custo zero.** O bot assina o barramento no mesmo processo do programa — não há
+servidor para manter, como a auditoria previu no §12. A contrapartida é que ele
+só existe enquanto o programa estiver aberto, o que para telemetria não é
+limitação: os dados só existem enquanto se pilota.
+
+```bash
+pip3 install discord.py
+GT7_DISCORD_TOKEN=...   # e habilite MESSAGE CONTENT INTENT no portal
+```
+
+Uma sessão de 5 voltas produz **5 mensagens**, não 5 + 12 eventos:
+
+```
+**Sessão iniciada** — Suzuka Circuit
+★ **1:43.553**  melhor da sessão
+★ **1:42.000**  melhor da sessão
+**Sessão encerrada** — Suzuka Circuit · 4 volta(s) · melhor 1:42.000
+**Relatório de sessão** …
+```
+
+**O que não vira mensagem** é a decisão de produto: `RaceEventDetected` fica de
+fora. A Fase 9 mede doze eventos numa sessão de duas voltas, e no celular isso é
+spam — spam ensina o piloto a silenciar o canal, o que mata junto as mensagens
+que importavam. O evento ao vivo tem destino próprio: o rádio na tela. Volta
+comum também fica calada por padrão (`post_every_lap` liga o registro completo).
+
+Comandos são **descobertos por varredura** — o §23 pede que adicionar um comando
+não toque no núcleo, e a forma de garantir isso é não existir lista para
+atualizar. Um arquivo novo em `commands/` aparece sozinho no `help`, e há um
+teste que escreve um módulo e confirma que ele é encontrado.
+
+Nenhum teste do pacote toca a rede, exige token ou importa `discord.py`: o que
+decide o valor do bot é Python puro atrás de um `MessageSink`.
 
 ### O catálogo do jogo
 

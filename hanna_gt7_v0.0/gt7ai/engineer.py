@@ -20,6 +20,7 @@ Quem lê o resultado distingue os dois por `Advice.source`.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from gt7core.analytics.corners import Corner
@@ -53,6 +54,16 @@ class RaceEngineer:
         self._client = client
         self._config = config
         self._budget = budget or Budget()
+        # Serializa as chamadas ao modelo. A partir da Fase 10 existem **dois**
+        # consumidores — a interface e o bot do Discord —, cada um na sua
+        # thread. Numa máquina de 8 GB rodando um 4B, duas inferências
+        # simultâneas disputam memória que não existe, e o sintoma seria o
+        # sistema começar a usar disco no meio de uma sessão.
+        #
+        # O lock mora aqui, e não em cada consumidor, porque o recurso escasso é
+        # o modelo: um segundo consumidor futuro (a voz, na Fase 11) fica
+        # protegido sem precisar saber que precisava.
+        self._lock = threading.Lock()
 
     @classmethod
     def from_settings(
@@ -271,7 +282,8 @@ class RaceEngineer:
             return None
 
         try:
-            response = self._client.complete(request)
+            with self._lock:
+                response = self._client.complete(request)
         except AIUnavailable as exc:
             _log.warning("IA indisponível (%s): %s", level, exc)
             return None
