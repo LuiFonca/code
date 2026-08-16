@@ -33,7 +33,7 @@ from ..application import CoreApplication
 from ..design.theme import OBJ_GHOST_BUTTON, OBJ_STATUS_BAR
 from ..design.tokens import Space, Theme
 from ..viewmodels.live import LiveViewModel
-from ..widgets.cards import Card, MetricCard, MetricGrid
+from ..widgets.cards import Badge, Card, MetricCard, MetricGrid
 from ..widgets.charts import DistanceChart, Series
 from ..widgets.radio import RadioCard
 from .base import Page
@@ -68,6 +68,22 @@ class LivePage(Page):
 
     def build(self) -> None:
         self.header.add_action(self._build_toolbar())
+
+        # Selo de dados sintéticos. Nasceu de um relato real: *"o aplicativo tá
+        # funcionando cheio de dados mocados"* — a pessoa abriu o programa, viu
+        # velocidade, RPM e marcha se mexendo, e concluiu que estava conectada
+        # ao console. Estava vendo o gerador.
+        #
+        # A fonte sintética é boa e precisa existir: permite conhecer o programa
+        # inteiro sem PS5. O defeito não é ela — é ela ser **indistinguível** da
+        # real. Um painel que mostra números inventados sem dizer que são
+        # inventados não é uma demonstração, é uma armadilha; e o dano cresce
+        # com a qualidade do gerador, porque quanto mais convincente, mais
+        # tempo a pessoa perde antes de desconfiar.
+        self._synthetic_badge = Badge("DADOS SINTÉTICOS — não é o seu PS5")
+        self._synthetic_badge.set_color(self.theme.palette.yellow)
+        self.content.addWidget(self._synthetic_badge)
+        self._update_synthetic_badge()
 
         self._grid = MetricGrid(columns=6)
         for key, label, unit in (
@@ -215,6 +231,26 @@ class LivePage(Page):
         self._stats_timer.start()
 
     # ---------- ações ----------
+
+    def _update_synthetic_badge(self) -> None:
+        """Mostra o selo enquanto a fonte for o gerador.
+
+        Lê a configuração a cada chamada em vez de guardar o estado: a fonte
+        agora pode ser trocada com o programa aberto, pela página de
+        Configurações, e um selo que só se decide na construção continuaria
+        dizendo "sintético" depois de o PS5 já estar conectado — que é a mesma
+        mentira, na direção oposta.
+        """
+        self._synthetic_badge.setVisible(
+            self.core.settings.telemetry.source.strip().lower() == "mock"
+        )
+
+    def on_enter(self) -> None:
+        # Não é `refresh()`: `on_enter` roda toda vez que a página aparece,
+        # enquanto `refresh()` depende do estado sujo. Vindo de Configurações,
+        # a fonte pode ter mudado sem nada mais ter mudado junto.
+        self._update_synthetic_badge()
+        super().on_enter()
 
     def _reload_tracks(self) -> None:
         """As pistas já usadas primeiro, depois o catálogo do jogo.

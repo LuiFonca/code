@@ -124,6 +124,41 @@ class CoreApplication:
         self.session_manager.end_session()
         self.engine.reset()
 
+    def reconfigure_source(self, *, replay_path: str | Path | None = None) -> None:
+        """Remonta a fonte a partir de `self.settings`, sem reiniciar o programa.
+
+        Trocar do gerador sintético para o PS5 é a operação que a tela de
+        configuração existe para permitir, e exigir um reinício a cada tentativa
+        de IP tornaria o acerto da rede — que já é a parte chata — insuportável.
+
+        A ordem importa. A fonte antiga para **antes** de a nova nascer: duas
+        fontes vivas escrevendo no mesmo motor entregariam quadros sintéticos
+        misturados com os do console, e o resultado seria uma volta que não
+        aconteceu. E a nova só sobe se a antiga estava rodando, para que abrir a
+        tela de configuração e salvar não comece uma captura que ninguém pediu.
+
+        Se a configuração nova for inválida — `udp` sem IP, por exemplo — o
+        `create_telemetry_source` levanta antes de qualquer estado mudar, e a
+        fonte antiga continua sendo a fonte: um erro de digitação não pode
+        deixar o programa sem captura nenhuma.
+        """
+        was_running = self.source.is_running
+        new_source = create_telemetry_source(
+            self.settings, replay_path=replay_path, metrics=self.metrics
+        )
+
+        old_source = self.source
+        old_source.stop()
+        new_source.adopt_callbacks_from(old_source)
+        self.source = new_source
+
+        _log.info(
+            "fonte de telemetria trocada",
+            extra={"source": self.settings.telemetry.source, "running": was_running},
+        )
+        if was_running:
+            new_source.start()
+
     def _start_discord(self) -> None:
         """Sobe o bot, se houver. Nada aqui pode impedir a captura de começar.
 

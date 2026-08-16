@@ -52,6 +52,7 @@ from .pages.compare import ComparePage
 from .pages.driver import DriverPage
 from .pages.history import HistoryPage
 from .pages.live import LivePage
+from .pages.settings import SettingsPage
 from .viewmodels.live import LiveViewModel
 from .widgets.palette import CommandPalette
 
@@ -110,6 +111,7 @@ class AppShell(QMainWindow):
             ComparePage(self._core, self._theme),
             HistoryPage(self._core, self._theme),
             DriverPage(self._core, self._theme),
+            SettingsPage(self._core, self._theme),
         ):
             self._add_page(page)
         layout.addWidget(self._stack, stretch=1)

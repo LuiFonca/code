@@ -95,6 +95,52 @@ class DiscordSink:
         return len(self._pending)
 
 
+def _matches(actual: str, wanted: str) -> bool:
+    """Compara nomes de forma tolerante ao que a pessoa realmente digita.
+
+    Ela copia o nome da barra lateral do Discord, e vem com `#` na frente ou
+    maiúscula trocada. Exigir a forma exata transformaria um acerto em erro
+    silencioso — o bot ficaria mudo e nada diria por quê.
+    """
+    return actual.strip().lower() == wanted.strip().lstrip("#").lower()
+
+
+def select_channel(
+    guilds: Any, *, guild_name: str = "", channel_name: str = ""
+) -> Any | None:
+    """Escolhe onde o bot vai escrever.
+
+    Substitui o comportamento anterior, que era pegar o **primeiro** canal de
+    texto gravável em **qualquer** servidor. Isso funcionava por acidente com um
+    servidor e um canal, e mandava o debrief para um lugar arbitrário em
+    qualquer outra configuração — num servidor com `#regras` antes de
+    `#telemetria`, o relatório da sessão ia parar nas regras.
+
+    A decisão que mais importa aqui: **nome pedido que não existe devolve
+    `None`, não um canal qualquer.** Cair no primeiro gravável seria "prestativo"
+    e reproduziria exatamente o defeito — a pessoa configurou `#telemetria`,
+    errou uma letra, e o bot passa a publicar num canal que ela não escolheu,
+    sem nada na tela indicando isso. Ficar em silêncio com um aviso no log é
+    recuperável; publicar no lugar errado, não.
+
+    Sem nome pedido, mantém o comportamento antigo — que é razoável quando o bot
+    está num servidor só, e é o padrão de quem nunca abriu esta configuração.
+
+    Recebe os servidores por parâmetro (tipados como `Any`) em vez de ler do
+    cliente: é o que permite verificar a política inteira sem `discord.py`
+    instalada e sem rede.
+    """
+    for guild in guilds:
+        if guild_name and not _matches(getattr(guild, "name", ""), guild_name):
+            continue
+        for channel in guild.text_channels:
+            if channel_name and not _matches(getattr(channel, "name", ""), channel_name):
+                continue
+            if channel.permissions_for(guild.me).send_messages:
+                return channel
+    return None
+
+
 class DiscordBot:
     """Sobe a `discord.py` numa thread própria e despacha os comandos."""
 
@@ -192,13 +238,21 @@ class DiscordBot:
         async def on_ready() -> None:
             loop = asyncio.get_running_loop()
             self._loop = loop
-            channel = next(
-                (c for g in client.guilds for c in g.text_channels
-                 if c.permissions_for(g.me).send_messages),
-                None,
+            channel = select_channel(
+                client.guilds,
+                guild_name=self._config.guild,
+                channel_name=self._config.channel,
             )
             if channel is not None:
                 self._sink.attach(loop, channel)
+            else:
+                _log.warning(
+                    "nenhum canal do Discord corresponde à configuração",
+                    extra={
+                        "guild": self._config.guild or "(qualquer)",
+                        "channel": self._config.channel or "(o primeiro gravável)",
+                    },
+                )
             _log.info("bot do Discord conectado", extra={"user": str(client.user)})
 
         @client.event  # type: ignore[untyped-decorator]

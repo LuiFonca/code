@@ -70,13 +70,13 @@ def shell(tmp_path: Path, qt_app):  # noqa: ANN001, ANN201
 
 class TestNavegacao:
     def test_todas_as_paginas_montam_e_carregam(self, shell) -> None:  # noqa: ANN001
-        """Percorre as cinco páginas com dados reais.
+        """Percorre as seis páginas com dados reais.
 
         É o teste que pega o erro que só existe na página que ninguém abriu.
         """
         window, _core, app = shell
 
-        assert len(window._pages) == 5  # noqa: SLF001
+        assert len(window._pages) == 6  # noqa: SLF001
         for index, page in enumerate(window._pages):  # noqa: SLF001
             window._activate(index)  # noqa: SLF001
             app.processEvents()
@@ -391,3 +391,39 @@ class TestMapaDePista:
 
         track_map = window._pages[1]._map  # noqa: SLF001
         assert track_map._distance_at_pixel(QPointF(-500.0, -500.0)) is None  # noqa: SLF001
+
+
+class TestSeloDeDadosSinteticos:
+    """O defeito que fazia o gerador passar por telemetria real.
+
+    Relato que originou isto: *"o aplicativo tá funcionando cheio de dados
+    mocados"*. A pessoa abriu o programa, viu velocidade, RPM e marcha se
+    mexendo, e concluiu que estava conectada ao console.
+
+    A fonte sintética precisa existir — é o que permite conhecer o programa sem
+    PS5. O defeito não é ela, é ela ser **indistinguível** da real, e o dano
+    cresce com a qualidade do gerador: quanto mais convincente, mais tempo se
+    perde antes de desconfiar.
+    """
+
+    def test_o_selo_aparece_na_fonte_sintetica(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(0)  # noqa: SLF001
+        app.processEvents()
+
+        live = window._pages[0]  # noqa: SLF001
+        assert live._synthetic_badge.isVisible()  # noqa: SLF001
+        assert "SINTÉTICOS" in live._synthetic_badge.text()  # noqa: SLF001
+
+    def test_o_selo_some_quando_a_fonte_vira_o_ps5(self, shell) -> None:  # noqa: ANN001
+        """Um selo decidido só na construção mentiria na direção oposta:
+        continuaria dizendo "sintético" com o console já conectado."""
+        window, core, app = shell
+        core.settings.telemetry.source = "udp"
+
+        window._activate(1)  # noqa: SLF001
+        app.processEvents()
+        window._activate(0)  # noqa: SLF001
+        app.processEvents()
+
+        assert not window._pages[0]._synthetic_badge.isVisible()  # noqa: SLF001

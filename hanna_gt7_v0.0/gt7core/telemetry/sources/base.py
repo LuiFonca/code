@@ -77,6 +77,29 @@ class TelemetrySource(ABC):
             if callback not in self._status_callbacks:
                 self._status_callbacks.append(callback)
 
+    def adopt_callbacks_from(self, other: TelemetrySource) -> None:
+        """Assume as inscrições de outra fonte.
+
+        Existe para trocar a fonte com o programa aberto — sair do gerador
+        sintético para o PS5 sem reiniciar. Quem se inscreveu (o motor, a
+        interface) inscreveu-se no *objeto* fonte, não num registro central, e
+        sem isto a fonte nova nasceria muda: a captura funcionaria, os quadros
+        seriam produzidos, e nada na tela se mexeria.
+
+        Mora aqui, e não em quem faz a troca, porque as listas são privadas
+        desta classe. Um método público custa três linhas e evita que a camada
+        de cima aprenda a alcançar `_frame_callbacks`.
+        """
+        if other is self:
+            return
+        with other._callback_lock:  # noqa: SLF001  (mesma classe)
+            frames = list(other._frame_callbacks)  # noqa: SLF001
+            status = list(other._status_callbacks)  # noqa: SLF001
+        for frame_callback in frames:
+            self.on_frame(frame_callback)
+        for status_callback in status:
+            self.on_status(status_callback)
+
     # ---------- emissão (para as subclasses) ----------
 
     def _emit_frame(self, frame: TelemetryFrame) -> None:

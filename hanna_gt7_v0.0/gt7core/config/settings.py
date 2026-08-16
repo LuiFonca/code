@@ -18,7 +18,7 @@ Regras que este módulo impõe:
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 
 ENV_PREFIX = "GT7_"
@@ -145,6 +145,23 @@ class DiscordConfig:
     command_prefix: str = "!engineer"
     enabled: bool = False
 
+    guild: str = ""
+    """Nome do servidor. Vazio = qualquer um onde o bot esteja."""
+
+    channel: str = ""
+    """Nome do canal, sem `#`. Vazio = o primeiro onde o bot pode escrever.
+
+    Nome e não ID: ninguém sabe de cor o ID numérico de um canal, e obtê-lo
+    exige ligar o modo desenvolvedor do Discord. O nome é o que aparece na
+    barra lateral, e é o que a pessoa vai digitar.
+
+    O padrão vazio preserva o comportamento antigo — que era o **único**
+    comportamento e é o defeito que estes campos existem para corrigir: sem
+    destino configurado, o bot escrevia no primeiro canal onde tivesse
+    permissão, em qualquer servidor. Num servidor com `#regras` antes de
+    `#telemetria`, o debrief da sessão ia parar no lugar errado.
+    """
+
 
 @dataclass(slots=True)
 class VoiceConfig:
@@ -205,6 +222,16 @@ class Settings:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     ui: UIConfig = field(default_factory=UIConfig)
 
+    env_path: Path = field(default_factory=lambda: Path(".env"))
+    """De onde esta configuração veio — e para onde a tela grava de volta.
+
+    Guardado no objeto porque quem salva (a página de configuração) não é quem
+    carrega, e reconstruir o caminho do outro lado significaria repetir o
+    `Path(".env")` e o `or` do carregador. Repetir uma decisão é como as duas
+    cópias divergem: bastaria alguém passar `env_file` num teste para a tela
+    gravar num arquivo diferente do que o programa lê.
+    """
+
     @classmethod
     def load(cls, env_file: Path | None = None) -> Settings:
         """Monta a configuração a partir de ambiente + `.env`.
@@ -212,7 +239,8 @@ class Settings:
         Precedência: `os.environ` > arquivo `.env` > padrão do dataclass.
         Todas as variáveis usam o prefixo `GT7_` para não colidir com nada.
         """
-        file_values = _load_dotenv(env_file or Path(".env"))
+        env_path = env_file or Path(".env")
+        file_values = _load_dotenv(env_path)
 
         def get(name: str) -> str | None:
             key = f"{ENV_PREFIX}{name}"
@@ -291,6 +319,8 @@ class Settings:
             token=SecretStr(discord_token),
             command_prefix=get("DISCORD_PREFIX") or "!engineer",
             enabled=bool(discord_token) and get_bool("DISCORD_ENABLED", True),
+            guild=get("DISCORD_GUILD") or "",
+            channel=get("DISCORD_CHANNEL") or "",
         )
 
         voice = VoiceConfig(
@@ -320,6 +350,7 @@ class Settings:
             voice=voice,
             logging=logging_config,
             ui=ui,
+            env_path=env_path,
         )
 
     def describe(self) -> dict[str, object]:
@@ -331,6 +362,14 @@ class Settings:
         result: dict[str, object] = {}
         for section in fields(self):
             value = getattr(self, section.name)
+            # Nem todo campo é uma seção: `env_path` é um `Path` solto, e
+            # `fields()` sobre ele levanta TypeError. Descrever o valor direto
+            # é o que se quer de qualquer forma — ele não tem sub-campos, e o
+            # caminho do `.env` é exatamente o tipo de coisa que ajuda num
+            # relato de problema.
+            if not is_dataclass(value):
+                result[section.name] = str(value)
+                continue
             result[section.name] = {
                 f.name: (
                     repr(getattr(value, f.name))

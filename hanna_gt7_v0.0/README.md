@@ -83,13 +83,26 @@ python3 -m gt7app
 Sobe com telemetria sintética por padrão — dá para ver o painel funcionando sem
 console nenhum. `GT7_MOCK_SPEED=20` acelera o tempo simulado.
 
-Cinco páginas: **Ao vivo**, **Análise**, **Comparar**, **Histórico**, **Piloto**.
-`⌘K` abre a paleta de comandos.
+Seis páginas: **Ao vivo**, **Análise**, **Comparar**, **Histórico**, **Piloto** e
+**Configurações**. `⌘K` abre a paleta de comandos.
 
 ### Com o PS5
 
-Precisa de um PlayStation com GT7 na mesma rede. Se não receber telemetria,
-diagnostique a rede **antes** de mexer em qualquer outra coisa:
+Precisa de um PlayStation com GT7 na mesma rede, **numa sessão ativa** — no menu
+o jogo não transmite nada, e essa é a causa nº 1 de "não funciona".
+
+Tudo pela interface, na página **Configurações**:
+
+1. Fonte: **PS5 na rede**
+2. IP do PlayStation (no console: Ajustes → Rede → Ver Status da Conexão)
+3. **Testar conexão** — sonda a rede e diz o que está errado, em português
+4. **Salvar e aplicar** — grava no `.env` e troca a fonte na hora, sem reiniciar
+
+Enquanto a fonte for sintética, a página *Ao vivo* mostra um selo amarelo
+**DADOS SINTÉTICOS**. Ele existe porque um painel com números convincentes e
+inventados, sem dizer que são inventados, não é demonstração — é armadilha.
+
+A mesma sondagem também roda no terminal, com um relatório mais longo:
 
 ```bash
 python3 -m gt7core.tools.diagnose 192.168.1.50
@@ -123,7 +136,7 @@ por varredura do diretório e exige que cada um esteja na lista de proibições,
 para que um plugin novo não crie um buraco silencioso no guarda.
 
 É o que permite a mesma análise rodar na interface, num teste, no bot e na voz
-sem duplicação — e é o que torna 566 testes possíveis, já que nenhum deles
+sem duplicação — e é o que torna 620 testes possíveis, já que nenhum deles
 precisa de servidor gráfico, rede ou console ligado.
 
 ### Cada camada degrada sozinha
@@ -222,6 +235,12 @@ mensagens que importavam.
 Comandos do bot são descobertos por varredura de diretório. Um arquivo novo em
 `commands/` aparece sozinho no `help`, sem lista para atualizar.
 
+**Para onde ele escreve** se configura em *Configurações* (servidor e canal, por
+nome). Deixando vazio, o bot usa o primeiro canal onde consegue escrever — o que
+funciona por acidente com um servidor só. Se você pedir um canal que não existe,
+ele fica **em silêncio** e registra o motivo no log: publicar num canal que você
+não escolheu seria pior, porque você teria motivo para achar que configurou certo.
+
 ---
 
 ## Estrutura
@@ -258,7 +277,7 @@ gt7ai/            Race Engineer          gt7discord/    Bot
 
 gt7voice/         Rádio falado
   speaker.py   quem fala (protocolo)
-  system.py    say / SAPI / espeak-ng      tests/    566 testes
+  system.py    say / SAPI / espeak-ng      tests/    620 testes
   radio.py     o que vira fala             docs/     a auditoria de origem
 ```
 
@@ -287,7 +306,7 @@ acontece num lugar só (`sources/factory.py`), a partir da configuração.
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest              # 566 testes, ~1min45
+python3 -m pytest              # 620 testes, ~2min15
 python3 -m ruff check .        # lint
 python3 -m mypy                # tipos (strict, 93 arquivos)
 ```

@@ -28,7 +28,7 @@ Uso típico:
 
 from typing import Any
 
-from .bot import DiscordBot, DiscordSink, DiscordUnavailable
+from .bot import DiscordBot, DiscordSink, DiscordUnavailable, select_channel
 from .commands import Command, Context, discover
 from .notifier import Notifier, NotifierPolicy
 from .sink import MessageSink, NullSink, RecordingSink
@@ -46,6 +46,7 @@ __all__ = [
     "RecordingSink",
     "build_bot",
     "discover",
+    "select_channel",
 ]
 
 

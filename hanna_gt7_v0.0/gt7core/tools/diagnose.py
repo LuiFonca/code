@@ -32,6 +32,7 @@ import os
 import socket
 import sys
 import time
+from dataclasses import dataclass
 
 from ..config.settings import Settings
 from ..telemetry.protocol import salsa20_decode
@@ -161,6 +162,135 @@ def _listen(sock: socket.socket, ip: str, wait_s: int) -> tuple[int, int, int, d
     return sent, valid, invalid, send_errors
 
 
+@dataclass(frozen=True, slots=True)
+class Diagnosis:
+    """O veredito, separado de como ele é impresso.
+
+    Existe porque a mesma conclusão precisa aparecer em dois lugares muito
+    diferentes: no terminal, para quem rodou o diagnóstico, e na tela de
+    configuração, ao lado do campo de IP, para quem nunca vai abrir um terminal.
+    Duas cópias da classificação divergiriam na primeira correção — e divergir
+    aqui significa a interface mandar mexer no firewall enquanto o terminal diz
+    que o jogo está no menu.
+    """
+
+    ok: bool
+    headline: str
+    steps: tuple[str, ...] = ()
+
+    def summary(self) -> str:
+        return "\n".join((self.headline, *self.steps))
+
+
+def diagnose_counts(
+    sent: int, valid: int, invalid: int, send_errors: dict[str, int]
+) -> Diagnosis:
+    """Classifica o resultado da sondagem. Pura: contagens entram, texto sai.
+
+    A ordem dos ramos é a ordem da certeza, do mais conclusivo para o mais
+    genérico. Pacote válido encerra o assunto; depois vem a falta de rota, que
+    é fato do sistema operacional; só então as hipóteses.
+    """
+    if valid:
+        return Diagnosis(
+            ok=True,
+            headline="FUNCIONANDO. A telemetria chega e decodifica corretamente.",
+            steps=(
+                "Se mesmo assim o programa não mostra dados, o problema é na",
+                "interface e não na rede — mande esta saída junto do relato.",
+            ),
+        )
+
+    unreachable = {errno.EHOSTUNREACH, errno.ENETUNREACH}
+    if send_errors and all(
+        any(f"[{code}]" in key for code in unreachable) for key in send_errors
+    ):
+        return Diagnosis(
+            ok=False,
+            headline="SEM ROTA até o console. Nenhum toque saiu da máquina.",
+            steps=(
+                "Verifique, nesta ordem:",
+                "  - o IP no console: Configurações > Rede > Ver status da conexão",
+                "  - se console e computador estão na MESMA rede e faixa de IP",
+                "  - VPN ligada no computador (desligue e teste de novo)",
+                "  - no macOS: Ajustes > Privacidade e Segurança > Rede Local,",
+                "    e confirme que o Terminal (ou o Python) está autorizado",
+            ),
+        )
+
+    if sent and not valid and not invalid:
+        return Diagnosis(
+            ok=False,
+            headline="Os toques saíram, mas nada voltou.",
+            steps=(
+                "Isso aponta para o console não estar transmitindo:",
+                "  - o GT7 precisa estar numa sessão ativa (corrida/track day)",
+                "  - confirme que o IP é do console, e não de outro aparelho",
+                "  - firewall bloqueando entrada na porta 33740",
+            ),
+        )
+
+    if invalid and not valid:
+        return Diagnosis(
+            ok=False,
+            headline="Chegaram pacotes, mas nenhum é do GT7 (não decodificam).",
+            steps=("Provavelmente outro serviço usa esta porta na sua rede.",),
+        )
+
+    return Diagnosis(
+        ok=False,
+        headline="Nenhum toque saiu e nada chegou. Confira se a máquina tem rede.",
+    )
+
+
+def probe(ip: str, *, wait_s: float = 6.0) -> Diagnosis:
+    """Sonda a rede e devolve o veredito, sem imprimir nada.
+
+    É o que a tela de configuração chama. O `wait_s` padrão é menor que o da
+    linha de comando de propósito: no terminal a pessoa aceita esperar 20 s por
+    um diagnóstico completo, mas um botão que trava a interface por 20 s parece
+    travado — e ela clica de novo, ou fecha o programa.
+    """
+    sock = _open_socket()
+    if sock is None:
+        return Diagnosis(
+            ok=False,
+            headline="Não foi possível abrir a porta de recepção.",
+            steps=(f"Outro programa pode estar usando a porta {RECEIVE_PORT}.",),
+        )
+
+    start = time.time()
+    last_beat = 0.0
+    sent = valid = invalid = 0
+    send_errors: dict[str, int] = {}
+
+    try:
+        while time.time() - start < wait_s:
+            now = time.time()
+            if now - last_beat > HEARTBEAT_EVERY_S:
+                try:
+                    sock.sendto(b"A", (ip, SEND_PORT))
+                    sent += 1
+                except OSError as exc:
+                    key = f"[{exc.errno}] {exc.strerror}"
+                    send_errors[key] = send_errors.get(key, 0) + 1
+                last_beat = now
+
+            try:
+                data, _addr = sock.recvfrom(4096)
+            except (TimeoutError, OSError):
+                continue
+
+            if salsa20_decode(data) is not None:
+                valid += 1
+            else:
+                invalid += 1
+    finally:
+        sock.close()
+
+    return diagnose_counts(sent, valid, invalid, send_errors)
+
+
 def _verdict(sent: int, valid: int, invalid: int, send_errors: dict[str, int]) -> int:
     print("\n4) Resultado")
     print(f"   toques enviados  : {sent}")
@@ -172,40 +302,10 @@ def _verdict(sent: int, valid: int, invalid: int, send_errors: dict[str, int]) -
             print(f"      {key} — {count}x")
     print()
 
-    if valid:
-        print("   FUNCIONANDO. A telemetria chega e decodifica corretamente.")
-        print("   Se mesmo assim o programa não mostra dados, o problema é na")
-        print("   interface e não na rede — mande esta saída junto do relato.")
-        return 0
-
-    unreachable = {errno.EHOSTUNREACH, errno.ENETUNREACH}
-    if send_errors and all(
-        any(f"[{code}]" in key for code in unreachable) for key in send_errors
-    ):
-        print("   SEM ROTA até o console. Nenhum toque saiu da máquina.")
-        print("   Verifique, nesta ordem:")
-        print("     - o IP no console: Configurações > Rede > Ver status da conexão")
-        print("     - se console e computador estão na MESMA rede e faixa de IP")
-        print("     - VPN ligada no computador (desligue e teste de novo)")
-        print("     - no macOS: Ajustes > Privacidade e Segurança > Rede Local,")
-        print("       e confirme que o Terminal (ou o Python) está autorizado")
-        return 1
-
-    if sent and not valid and not invalid:
-        print("   Os toques saíram, mas nada voltou.")
-        print("   Isso aponta para o console não estar transmitindo:")
-        print("     - o GT7 precisa estar numa sessão ativa (corrida/track day)")
-        print("     - confirme que o IP é do console, e não de outro aparelho")
-        print("     - firewall bloqueando entrada na porta 33740")
-        return 1
-
-    if invalid and not valid:
-        print("   Chegaram pacotes, mas nenhum é do GT7 (não decodificam).")
-        print("   Provavelmente outro serviço usa esta porta na sua rede.")
-        return 1
-
-    print("   Nenhum toque saiu e nada chegou. Confira se a máquina tem rede.")
-    return 1
+    diagnosis = diagnose_counts(sent, valid, invalid, send_errors)
+    for line in diagnosis.summary().splitlines():
+        print(f"   {line}")
+    return 0 if diagnosis.ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
