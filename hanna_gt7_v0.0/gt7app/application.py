@@ -18,10 +18,11 @@ funcionaria igual num bot do Discord ou num worker de IA sem interface.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from gt7core.analytics.live import LiveEventDetector, RaceEventDetected
 from gt7core.catalog import GameCatalog
 from gt7core.config.settings import Settings
 from gt7core.domain.models import Car
@@ -81,6 +82,9 @@ class CoreApplication:
     que é justamente o oposto do que o §49 pede.
     """
 
+    live_detector: LiveEventDetector = field(default_factory=LiveEventDetector)
+    """Detector de eventos da volta em andamento. Python puro, sem Qt."""
+
     engineer_service: Any | None = None
     """Ponte Qt para o engenheiro. Preenchida por `build_gui`, nunca aqui.
 
@@ -95,6 +99,9 @@ class CoreApplication:
         self.engine.reset()
         self.recording.reload_reference()
         self.session_manager.start_session()
+        # Sessão nova esquece tudo, inclusive a convenção de unidade do canal
+        # de escorregamento: o piloto pode ter trocado de carro.
+        self.live_detector.reset()
         if self.engineer is not None:
             # Zera livro-caixa e cadência: o teto de gasto e o silêncio mínimo
             # entre notas são por sessão, não por execução do programa.
@@ -175,6 +182,7 @@ def build_core(
 
     catalog = GameCatalog()
     engineer = _build_engineer(settings)
+    live_detector = LiveEventDetector()
 
     bus = EventBus()
     engine = TelemetryEngine(bus)
@@ -194,6 +202,19 @@ def build_core(
         recording.publish_delta(event.point.distance_m, event.point.elapsed_ms)
 
     bus.subscribe(TelemetryReceived, publish_delta)
+
+    # Detecção ao vivo. Roda na thread de captura e é O(1) por amostra — o
+    # detector nunca varre o histórico, justamente porque este retorno de
+    # chamada acontece 60 vezes por segundo ao lado da gravação.
+    #
+    # O núcleo **publica** o evento e para por aí. Quem pede uma nota ao
+    # engenheiro é a casca; quem manda no Discord será o bot. Essa indiferença é
+    # o que faz o mesmo detector servir aos três sem nenhum `if` aqui dentro.
+    def detect_live(event: TelemetryReceived) -> None:
+        for race_event in live_detector.feed(event.point):
+            bus.publish(RaceEventDetected(event=race_event))
+
+    bus.subscribe(TelemetryReceived, detect_live)
 
     # O carro se identifica sozinho. O protocolo manda um `car_id` numérico e
     # mais nada; sem o catálogo, o histórico inteiro fica com "carro 24" e o
@@ -231,8 +252,16 @@ def build_core(
     # fiação de ciclo de vida, então mora aqui e não dentro de um plugin: o bot
     # do Discord e a interface consomem a mesma política em vez de cada um
     # inventar a sua.
-    if engineer is not None:
-        bus.subscribe(LapBoundaryDetected, lambda _event: engineer.new_lap())
+    def on_lap_boundary(_event: LapBoundaryDetected) -> None:
+        # A cota de notas é por volta, e o detector fecha o que estava aberto.
+        # É fiação de ciclo de vida, então mora aqui e não dentro de um plugin:
+        # o bot do Discord e a interface consomem a mesma política em vez de
+        # cada um inventar a sua.
+        live_detector.new_lap()
+        if engineer is not None:
+            engineer.new_lap()
+
+    bus.subscribe(LapBoundaryDetected, on_lap_boundary)
 
     unfinished = sessions.find_unfinished()
     if unfinished:
@@ -260,6 +289,7 @@ def build_core(
         metrics=metrics,
         catalog=catalog,
         engineer=engineer,
+        live_detector=live_detector,
     )
 
 

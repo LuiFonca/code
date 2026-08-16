@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gt7core.analytics.live import RaceEventDetected
 from gt7core.domain.models import Track
 from gt7core.session.manager import LapSaved
 from gt7core.telemetry.engine import TelemetryReceived
@@ -32,6 +33,7 @@ from ..design.tokens import Space, Theme
 from ..viewmodels.live import LiveViewModel
 from ..widgets.cards import Card, MetricCard, MetricGrid
 from ..widgets.charts import DistanceChart, Series
+from ..widgets.radio import RadioCard
 from .base import Page
 
 # Quantos metros de rastro manter nas tiras ao vivo. Uma volta inteira deixaria
@@ -84,6 +86,12 @@ class LivePage(Page):
         traces.add(self._speed_chart)
         traces.add(self._pedals_chart)
         self.content.addWidget(traces)
+
+        # O rádio fica logo abaixo dos traços e **acima** do esticador: numa
+        # tela ao vivo o piloto olha de relance, e o que ele precisa ver não
+        # pode estar colado no rodapé.
+        self._radio = RadioCard(self.theme)
+        self.content.addWidget(self._radio)
         self.content.addStretch(1)
 
         self._status = QLabel("Parado")
@@ -112,7 +120,67 @@ class LivePage(Page):
         layout.addWidget(self._stop_button)
         return bar
 
+    def _connect_radio(self) -> None:
+        """Liga o detector do núcleo ao engenheiro, passando pela thread da UI.
+
+        O núcleo publica `RaceEventDetected` na thread de captura; o adaptador
+        entrega aqui. Só então se pede a nota — porque pedir de lá tocaria o
+        serviço Qt de fora da thread dele.
+        """
+        service = self.core.engineer_service
+        if service is None or not service.is_available:
+            self._radio.show_unavailable()
+            return
+
+        self._vm.adapter.subscribe(RaceEventDetected, self._on_race_event)
+        service.started.connect(self._on_engineer_started)
+        service.ready.connect(self._on_advice)
+        service.finished.connect(self._on_engineer_finished)
+
+    def _on_race_event(self, event: RaceEventDetected) -> None:
+        """Um evento virou pedido de nota — se o orçamento deixar.
+
+        A cadência não é decidida aqui: `Budget` já impõe silêncio mínimo e cota
+        por volta, e é ele que impede o rádio de falar oito vezes numa volta
+        ruim. Esta função só traduz o evento em contexto.
+        """
+        service = self.core.engineer_service
+        if service is None:
+            return
+
+        race = event.event
+        session = self.core.session_manager.session
+        service.request_quick_note(
+            _situation(
+                track=session.track.name if session.track else "",
+                lap_number=session.lap_count + 1,
+                delta_best_s=self._vm.delta_best,
+                distance_m=race.distance_m,
+                event=race.describe(),
+            ),
+            fallback=race.describe(),
+        )
+
+    def _on_engineer_started(self, level: str) -> None:
+        if level == "quick":
+            self._radio.show_thinking()
+
+    def _on_advice(self, advice: object) -> None:
+        if str(getattr(getattr(advice, "level", ""), "value", "")) == "quick":
+            self._radio.show_advice(advice)
+
+    def _on_engineer_finished(self, level: str) -> None:
+        """Sem nota, o rádio volta ao silêncio em vez de ficar pensando.
+
+        "Não tenho nada a dizer" é resposta válida do nível 1 — e antes deste
+        sinal ela deixava o cartão em "…" indefinidamente, que na tela é
+        indistinguível de um programa travado.
+        """
+        if level == "quick" and not self._radio.has_note:
+            self._radio.show_idle()
+
     def _connect(self) -> None:
+        self._connect_radio()
         self._start_button.clicked.connect(self._on_start)
         self._stop_button.clicked.connect(self._on_stop)
 
@@ -277,3 +345,32 @@ class LivePage(Page):
     def close_page(self) -> None:
         self._repaint_timer.stop()
         self._stats_timer.stop()
+
+
+def _situation(
+    *,
+    track: str,
+    lap_number: int,
+    delta_best_s: float | None,
+    distance_m: float,
+    event: str,
+) -> str:
+    """Contexto da nota de rádio, sem importar `gt7ai` no topo do módulo.
+
+    O import fica dentro da função porque esta página tem de montar com o plugin
+    ausente — e a chamada só acontece quando o serviço se declarou disponível.
+    Se mesmo assim o pacote sumir, o contexto degrada para o texto do evento em
+    vez de derrubar a tela ao vivo.
+    """
+    try:
+        from gt7ai.prompts import format_live_situation
+    except ImportError:  # pragma: no cover - só sem o plugin
+        return event
+
+    return format_live_situation(
+        track=track,
+        lap_number=lap_number,
+        delta_ms=None if delta_best_s is None else delta_best_s * 1000.0,
+        where=f"{distance_m:.0f} m da linha",
+        event=event,
+    )

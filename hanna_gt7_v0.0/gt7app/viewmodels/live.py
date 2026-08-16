@@ -73,6 +73,16 @@ class LiveViewModel(QObject):
     # ---------- estado exposto ----------
 
     @property
+    def adapter(self) -> QtEventBusAdapter:
+        """A ponte de eventos, para quem precisa assinar outros tipos.
+
+        Exposta em vez de recriada: uma segunda assinatura direta no barramento
+        faria o evento atravessar a fronteira de thread duas vezes, que é
+        exatamente o que o adaptador existe para evitar.
+        """
+        return self._adapter
+
+    @property
     def is_stale(self) -> bool:
         return self._is_stale
 

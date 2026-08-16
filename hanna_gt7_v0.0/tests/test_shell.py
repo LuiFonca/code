@@ -252,6 +252,58 @@ class TestEngenheiroNaTela:
         assert seen, "ninguém virou a página da cota de notas"
 
 
+class TestRadio:
+    """Fase 9: o evento detectado no núcleo vira nota na tela ao vivo."""
+
+    def test_a_pagina_ao_vivo_tem_radio(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        window._activate(0)  # noqa: SLF001
+        app.processEvents()
+        assert window._pages[0]._radio is not None  # noqa: SLF001
+
+    def test_o_evento_do_nucleo_chega_a_pagina(self, shell) -> None:  # noqa: ANN001
+        """A travessia inteira: detector → barramento → adaptador Qt → página."""
+        from gt7core.analytics.live import RaceEvent, RaceEventDetected
+
+        window, core, app = shell
+        window._activate(0)  # noqa: SLF001
+        app.processEvents()
+
+        page = window._pages[0]  # noqa: SLF001
+        recebidos: list[object] = []
+        original = page._on_race_event  # noqa: SLF001
+        page._on_race_event = lambda e: (recebidos.append(e), original(e))  # noqa: SLF001
+        window._vm.adapter.subscribe(  # noqa: SLF001
+            RaceEventDetected, page._on_race_event  # noqa: SLF001
+        )
+
+        core.bus.publish(
+            RaceEventDetected(
+                event=RaceEvent(
+                    kind="travamento", distance_m=900.0, elapsed_ms=12_000,
+                    detail="travamento na dianteira por 300 ms",
+                )
+            )
+        )
+        app.processEvents()
+        assert recebidos, "o evento não atravessou até a página"
+
+    def test_o_detector_esta_ligado_ao_barramento(self, shell) -> None:  # noqa: ANN001
+        """Uma sessão sintética inteira produz eventos de verdade."""
+        from gt7core.analytics.live import RaceEventDetected
+        from gt7core.telemetry.sources.mock import synthetic_lap
+
+        _window, core, _app = shell
+        vistos: list[object] = []
+        core.bus.subscribe(RaceEventDetected, vistos.append)
+
+        core.live_detector.reset()
+        for frame in synthetic_lap(lap_time_ms=102_000):
+            core.engine.on_frame(frame)
+
+        assert vistos, "nenhum evento ao vivo saiu de uma volta inteira"
+
+
 class TestMapaDePista:
     """Fase 6: mapa de calor, cursor sincronizado e interação."""
 

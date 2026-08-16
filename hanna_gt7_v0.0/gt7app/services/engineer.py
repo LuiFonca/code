@@ -100,6 +100,12 @@ class EngineerService(QObject):
     #: local e chega por `ready`.
     failed = Signal(str)
 
+    #: Emitido ao fim de **todo** pedido, com o nível, tenha havido conselho ou
+    #: não. Existe por um defeito concreto: o nível 1 devolve `None` quando não
+    #: há nada a dizer (o rádio calado é resposta válida), e sem este sinal a
+    #: tela ficava presa em "pensando" para sempre — indistinguível de travada.
+    finished = Signal(str)
+
     def __init__(self, engineer: Any | None, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._engineer = engineer
@@ -113,6 +119,7 @@ class EngineerService(QObject):
 
         self._generation = 0
         self._running = False
+        self._level = ""
         self._pending: tuple[Callable[[], Any], str] | None = None
 
     # ------------------------------------------------------------------
@@ -232,6 +239,7 @@ class EngineerService(QObject):
 
         self._generation += 1
         self._running = True
+        self._level = level
         self.started.emit(level)
         self._pool.start(_Task(work, self._signals, self._generation))
 
@@ -244,12 +252,14 @@ class EngineerService(QObject):
         self._running = False
         if result is not None:
             self.ready.emit(result)
+        self.finished.emit(self._level)
         self._drain()
 
     def _on_failed(self, generation: int, message: str) -> None:
         self._running = False
         if generation == self._generation:
             self.failed.emit(message)
+            self.finished.emit(self._level)
         self._drain()
 
     def _drain(self) -> None:

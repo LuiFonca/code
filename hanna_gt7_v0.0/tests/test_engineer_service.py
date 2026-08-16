@@ -207,6 +207,78 @@ class TestResultadoObsoleto:
         assert not service.is_busy
 
 
+class TestFimDePedidoSemConselho:
+    """Três defeitos que só apareceram ao olhar a tela ao vivo renderizada."""
+
+    def test_fim_e_sinalizado_mesmo_sem_conselho(self, qt_app) -> None:  # noqa: ANN001
+        """O nível 1 devolve `None` quando não há nada a dizer.
+
+        Sem um sinal de término, a tela ficava presa em "pensando" para sempre —
+        indistinguível de um programa travado.
+        """
+        from gt7app.services.engineer import EngineerService
+
+        class Mudo(FakeEngineer):
+            def quick_note(self, situation, **kwargs):  # noqa: ANN001, ANN201
+                return self._work("quick", None)
+
+        fins: list[str] = []
+        prontos: list[object] = []
+        service = EngineerService(Mudo())
+        service.finished.connect(fins.append)
+        service.ready.connect(prontos.append)
+
+        service.request_quick_note("contexto")
+        pump(qt_app, service)
+
+        assert prontos == [], "não havia conselho a entregar"
+        assert fins == ["quick"], "o fim do pedido não foi sinalizado"
+
+    def test_o_radio_volta_ao_silencio_e_nao_fica_pensando(self, qt_app) -> None:  # noqa: ANN001
+        from gt7app.design.tokens import DARK_THEME
+        from gt7app.widgets.radio import IDLE_TEXT, THINKING_TEXT, RadioCard
+
+        radio = RadioCard(DARK_THEME)
+        radio.show_thinking()
+        assert radio._text.text() == THINKING_TEXT  # noqa: SLF001
+        radio.show_idle()
+        assert radio._text.text() == IDLE_TEXT  # noqa: SLF001
+
+    def test_pedido_suprimido_nao_apaga_a_nota_boa(self, qt_app) -> None:  # noqa: ANN001
+        """O defeito visível: o conselho aparecia e sumia sozinho.
+
+        Um evento dispara o pedido, dez chegam atrás e viram um pendente. Quando
+        o pendente roda, a cadência costuma recusá-lo — e esse pedido natimorto
+        trocava a nota recém-entregue por "…" e depois por silêncio.
+        """
+        from gt7ai import Advice, AdviceLevel
+        from gt7app.design.tokens import DARK_THEME
+        from gt7app.widgets.radio import THINKING_TEXT, RadioCard
+
+        radio = RadioCard(DARK_THEME)
+        radio.show_advice(
+            Advice(level=AdviceLevel.QUICK, headline="Freie mais tarde na Curva 1.")
+        )
+        assert radio.has_note
+
+        radio.show_thinking()
+        assert radio._text.text() != THINKING_TEXT  # noqa: SLF001
+        assert radio.has_note, "a nota foi apagada por um pedido pendente"
+
+    def test_o_cartao_do_radio_pinta_o_proprio_fundo(self, qt_app) -> None:  # noqa: ANN001
+        """QWidget nu ignora `background-color` sem fundo estilizado.
+
+        Sem o atributo, o cartão fica invisível na tela — só o texto solto.
+        """
+        from PySide6.QtCore import Qt
+
+        from gt7app.design.tokens import DARK_THEME
+        from gt7app.widgets.radio import RadioCard
+
+        radio = RadioCard(DARK_THEME)
+        assert radio.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+
+
 class TestSemEngenheiro:
     """O `gt7ai` pode simplesmente não estar instalado."""
 

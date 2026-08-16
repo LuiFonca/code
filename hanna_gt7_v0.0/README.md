@@ -4,8 +4,8 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 8 concluída.** O núcleo (`gt7core`) roda headless com 454 testes
-e mypy strict sobre 76 arquivos. As três fontes de telemetria ficam atrás do
+**Estado: Fase 9 concluída.** O núcleo (`gt7core`) roda headless com 482 testes
+e mypy strict sobre 78 arquivos. As três fontes de telemetria ficam atrás do
 mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
 pista da Fase 4 está completa, a interface tem cinco páginas sobre um design
 system com navegação lateral e paleta de comandos (⌘K) — e agora existe o Race
@@ -81,7 +81,7 @@ python3 -m gt7core.tools.diagnose <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 454 testes
+python3 -m pytest tests/            # 482 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core, gt7app e gt7ai)
 ```
@@ -94,8 +94,8 @@ python3 -m mypy                     # tipos (strict em gt7core, gt7app e gt7ai)
 gt7core/          Núcleo — Python puro, ZERO Qt. Roda headless.
   domain/           modelos (TelemetryPoint, Lap, Session, Car, Track)
   telemetry/        protocolo GT7, motor, fontes (mock/udp/replay)
-  analytics/        delta, curvas, frenagem, acelerador, pneus,
-                    perda de tempo, perfil do piloto
+  analytics/        delta, curvas, frenagem, acelerador, pneus, perda de
+                    tempo, perfil do piloto, detecção ao vivo
   events/           barramento publish/subscribe thread-safe
   config/           configuração centralizada + segredos mascarados
   catalog/          527 carros e 105 circuitos do GT7 + dados
@@ -110,7 +110,7 @@ gt7core/
 gt7app/           Casca de interface — a única parte que conhece Qt
   design/           tokens + folha de estilo (Python puro, sem Qt)
   services/         engenheiro fora da thread da UI (mitiga R2)
-  widgets/          cartões, gráficos, mapa de pista, conselho, ⌘K
+  widgets/          cartões, gráficos, mapa de pista, conselho, rádio, ⌘K
   pages/            ao vivo, análise, comparação, histórico, piloto
   adapters/         QtEventBusAdapter (entrega eventos na thread da UI)
   viewmodels/       estado de tela, sem widgets
@@ -127,7 +127,7 @@ gt7ai/            Race Engineer — plugin, nunca núcleo
   budget.py         custo por sessão + cadência do rádio
   engineer.py       os três níveis, todos com resposta local garantida
 
-tests/            454 testes
+tests/            482 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -219,7 +219,7 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 7 | Race Engineer (IA local em três níveis, sem custo) | ✅ concluída |
 | 7b | IA local gratuita como padrão + remoção da árvore antiga | ✅ concluída |
 | 8 | Engenheiro na tela + fronteira assíncrona (R2 da auditoria) | ✅ concluída |
-| 9 | Disparo automático da nota de rádio (detectores em volta parcial) | ⬜ |
+| 9 | Rádio automático: detecção em volta parcial | ✅ concluída |
 | 10-12 | Discord, voz, hardening | ⬜ |
 
 O que a Fase 1 resolveu, com a numeração da auditoria:
@@ -419,6 +419,35 @@ Duas adaptações reais para modelo pequeno, não configuração:
   na decodificação pelo esquema; "não invente número" virou `guard.py`, que
   confere se todo número citado tem origem no contexto e descarta a resposta
   quando não tem. Restrição executada vale mais que restrição escrita.
+
+### O rádio automático (Fase 9)
+
+A análise da Fase 4 olha a volta **depois** que ela termina. Aqui não existe
+"depois": o piloto está na pista e a única informação é a amostra que acabou de
+chegar. `gt7core/analytics/live.py` detecta travamento, patinagem, alívio de
+acelerador e delta piorando — amostra a amostra, com custo constante.
+
+Medido numa sessão de duas voltas (12.333 quadros):
+
+| | |
+|---|---|
+| custo mediano por amostra | **15 µs** (orçamento a 60 Hz: 16.667 µs) |
+| custo do detector isolado | ~4 µs |
+| eventos detectados | 12 |
+| notas efetivamente ditas | **1** |
+
+As outras 11 foram suprimidas pela cadência do `Budget`. É o desenho
+funcionando: numa volta ruim os eventos se acumulam, e o piloto não consegue
+aplicar uma correção antes da próxima chegar.
+
+**O rádio concorda com o debrief.** Os limiares são importados de `tyres` e
+`throttle`, nunca recopiados, e um teste roda os dois detectores sobre a mesma
+volta e exige que a contagem de incidentes bata. Se o rádio anunciasse um
+travamento que o relatório não lista, o piloto deixaria de confiar nos dois.
+
+O núcleo **publica** `RaceEventDetected` e para por aí — quem pede a nota é a
+interface, e quem mandará no Discord será o bot. Essa indiferença é o que faz o
+mesmo detector servir aos três.
 
 ### O catálogo do jogo
 
