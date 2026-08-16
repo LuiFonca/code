@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["gt7core*", "gt7app*", "gt7ai*", "gt7discord*"]
+include = ["gt7core*", "gt7app*", "gt7ai*", "gt7discord*", "gt7voice*"]
 
 # Sem isto, um `pip install .` monta o pacote **sem** os CSVs: setuptools só
 # empacota `.py` por padrão. O catálogo sumiria em silêncio — o programa subiria
@@ -52,7 +52,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
 python_version = "3.11"
-packages = ["gt7core", "gt7app", "gt7ai", "gt7discord"]
+packages = ["gt7core", "gt7app", "gt7ai", "gt7discord", "gt7voice"]
 strict = true
 
 # O PySide6 não publica stubs completos; sem isto, cada import de Qt vira erro

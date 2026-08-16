@@ -147,6 +147,32 @@ class DiscordConfig:
 
 
 @dataclass(slots=True)
+class VoiceConfig:
+    """Voz. Local e gratuita, como o resto — usa o sintetizador do sistema.
+
+    Sem dependência nova: macOS tem `say`, Windows tem SAPI e Linux tem
+    `espeak-ng` ou `spd-say`. Instalar um motor de TTS em Python para falar uma
+    frase por volta seria pagar uma dependência (e memória, numa máquina que já
+    está apertada) por conveniência nenhuma.
+    """
+
+    enabled: bool = False
+    """Desligada por padrão: som que aparece sem ser pedido assusta."""
+
+    voice: str = ""
+    """Nome da voz do sistema. Vazio usa a padrão — que costuma seguir o idioma
+    configurado, e portanto já fala português numa máquina brasileira."""
+
+    rate_wpm: int = 200
+    """Palavras por minuto. Acima do normal de propósito: o piloto está no meio
+    de uma curva, e uma nota lenta chega depois de deixar de ser útil."""
+
+    max_seconds: float = 8.0
+    """Teto de duração de uma fala. Protege contra um conselho longo demais
+    ocupar o rádio enquanto três curvas passam."""
+
+
+@dataclass(slots=True)
 class LoggingConfig:
     level: str = "INFO"
     json_format: bool = False
@@ -175,6 +201,7 @@ class Settings:
     storage: StorageConfig = field(default_factory=StorageConfig)
     ai: AIConfig = field(default_factory=AIConfig)
     discord: DiscordConfig = field(default_factory=DiscordConfig)
+    voice: VoiceConfig = field(default_factory=VoiceConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     ui: UIConfig = field(default_factory=UIConfig)
 
@@ -266,6 +293,13 @@ class Settings:
             enabled=bool(discord_token) and get_bool("DISCORD_ENABLED", True),
         )
 
+        voice = VoiceConfig(
+            enabled=get_bool("VOICE_ENABLED", False),
+            voice=get("VOICE_NAME") or "",
+            rate_wpm=get_int("VOICE_RATE", 200),
+            max_seconds=get_float("VOICE_MAX_SECONDS", 8.0),
+        )
+
         log_file = get("LOG_FILE")
         logging_config = LoggingConfig(
             level=(get("LOG_LEVEL") or "INFO").upper(),
@@ -283,6 +317,7 @@ class Settings:
             storage=storage,
             ai=ai,
             discord=discord,
+            voice=voice,
             logging=logging_config,
             ui=ui,
         )

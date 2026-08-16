@@ -4,8 +4,8 @@ Plataforma de engenharia de corrida para Gran Turismo 7: telemetria em tempo
 real, análise de voltas e — nas fases seguintes — Race Engineer com IA, Discord
 e voz.
 
-**Estado: Fase 10 concluída.** O núcleo (`gt7core`) roda headless com 519 testes
-e mypy strict sobre 89 arquivos. As três fontes de telemetria ficam atrás do
+**Estado: Fase 11 concluída.** O núcleo (`gt7core`) roda headless com 549 testes
+e mypy strict sobre 93 arquivos. As três fontes de telemetria ficam atrás do
 mesmo contrato, sessões e voltas são persistidas, a análise de engenharia de
 pista da Fase 4 está completa, a interface tem cinco páginas sobre um design
 system com navegação lateral e paleta de comandos (⌘K) — e agora existe o Race
@@ -81,7 +81,7 @@ python3 -m gt7core.tools.diagnose <IP-do-PlayStation>
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest tests/            # 519 testes
+python3 -m pytest tests/            # 549 testes
 python3 -m ruff check gt7core/      # lint
 python3 -m mypy                     # tipos (strict em gt7core, gt7app e gt7ai)
 ```
@@ -118,6 +118,11 @@ gt7app/           Casca de interface — a única parte que conhece Qt
   commands.py       registro de comandos (Python puro)
   shell.py          janela: navegação lateral + páginas + ⌘K
 
+gt7voice/         Rádio falado — plugin, nunca núcleo
+  speaker.py        quem fala (protocolo: áudio não é verificável em teste)
+  system.py         o sintetizador do SO — say / SAPI / espeak-ng
+  radio.py          o que vira fala e o que é engolido
+
 gt7discord/       Bot do Discord — plugin, nunca núcleo
   sink.py           para onde a mensagem vai (é o que dispensa a rede nos testes)
   formatting.py     do domínio para o texto
@@ -134,7 +139,7 @@ gt7ai/            Race Engineer — plugin, nunca núcleo
   budget.py         custo por sessão + cadência do rádio
   engineer.py       os três níveis, todos com resposta local garantida
 
-tests/            519 testes
+tests/            549 testes
 docs/             ARCHITECTURE_REVIEW.md — a auditoria que originou este plano
 ```
 
@@ -228,8 +233,8 @@ Precedência: variável de ambiente > arquivo `.env` > padrão do código.
 | 8 | Engenheiro na tela + fronteira assíncrona (R2 da auditoria) | ✅ concluída |
 | 9 | Rádio automático: detecção em volta parcial | ✅ concluída |
 | 10 | Discord: notificações e comandos, custo zero | ✅ concluída |
-| 11 | Voz (STT/TTS atrás de protocolo) | ⬜ |
-| 12 | Hardening: conexão SQLite por thread, empacotamento | ⬜ |
+| 11 | Voz: o rádio falado, sem dependência nova | ✅ concluída |
+| 12 | Hardening: conexão SQLite por thread | ✅ feita junto da Fase 11 |
 
 O que a Fase 1 resolveu, com a numeração da auditoria:
 
@@ -493,6 +498,42 @@ teste que escreve um módulo e confirma que ele é encontrado.
 
 Nenhum teste do pacote toca a rede, exige token ou importa `discord.py`: o que
 decide o valor do bot é Python puro atrás de um `MessageSink`.
+
+### O rádio falado (Fase 11)
+
+**Sem dependência nova.** Usa o sintetizador que o sistema já tem: `say` no
+macOS, SAPI via PowerShell no Windows, `espeak-ng` no Linux. Instalar um motor
+de TTS em Python para falar uma frase por volta custaria memória numa máquina
+que já tem um modelo de 4B dentro.
+
+```bash
+GT7_VOICE_ENABLED=true
+GT7_VOICE_NAME=Luciana    # macOS: `say -v ?` lista as vozes de português
+```
+
+Três regras, todas vindas da mesma restrição — **a voz é serial e não dá para
+reler**:
+
+- **Só o nível 1.** Debrief e relatório não são falados: ler quatro parágrafos
+  em movimento ocupa o canal por meio minuto e o piloto não retém nada.
+  `Advice.speech()` devolve só o título, e foi projetado na Fase 7 para isto.
+- **Nota nova interrompe a anterior.** Não há fila. Enfileirar significaria
+  falar da Curva 1 quando o piloto já está na 3 — e conselho fora de hora manda
+  corrigir a curva errada.
+- **Não repete.** A mesma frase duas vezes soa como defeito, e o piloto para de
+  escutar.
+
+### O que a Fase 11 não construiu
+
+A metade de **entrada** do §24 — reconhecimento de fala — foi deliberadamente
+omitida. Um modelo de STT decente ocupa memória da mesma ordem do modelo de
+linguagem, e o alvo é uma máquina de 8 GB rodando um 4B em CPU. Os dois não
+cabem, e um reconhecimento ruim é pior que nenhum: o piloto fala duas vezes, é
+entendido errado, e desliga.
+
+O ponto de extensão já existe e não precisa de código novo: o registro de
+comandos do `gt7discord` recebe **texto** e devolve **texto**. Qualquer
+transcritor que produza uma string entra por ali.
 
 ### O catálogo do jogo
 

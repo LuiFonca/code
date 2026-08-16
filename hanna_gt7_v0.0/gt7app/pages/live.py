@@ -13,6 +13,8 @@ trabalho extra por quadro.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
@@ -35,6 +37,9 @@ from ..widgets.cards import Card, MetricCard, MetricGrid
 from ..widgets.charts import DistanceChart, Series
 from ..widgets.radio import RadioCard
 from .base import Page
+
+if TYPE_CHECKING:  # pragma: no cover - só para o verificador
+    from gt7voice import VoiceRadio
 
 # Quantos metros de rastro manter nas tiras ao vivo. Uma volta inteira deixaria
 # o gráfico ilegível; ~800 m é o horizonte que o piloto consegue relacionar com
@@ -127,6 +132,8 @@ class LivePage(Page):
         entrega aqui. Só então se pede a nota — porque pedir de lá tocaria o
         serviço Qt de fora da thread dele.
         """
+        self._voice = _build_voice(self.core.settings)
+
         service = self.core.engineer_service
         if service is None or not service.is_available:
             self._radio.show_unavailable()
@@ -166,8 +173,14 @@ class LivePage(Page):
             self._radio.show_thinking()
 
     def _on_advice(self, advice: object) -> None:
-        if str(getattr(getattr(advice, "level", ""), "value", "")) == "quick":
-            self._radio.show_advice(advice)
+        if str(getattr(getattr(advice, "level", ""), "value", "")) != "quick":
+            return
+        self._radio.show_advice(advice)
+        if self._voice is not None:
+            # A voz recebe o **mesmo** conselho que o cartão. Se um dia os dois
+            # divergirem, o piloto ouve uma coisa e lê outra — e passa a não
+            # confiar em nenhum dos dois.
+            self._voice.announce(advice)
 
     def _on_engineer_finished(self, level: str) -> None:
         """Sem nota, o rádio volta ao silêncio em vez de ficar pensando.
@@ -255,6 +268,8 @@ class LivePage(Page):
         self._stop_button.setEnabled(True)
 
     def _on_stop(self) -> None:
+        if self._voice is not None:
+            self._voice.silence()
         self.core.stop()
         self._start_button.setEnabled(True)
         self._stop_button.setEnabled(False)
@@ -374,3 +389,20 @@ def _situation(
         where=f"{distance_m:.0f} m da linha",
         event=event,
     )
+
+
+def _build_voice(settings: object) -> VoiceRadio | None:
+    """Monta o rádio falado, ou `None` se a voz estiver desligada ou ausente.
+
+    Import local pelo mesmo motivo do `gt7ai`: a interface tem de montar com o
+    plugin de voz ausente, e uma máquina sem sintetizador deve rodar o programa
+    em silêncio em vez de deixar de abrir.
+    """
+    config = getattr(settings, "voice", None)
+    if config is None or not getattr(config, "enabled", False):
+        return None
+    try:
+        from gt7voice import VoiceRadio, build_speaker
+    except ImportError:
+        return None
+    return VoiceRadio(build_speaker(config), config)
