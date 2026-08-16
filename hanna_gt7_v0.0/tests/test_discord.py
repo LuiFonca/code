@@ -312,6 +312,88 @@ class TestComandos:
         texto = discover()["report"].run(context, [])
         assert "não está instalado" in texto
 
+    def test_report_monta_o_perfil_e_consulta_o_engenheiro(
+        self, tmp_path
+    ) -> None:  # noqa: ANN001
+        """O caminho feliz do comando mais caro do bot.
+
+        Cobria só a recusa por falta de engenheiro — o que deixava sem
+        verificação justamente a parte que carrega voltas do banco, monta o
+        perfil e chama o modelo.
+        """
+        from gt7app.application import build_core
+        from gt7core.config.settings import (
+            AIConfig,
+            Settings,
+            StorageConfig,
+            TelemetryConfig,
+        )
+        from gt7core.telemetry.sources.mock import synthetic_session
+
+        core = build_core(
+            Settings(
+                telemetry=TelemetryConfig(source="mock"),
+                storage=StorageConfig(
+                    database_path=tmp_path / "a.db", telemetry_path=tmp_path / "t"
+                ),
+                ai=AIConfig(enabled=False),
+            )
+        )
+        try:
+            track_id = core.tracks.get_or_create("Suzuka")
+            core.session_manager.set_track(Track(id=track_id, name="Suzuka"))
+            core.session_manager.start_session()
+            for frame in synthetic_session(lap_count=4):
+                core.engine.on_frame(frame)
+            core.session_manager.end_session()
+
+            pedidos: list[str] = []
+
+            class Engenheiro:
+                def session_report(self, profile, **kwargs):  # noqa: ANN001, ANN202
+                    from gt7ai import Advice, AdviceLevel
+
+                    pedidos.append(kwargs.get("track", ""))
+                    assert profile is not None, "o perfil não foi montado"
+                    assert profile.lap_count > 0
+                    return Advice(
+                        level=AdviceLevel.SESSION, headline="O ritmo melhorou."
+                    )
+
+            texto = discover()["report"].run(
+                Context(
+                    laps=core.laps,
+                    tracks=core.tracks,
+                    session=core.session_manager.session,
+                    engineer=Engenheiro(),
+                ),
+                [],
+            )
+            assert pedidos == ["Suzuka"]
+            assert "O ritmo melhorou." in texto
+            assert "Suzuka" in texto
+        finally:
+            core.close()
+
+    def test_report_sem_pista_selecionada(self) -> None:
+        vazio = Context(
+            laps=FakeLaps([]),
+            tracks=FakeTracks([]),
+            session=Session(),
+            engineer=object(),
+        )
+        assert "Nenhuma pista" in discover()["report"].run(vazio, [])
+
+    def test_report_com_voltas_insuficientes(self) -> None:
+        """Volta sem amostras não produz perfil, e o comando diz isso."""
+        contexto = Context(
+            laps=FakeLaps([lap(101_500)]),
+            tracks=FakeTracks([Track(id=1, name="Suzuka")]),
+            session=Session(track=Track(id=1, name="Suzuka")),
+            engineer=object(),
+        )
+        assert "insuficientes" in discover()["report"].run(contexto, [])
+
     def test_sem_voltas_nao_estoura(self) -> None:
         vazio = Context(laps=FakeLaps([]), tracks=FakeTracks([]), session=Session())
         assert "Nenhuma volta" in discover()["last"].run(vazio, [])

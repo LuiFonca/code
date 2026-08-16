@@ -23,7 +23,21 @@ CORE_ROOT = Path(__file__).resolve().parent.parent / "gt7core"
 # os outros existem para que o núcleo não passe a depender dos plugins que
 # deveriam depender dele. `gt7app` entrou na lista quando o adaptador Qt
 # nasceu — é justamente o tipo de dependência invertida que se quer barrar.
-FORBIDDEN_PREFIXES = ("PySide6", "PyQt5", "PyQt6", "gt7app", "gt7ai", "gt7discord")
+FORBIDDEN_PREFIXES = (
+    "PySide6",
+    "PyQt5",
+    "PyQt6",
+    "gt7app",
+    "gt7ai",
+    "gt7discord",
+    "gt7voice",
+)
+
+# Todo pacote acima do núcleo precisa estar na lista. Esquecer um cria um buraco
+# silencioso: o guarda continua verde enquanto a dependência invertida que ele
+# existe para barrar passa livre. `gt7voice` ficou de fora quando nasceu na Fase
+# 11, e o teste abaixo é o que impede a próxima omissão.
+PLUGIN_PACKAGES = ("gt7app", "gt7ai", "gt7discord", "gt7voice")
 
 
 def _core_modules() -> list[Path]:
@@ -48,6 +62,31 @@ def _imported_roots(path: Path) -> set[str]:
             roots.add(node.module.split(".")[0])
 
     return roots
+
+
+def test_todo_pacote_acima_do_nucleo_esta_proibido() -> None:
+    """O guarda tem de conhecer todos os pacotes que existem.
+
+    Uma lista escrita à mão envelhece: um plugin novo entra no repositório e a
+    proibição não acompanha. Este teste descobre os pacotes por varredura do
+    diretório e exige que cada um esteja em `FORBIDDEN_PREFIXES` — assim a
+    omissão falha o build em vez de passar despercebida.
+    """
+    root = CORE_ROOT.parent
+    encontrados = {
+        path.name
+        for path in root.iterdir()
+        if path.is_dir()
+        and path.name.startswith("gt7")
+        and path.name != "gt7core"
+        and (path / "__init__.py").is_file()
+    }
+    assert encontrados, "nenhum pacote de plugin encontrado — o teste é vácuo"
+
+    faltando = encontrados - set(FORBIDDEN_PREFIXES)
+    assert not faltando, (
+        f"pacotes acima do núcleo fora da lista de proibições: {sorted(faltando)}"
+    )
 
 
 def test_existem_modulos_para_verificar() -> None:
