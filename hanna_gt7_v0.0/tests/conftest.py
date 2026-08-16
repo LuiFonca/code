@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import struct
+import sys
 
 import pytest
 from Crypto.Cipher import Salsa20
@@ -11,6 +13,32 @@ from gt7core.events.bus import EventBus
 from gt7core.telemetry.protocol import GT7_KEY, MAGIC_NUMBER
 
 PACKET_SIZE = 296
+
+
+def _default_to_offscreen() -> None:
+    """Sem tela, o Qt aborta o processo — e leva a suíte inteira junto.
+
+    Não é uma falha de teste: é `Fatal Python error: Aborted` dentro do
+    `QApplication([])`, que mata o interpretador antes do pytest conseguir
+    reportar qualquer coisa. Os testes que rodaram antes somem do relatório, e o
+    que aparece na tela é um despejo de pilha do CPython — o suficiente para
+    alguém concluir que o projeto está quebrado quando só falta uma variável de
+    ambiente.
+
+    Rodar `pytest` sem argumento nenhum é o gesto padrão, então ele é que
+    precisa funcionar. Só mexemos onde o problema existe — Linux sem servidor
+    gráfico —, e só se ninguém tiver escolhido antes: no Windows e no macOS o Qt
+    não usa `DISPLAY`, e forçar `offscreen` lá esconderia a interface de quem
+    quisesse vê-la.
+    """
+    if sys.platform in {"win32", "cygwin", "darwin"}:
+        return
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        return
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+_default_to_offscreen()
 
 
 @pytest.fixture
