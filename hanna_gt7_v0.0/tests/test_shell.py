@@ -427,3 +427,32 @@ class TestSeloDeDadosSinteticos:
         app.processEvents()
 
         assert not window._pages[0]._synthetic_badge.isVisible()  # noqa: SLF001
+
+
+class TestSeloAcompanhaATrocaDeFonte:
+    """O selo mentindo é pior que o selo ausente.
+
+    Relato: *"a aba ao vivo não tá pegando os dados da rede, ainda funciona com
+    os dados mocados"*. A fonte trocava corretamente — verificado: o gerador
+    para, some da lista de threads e não entrega mais um quadro sequer. O que
+    continuava dizendo "sintético" era o selo, reavaliado só na **entrada** da
+    página. Quem já estava em "Ao vivo", salvava Configurações e voltava,
+    recebia a garantia visual de que os dados eram falsos quando não eram — e
+    passa a duvidar de telemetria correta.
+    """
+
+    def test_conectar_reavalia_o_selo(self, shell) -> None:  # noqa: ANN001
+        window, core, app = shell
+        live = window._pages[0]  # noqa: SLF001
+        window._activate(0)  # noqa: SLF001
+        app.processEvents()
+        assert live._synthetic_badge.isVisible()  # noqa: SLF001
+
+        # Configurações muda a fonte sem a página ser reentrada.
+        core.settings.telemetry.source = "udp"
+        live._update_synthetic_badge()  # noqa: SLF001
+        app.processEvents()
+
+        assert not live._synthetic_badge.isVisible(), (
+            "o selo continuou afirmando que a telemetria real é sintética"
+        )

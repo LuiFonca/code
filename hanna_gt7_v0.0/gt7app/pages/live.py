@@ -300,10 +300,17 @@ class LivePage(Page):
 
         self._trail.clear()
         self.core.start()
+        # A fonte pode ter mudado desde que esta página foi montada — é o que
+        # acontece sempre que alguém salva Configurações e volta. Um selo
+        # decidido só na entrada da página continuava gritando "SINTÉTICOS"
+        # com o PS5 já conectado, e essa mentira é pior que a ausência do selo:
+        # ela faz o piloto duvidar de dados que estão corretos.
+        self._update_synthetic_badge()
         self._start_button.setEnabled(False)
         self._stop_button.setEnabled(True)
 
     def _on_stop(self) -> None:
+        self._update_synthetic_badge()
         if self._voice is not None:
             self._voice.silence()
         self.core.stop()
