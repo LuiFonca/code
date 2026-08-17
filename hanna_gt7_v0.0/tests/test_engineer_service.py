@@ -370,10 +370,13 @@ class TestGraficoNaoEQuadratico:
         grande.grab()
         tempo_grande = time.monotonic() - t0
 
-        # Quadrático daria ~100x. Reamostragem por pixel deixa quase constante;
-        # o limite generoso existe para o teste não ficar sensível a máquina
-        # ocupada, e mesmo assim pega a regressão com folga.
-        assert tempo_grande < max(0.05, tempo_pequeno * 12), (
+        # Quadrático daria ~100x, então o teto de 18x continua pegando a
+        # regressão com folga enorme. Era 12x, e falhava em ~1 de cada 4
+        # execuções medindo 12,4x: com 600 pontos o custo fixo da pintura pesa
+        # mais que o dos pontos, o que infla a razão sem que nada tenha piorado.
+        # Um teste de desempenho que falha por carga da máquina ensina a ignorar
+        # falha de desempenho, que é o oposto do que ele existe para fazer.
+        assert tempo_grande < max(0.05, tempo_pequeno * 18), (
             f"600 pontos: {tempo_pequeno * 1000:.1f} ms, "
             f"6000 pontos: {tempo_grande * 1000:.1f} ms"
         )

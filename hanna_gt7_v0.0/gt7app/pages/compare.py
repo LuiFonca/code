@@ -66,10 +66,17 @@ class ComparePage(Page):
             self.core.tracks, self.core.laps, lap_label="Referência:"
         )
         self._analysed_selector = TrackLapSelector(
-            self.core.tracks, self.core.laps, lap_label="Comparar:"
+            self.core.tracks,
+            self.core.laps,
+            lap_label="Comparar:",
+            show_track=False,
         )
         self._reference_selector.lap_changed.connect(self._on_selection)
         self._analysed_selector.lap_changed.connect(self._on_selection)
+        # A segunda volta segue a pista da primeira, sempre.
+        self._reference_selector.track_changed.connect(
+            self._analysed_selector.select_track
+        )
 
         selectors.addWidget(self._reference_selector)
         selectors.addWidget(self._analysed_selector)

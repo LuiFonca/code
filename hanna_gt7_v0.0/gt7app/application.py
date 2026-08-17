@@ -25,11 +25,11 @@ from typing import TYPE_CHECKING, Any
 from gt7core.analytics.live import LiveEventDetector, RaceEventDetected
 from gt7core.catalog import GameCatalog
 from gt7core.config.settings import Settings
-from gt7core.domain.models import Car
+from gt7core.domain.models import Car, Track
 from gt7core.events.bus import EventBus
 from gt7core.observability.logging import configure_logging, get_logger
 from gt7core.observability.metrics import TelemetryMetrics
-from gt7core.session.manager import RecordingService, SessionManager
+from gt7core.session.manager import CarChanged, RecordingService, SessionManager
 from gt7core.storage.database import SqliteDatabase
 from gt7core.storage.repositories import (
     SqliteCarRepository,
@@ -390,4 +390,71 @@ def build_gui(core: CoreApplication) -> AppShell:
         )
     )
 
-    return AppShell(core, live_vm, adapter)
+    # ---- persistência do carro e da pista, na thread da interface ----
+    #
+    # A detecção acontece no núcleo, na thread de captura, e é **pura** de
+    # propósito: a primeira versão gravava no banco de lá e o sintoma não foi
+    # exceção, foi segmentation fault. Mas puro também significa que nada era
+    # gravado — o carro era identificado, aparecia na tela, e o histórico
+    # continuava sem saber qual era. Gravar aqui fecha a lacuna sem reabrir o
+    # defeito: o adaptador entrega na thread da interface, que é a mesma que já
+    # fala com o SQLite.
+
+    def persist_car(event: CarChanged) -> None:
+        if not event.car_name:
+            return
+        car_id = core.cars.get_or_create(event.car_name)
+        car = core.session_manager.car
+        if car is not None and car.id is None:
+            core.session_manager.set_car(
+                Car(id=car_id, name=car.name, maker=car.maker)
+            )
+
+    adapter.subscribe(CarChanged, persist_car)
+
+    def detect_track(event: LapBoundaryDetected) -> None:
+        """Nomeia a pista pelo **comprimento** da primeira volta fechada.
+
+        O GT7 não transmite o nome do circuito — nem um id dele. O que dá para
+        medir é a distância percorrida na volta, e o catálogo sabe o
+        comprimento de 105 pistas.
+
+        Só assume quando o candidato é **único** dentro da tolerância. Vários
+        circuitos têm comprimento parecido, e batizar a sessão com o palpite
+        errado é pior que deixá-la sem nome: o histórico passa a misturar voltas
+        de pistas diferentes sob um rótulo, e nada na tela denuncia.
+        """
+        if core.session_manager.track is not None:
+            return
+        candidatos = core.catalog.guess_by_length(event.distance_m)
+        if not candidatos:
+            return
+
+        nomes = [c.name for c in candidatos]
+        if len(candidatos) > 1:
+            # Vários circuitos compartilham comprimento, e batizar a sessão com
+            # o palpite errado é pior que deixá-la sem nome: o histórico passa a
+            # misturar voltas de pistas diferentes sob um rótulo, sem nada na
+            # tela denunciando. Então **sugere** em vez de decidir — os
+            # candidatos vão para o campo, o mais provável na frente, e um
+            # clique confirma.
+            _log.info(
+                "pista ambígua pelo comprimento",
+                extra={
+                    "distance_m": round(event.distance_m, 1),
+                    "candidatos": nomes[:3],
+                },
+            )
+            shell.on_track_candidates(nomes)
+            return
+
+        nome = nomes[0]
+        track_id = core.tracks.get_or_create(nome)
+        core.session_manager.set_track(Track(id=track_id, name=nome))
+        _log.info("pista identificada pelo comprimento", extra={"track": nome})
+        shell.on_track_candidates(nomes)
+
+    adapter.subscribe(LapBoundaryDetected, detect_track)
+
+    shell = AppShell(core, live_vm, adapter)
+    return shell

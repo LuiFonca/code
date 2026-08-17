@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QSpinBox,
     QWidget,
 )
 
@@ -120,11 +121,41 @@ class DriverPage(Page):
         self._track_combo = QComboBox()
         self._track_combo.currentIndexChanged.connect(lambda _: self._rebuild())
 
+        self._from_spin = QSpinBox()
+        self._from_spin.setMinimum(1)
+        self._from_spin.setMaximum(1)
+        self._to_spin = QSpinBox()
+        self._to_spin.setMinimum(1)
+        self._to_spin.setMaximum(1)
+        for spin in (self._from_spin, self._to_spin):
+            spin.valueChanged.connect(lambda _: self._rebuild())
+
         layout.addWidget(QLabel("Pista:"))
         layout.addWidget(self._track_combo)
+        layout.addWidget(QLabel("Voltas:"))
+        layout.addWidget(self._from_spin)
+        layout.addWidget(QLabel("a"))
+        layout.addWidget(self._to_spin)
         return bar
 
     # ---------- dados ----------
+
+    def _sync_range(self, total: int) -> None:
+        """Ajusta os limites dos seletores ao que existe na pista.
+
+        Sem isto, trocar de uma pista com 20 voltas para outra com 3 deixaria
+        "voltas 5 a 12" selecionado e o perfil sairia vazio, sem explicação.
+        """
+        for spin in (self._from_spin, self._to_spin):
+            spin.blockSignals(True)
+            spin.setMaximum(max(1, total))
+            spin.setMinimum(1)
+        if self._to_spin.value() > total or self._to_spin.value() <= 1:
+            self._to_spin.setValue(max(1, total))
+        if self._from_spin.value() > total:
+            self._from_spin.setValue(1)
+        for spin in (self._from_spin, self._to_spin):
+            spin.blockSignals(False)
 
     def refresh(self) -> None:
         previous = self._track_combo.currentData()
@@ -149,6 +180,17 @@ class DriverPage(Page):
         # Ordem cronológica: a tendência de ritmo depende disso, e o repositório
         # devolve da mais recente para a mais antiga.
         laps = list(reversed(laps))
+
+        # Recorte de voltas. Um perfil sobre a sessão inteira mistura as voltas
+        # de reconhecimento com as de ritmo, e a "consistência" resultante
+        # descreve um piloto que não existe. Escolher a faixa é o que separa
+        # "como eu piloto" de "como eu piloto quando estou tentando".
+        self._sync_range(len(laps))
+        inicio = max(1, self._from_spin.value())
+        fim = min(len(laps), self._to_spin.value())
+        if inicio > fim:
+            inicio, fim = fim, inicio
+        laps = laps[inicio - 1 : fim]
 
         point_lists: list[list[TelemetryPoint]] = []
         for lap in laps:

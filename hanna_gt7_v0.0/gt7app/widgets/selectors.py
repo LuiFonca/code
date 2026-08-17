@@ -12,6 +12,8 @@ melhor da pista, porque escolher uma volta sem saber quanto ela foi mais lenta
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 
@@ -45,6 +47,23 @@ def describe_lap(lap: Lap, best_ms: int | None) -> str:
     return f"{text}  {format_delta(lap.lap_time_ms - best_ms)}"
 
 
+class _SelfRefreshingCombo(QComboBox):
+    """Combo que consulta o banco no instante em que é aberto.
+
+    A alternativa seria a página se inscrever num evento de "algo mudou", o que
+    exigiria um evento para cada operação que mexe no acervo. Recarregar na
+    abertura custa uma consulta por clique e não tem como ficar desatualizado.
+    """
+
+    def __init__(self, on_open: Callable[[], None]) -> None:
+        super().__init__()
+        self._on_open = on_open
+
+    def showPopup(self) -> None:  # noqa: N802  (API do Qt)
+        self._on_open()
+        super().showPopup()
+
+
 class TrackLapSelector(QWidget):
     """Combo de pista + combo de volta, sincronizados.
 
@@ -62,6 +81,7 @@ class TrackLapSelector(QWidget):
         *,
         lap_label: str = "Volta:",
         limit: int = 40,
+        show_track: bool = True,
     ) -> None:
         super().__init__()
         self._tracks = tracks
@@ -73,10 +93,22 @@ class TrackLapSelector(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Space.SM.px)
 
-        self._track_combo = QComboBox()
-        self._lap_combo = QComboBox()
+        # Combos que se recarregam ao **abrir**. Sem isso, uma volta apagada no
+        # Histórico continuava listada aqui até a página ser reconstruída, e
+        # escolhê-la abria uma volta sem amostras — dados fantasma que parecem
+        # reais até o gráfico sair vazio.
+        self._track_combo = _SelfRefreshingCombo(self._reload_tracks_only)
+        self._lap_combo = _SelfRefreshingCombo(self._reload_laps_only)
 
-        layout.addWidget(QLabel("Pista:"))
+        # Comparar duas voltas de **pistas diferentes** não significa nada: o
+        # alinhamento é por distância no mesmo traçado. O segundo seletor da
+        # comparação esconde a pista e segue a do primeiro — oferecer a escolha
+        # era convidar para uma comparação sem sentido.
+        self._track_label = QLabel("Pista:")
+        self._track_label.setVisible(show_track)
+        self._track_combo.setVisible(show_track)
+
+        layout.addWidget(self._track_label)
         layout.addWidget(self._track_combo)
         layout.addWidget(QLabel(lap_label))
         layout.addWidget(self._lap_combo)
@@ -85,6 +117,15 @@ class TrackLapSelector(QWidget):
         self._lap_combo.currentIndexChanged.connect(self._on_lap_changed)
 
     # ---------- carga ----------
+
+    def _reload_tracks_only(self) -> None:
+        """Recarrega pistas ao abrir o combo, preservando a escolha."""
+        if not self._loading:
+            self.reload()
+
+    def _reload_laps_only(self) -> None:
+        if not self._loading:
+            self._reload_laps(self.current_track_id())
 
     def reload(self) -> None:
         """Recarrega o catálogo de pistas preservando a seleção, se possível."""
@@ -137,6 +178,14 @@ class TrackLapSelector(QWidget):
     def current_lap_id(self) -> int | None:
         data = self._lap_combo.currentData()
         return int(data) if data is not None else None
+
+    def select_track(self, track_id: object) -> None:
+        """Aponta para uma pista de fora. Usado pelo seletor que não a mostra."""
+        if track_id is None:
+            return
+        index = self._track_combo.findData(track_id)
+        if index >= 0 and index != self._track_combo.currentIndex():
+            self._track_combo.setCurrentIndex(index)
 
     def select_lap(self, lap_id: int) -> bool:
         index = self._lap_combo.findData(lap_id)

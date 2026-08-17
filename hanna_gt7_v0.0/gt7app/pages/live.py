@@ -41,6 +41,7 @@ from ..widgets.charts import (
     Series,
 )
 from ..widgets.radio import RadioCard
+from ..widgets.tyres import TyreTemperatures
 from .base import Page
 
 if TYPE_CHECKING:  # pragma: no cover - só para o verificador
@@ -51,7 +52,19 @@ if TYPE_CHECKING:  # pragma: no cover - só para o verificador
 # onde está.
 TRAIL_WINDOW_M = 800.0
 
+#: Janela do eixo de tempo, em segundos. Fixa, e não "o que couber no rastro":
+#: com janela elástica a escala horizontal mudava a cada quadro e o traço
+#: parecia acelerar e desacelerar sozinho. Trinta segundos é o horizonte que o
+#: piloto consegue relacionar com o que acabou de fazer.
+TRAIL_WINDOW_S = 30.0
+
 REPAINT_INTERVAL_MS = 66  # ~15 Hz
+
+
+def _parece_endereco_ip(texto: str) -> bool:
+    """Quatro grupos de dígitos separados por ponto — nome de pista nenhum é."""
+    partes = texto.split(".")
+    return len(partes) == 4 and all(p.strip().isdigit() for p in partes)
 
 
 class LivePage(Page):
@@ -120,6 +133,11 @@ class LivePage(Page):
         traces.add(self._pedals_chart)
         self.content.addWidget(traces)
 
+        pneus = Card("Temperatura dos pneus")
+        self._tyres = TyreTemperatures(self.theme, height=150)
+        pneus.add(self._tyres)
+        self.content.addWidget(pneus)
+
         # O rádio fica logo abaixo dos traços e **acima** do esticador: numa
         # tela ao vivo o piloto olha de relance, e o que ele precisa ver não
         # pode estar colado no rodapé.
@@ -140,7 +158,19 @@ class LivePage(Page):
         self._track_input = QComboBox()
         self._track_input.setEditable(True)
         self._track_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        editor = self._track_input.lineEdit()
+        if editor is not None:
+            editor.setPlaceholderText("deixe vazio para detectar sozinho")
         self._reload_tracks()
+        # **Vazio por padrão.** Um combo carregado com 105 pistas seleciona a
+        # primeira em ordem alfabética sozinho, e conectar sem tocar no campo
+        # gravava a sessão como "24 Heures du Mans" — um nome que ninguém
+        # digitou e que ninguém desconfia, porque parece escolhido. Pior: com a
+        # pista já definida, a detecção automática pelo comprimento nunca
+        # rodava, já que ela só age quando não há pista. Era essa a causa de "a
+        # detecção automática não está funcionando".
+        self._track_input.setCurrentIndex(-1)
+        self._track_input.setCurrentText("")
 
         # Eixo X: distância ou tempo. Não é preferência estética — são duas
         # perguntas. Por distância, "onde na pista"; duas voltas se sobrepõem
@@ -324,7 +354,18 @@ class LivePage(Page):
         bug real: com o catálogo carregado, qualquer pista digitada era gravada
         como a primeira em ordem alfabética.
         """
-        return self._track_input.currentText().strip()
+        nome = self._track_input.currentText().strip()
+        # O campo de conexão mora em Configurações; aqui é o nome do circuito.
+        # A confusão aconteceu de verdade — uma sessão inteira foi gravada sob
+        # "192.168.15.156" — e o histórico passa a agrupar voltas por um rótulo
+        # que não é pista nenhuma.
+        if _parece_endereco_ip(nome):
+            self._status.setText(
+                f"'{nome}' parece um endereço de rede, não uma pista. "
+                "O IP do PS5 se configura em Configurações."
+            )
+            return ""
+        return nome
 
     def _on_start(self) -> None:
         name = self._resolve_track_name()
@@ -345,6 +386,32 @@ class LivePage(Page):
         self._start_button.setEnabled(False)
         self._stop_button.setEnabled(True)
 
+    def _on_track_candidates(self, names: list[str]) -> None:
+        """Mostra o que o comprimento da volta sugere.
+
+        Um candidato: já foi aplicado pelo núcleo, e o campo só reflete. Vários:
+        eles entram no combo com o mais provável na frente, e a barra pede a
+        confirmação — porque escolher sozinho entre circuitos de comprimento
+        parecido é errar em silêncio.
+        """
+        if not names or self._track_input.currentText().strip():
+            return
+
+        if len(names) == 1:
+            self._track_input.setCurrentText(names[0])
+            self._status.setText(f"Pista identificada pelo comprimento: {names[0]}")
+            return
+
+        for posicao, nome in enumerate(names):
+            existente = self._track_input.findText(nome)
+            if existente >= 0:
+                self._track_input.removeItem(existente)
+            self._track_input.insertItem(posicao, nome)
+        self._status.setText(
+            f"Pista provável: {names[0]} — confirme no campo (outros: "
+            f"{', '.join(names[1:3])})"
+        )
+
     def _on_stop(self) -> None:
         self._update_synthetic_badge()
         if self._voice is not None:
@@ -364,6 +431,12 @@ class LivePage(Page):
         cards["rpm"].set_value(f"{point.rpm:.0f}")
         cards["distance"].set_value(f"{point.distance_m:.0f}")
         cards["lap"].set_value(str(event.frame.lap_count))
+        self._tyres.set_temperatures(
+            event.frame.tire_temp_fl,
+            event.frame.tire_temp_fr,
+            event.frame.tire_temp_rl,
+            event.frame.tire_temp_rr,
+        )
 
         self._trail.append(
             (
@@ -376,9 +449,20 @@ class LivePage(Page):
         )
         # Descarta o que saiu da janela de rastro, mantendo a lista curta em vez
         # de crescer a volta inteira.
-        cutoff = point.distance_m - TRAIL_WINDOW_M
-        if self._trail[0][0] < cutoff:
-            self._trail = [row for row in self._trail if row[0] >= cutoff]
+        # Volta nova: o tempo decorrido **zera**, e a distância também. Um
+        # rastro que atravessa a virada tem tempos indo de 102 s a 0 s, e o eixo
+        # de tempo passa a medir 103 s de janela — foi o que apareceu ao medir.
+        # Manter só a volta corrente é o que faz a janela de 30 s significar
+        # trinta segundos.
+        if len(self._trail) > 1 and self._trail[-1][1] < self._trail[-2][1]:
+            self._trail = self._trail[-1:]
+
+        corte_m = point.distance_m - TRAIL_WINDOW_M
+        corte_s = point.elapsed_ms / 1000.0 - TRAIL_WINDOW_S
+        if self._trail[0][0] < corte_m or self._trail[0][1] < corte_s:
+            self._trail = [
+                row for row in self._trail if row[0] >= corte_m and row[1] >= corte_s
+            ]
         self._pending_repaint = True
 
     def _repaint_traces(self) -> None:

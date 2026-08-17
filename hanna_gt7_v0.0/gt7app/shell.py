@@ -255,6 +255,18 @@ class AppShell(QMainWindow):
                 page.refresh()
                 return
 
+    def on_track_candidates(self, names: list[str]) -> None:
+        """A detecção automática avisa a página ao vivo, que mostra o nome.
+
+        Passa pela janela porque quem detecta é o `build_gui` e quem exibe é uma
+        página — e nenhum dos dois deveria procurar o outro na hierarquia de
+        widgets.
+        """
+        for page in self._pages:
+            handler = getattr(page, "_on_track_candidates", None)
+            if handler is not None:
+                handler(names)
+
     def _refresh_current(self) -> None:
         index = self._stack.currentIndex()
         if 0 <= index < len(self._pages):

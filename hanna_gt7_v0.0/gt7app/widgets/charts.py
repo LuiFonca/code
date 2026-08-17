@@ -130,6 +130,11 @@ class DistanceChart(QWidget):
         self._cursor_m: float | None = None
         self._min_x = 0.0
         self._max_distance = 0.0
+        # Amplitude memorizada, como `_bounds`. Era uma `@property`, e property
+        # é chamada de descritor: dentro do laço de pintura, com ~6.000 pontos e
+        # duas séries, custou 13× em vez dos 10× do crescimento dos dados e
+        # derrubou o teste que existe justamente para pegar isso.
+        self._x_span = 1.0
         self._markers: list[tuple[float, str, str]] = []
 
         self.setMinimumHeight(height)
@@ -151,6 +156,7 @@ class DistanceChart(QWidget):
         self._min_x = min(
             (s.points[0][0] for s in series if not s.is_empty), default=0.0
         )
+        self._x_span = (self._max_distance - self._min_x) or 1.0
         self._bounds = self._y_bounds()
         self.update()
 
@@ -176,6 +182,7 @@ class DistanceChart(QWidget):
         self._cursor_m = None
         self._min_x = 0.0
         self._max_distance = 0.0
+        self._x_span = 1.0
         self._bounds = self._forced_range or (0.0, 1.0)
         self.update()
 
@@ -245,10 +252,6 @@ class DistanceChart(QWidget):
         # Uma folga de 8% no topo impede que o pico encoste na borda, onde
         # ficaria visualmente cortado. O piso fica colado no zero de propósito.
         return low, high + (high - low) * 0.08
-
-    @property
-    def _x_span(self) -> float:
-        return (self._max_distance - self._min_x) or 1.0
 
     def _x_pixel(self, x_value: float, rect: QRectF) -> float:
         """Valor do eixo X → pixel. **Uma** fórmula, quatro chamadores.

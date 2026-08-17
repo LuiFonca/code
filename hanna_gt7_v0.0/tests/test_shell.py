@@ -523,3 +523,109 @@ class TestEixoPorTempo:
         encontrado = page._point_at_x(alvo.elapsed_ms / 1000.0)  # noqa: SLF001
         assert encontrado is not None
         assert encontrado.distance_m == pytest.approx(alvo.distance_m, abs=1.0)
+
+
+class TestPistaNaoSeAutoPreenche:
+    """O defeito que impedia a detecção automática de funcionar.
+
+    Um combo carregado com 105 pistas seleciona a primeira em ordem alfabética
+    sozinho. Conectar sem tocar no campo gravava a sessão como "24 Heures du
+    Mans" — nome que ninguém digitou e que parece escolhido. E, com a pista já
+    definida, a detecção pelo comprimento nunca rodava, porque ela só age quando
+    não há pista.
+    """
+
+    def test_o_campo_comeca_vazio(self, shell) -> None:  # noqa: ANN001
+        window, _core, _app = shell
+        live = window._pages[0]  # noqa: SLF001
+        assert live._track_input.currentText() == ""  # noqa: SLF001
+        assert live._resolve_track_name() == ""  # noqa: SLF001
+
+    def test_um_ip_digitado_e_recusado(self, shell) -> None:  # noqa: ANN001
+        """Uma sessão inteira já foi gravada sob "192.168.15.156".
+
+        O campo de conexão mora em Configurações; aqui é o nome do circuito. Sem
+        a guarda, o histórico agrupa voltas por um rótulo que não é pista.
+        """
+        window, _core, _app = shell
+        live = window._pages[0]  # noqa: SLF001
+        live._track_input.setCurrentText("192.168.15.156")  # noqa: SLF001
+
+        assert live._resolve_track_name() == ""  # noqa: SLF001
+        assert "endereço de rede" in live._status.text()  # noqa: SLF001
+
+    def test_um_nome_de_pista_passa(self, shell) -> None:  # noqa: ANN001
+        window, _core, _app = shell
+        live = window._pages[0]  # noqa: SLF001
+        live._track_input.setCurrentText("Interlagos")  # noqa: SLF001
+        assert live._resolve_track_name() == "Interlagos"  # noqa: SLF001
+
+    def test_candidato_unico_e_aplicado(self, shell) -> None:  # noqa: ANN001
+        window, _core, _app = shell
+        live = window._pages[0]  # noqa: SLF001
+        live._track_input.setCurrentText("")  # noqa: SLF001
+
+        live._on_track_candidates(["Suzuka Circuit"])  # noqa: SLF001
+        assert live._track_input.currentText() == "Suzuka Circuit"  # noqa: SLF001
+
+    def test_ambiguidade_sugere_em_vez_de_escolher(self, shell) -> None:  # noqa: ANN001
+        """Vários circuitos compartilham comprimento. Escolher sozinho entre
+        eles é errar em silêncio — o histórico passa a misturar pistas."""
+        window, _core, _app = shell
+        live = window._pages[0]  # noqa: SLF001
+        live._track_input.setCurrentText("")  # noqa: SLF001
+
+        live._on_track_candidates(["Goodwood", "Brands Hatch", "Watkins Glen"])  # noqa: SLF001
+
+        assert live._track_input.currentText() == "", "não pode decidir sozinho"  # noqa: SLF001
+        assert "provável" in live._status.text()  # noqa: SLF001
+        assert "Goodwood" in live._status.text()  # noqa: SLF001
+
+    def test_pista_ja_escolhida_nao_e_sobrescrita(self, shell) -> None:  # noqa: ANN001
+        window, _core, _app = shell
+        live = window._pages[0]  # noqa: SLF001
+        live._track_input.setCurrentText("Minha Pista")  # noqa: SLF001
+
+        live._on_track_candidates(["Suzuka Circuit"])  # noqa: SLF001
+        assert live._track_input.currentText() == "Minha Pista"  # noqa: SLF001
+
+
+class TestJanelaDeTrintaSegundos:
+    def test_a_virada_de_volta_nao_estica_o_eixo(self, shell) -> None:  # noqa: ANN001
+        """O tempo decorrido **zera** a cada volta.
+
+        Um rastro que atravessa a virada tem tempos indo de 102 s a 0 s, e o
+        eixo passava a medir 103 s de janela — medido, não suposto.
+        """
+        from gt7app.pages.live import TRAIL_WINDOW_S
+
+        window, _core, _app = shell
+        live = window._pages[0]  # noqa: SLF001
+
+        live._trail = [  # noqa: SLF001
+            (3700.0, 100.0, 180.0, 90.0, 0.0),
+            (3799.0, 102.0, 150.0, 0.0, 80.0),
+        ]
+
+        class _Ponto:
+            distance_m = 5.0
+            elapsed_ms = 100
+            speed_kmh = 60.0
+            rpm = 3000.0
+            gear = 2
+            throttle = 50.0
+            brake = 0.0
+
+        class _Quadro:
+            lap_count = 5
+            tire_temp_fl = tire_temp_fr = 80.0
+            tire_temp_rl = tire_temp_rr = 80.0
+
+        class _Evento:
+            point = _Ponto()
+            frame = _Quadro()
+
+        live._on_frame(_Evento())  # noqa: SLF001
+
+        tempos = [row[1] for row in live._trail]  # noqa: SLF001
+        assert max(tempos) - min(tempos) <= TRAIL_WINDOW_S
