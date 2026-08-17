@@ -55,9 +55,10 @@ def build_plaintext_packet(
     throttle_raw: int = 255,
     brake_raw: int = 0,
     lap_count: int = 3,
-    current_lap_ms: int = 42_000,
+    packet_id: int = 42_000,
     last_lap_ms: int = 101_500,
     best_lap_ms: int = 100_250,
+    day_progression_ms: int = 36_000_000,
     car_id: int = 1234,
     flags: int = 0x0009,
     magic: int = MAGIC_NUMBER,
@@ -67,6 +68,17 @@ def build_plaintext_packet(
     Existe para que o teste de decodificação valide byte a byte contra valores
     conhecidos, em vez de contra o próprio decodificador. É o oposto de um teste
     tautológico: se um offset for trocado, o valor lido muda e o teste falha.
+
+    **Este arquivo já esteve errado, e por isso o teste não pegou o defeito.**
+    A versão anterior escrevia `best_lap` em 0x70 e `current_lap` em 0x78 — os
+    mesmos offsets que o decodificador lia. Escritor e leitor concordavam, os
+    testes passavam, e ambos estavam deslocados em relação ao GT7 de verdade:
+    0x70 é o **tick** e 0x78 é o **melhor tempo**. O jogo não transmite tempo de
+    volta corrente em lugar nenhum.
+
+    A lição é sobre o método, não sobre o offset: uma "verdade conhecida"
+    escrita pela mesma pessoa que escreveu o leitor não é verdade conhecida — é
+    o mesmo palpite, escrito duas vezes. Só a captura real revelou a diferença.
     """
     packet = bytearray(PACKET_SIZE)
 
@@ -84,11 +96,12 @@ def build_plaintext_packet(
     struct.pack_into("<f", packet, 0x58, 89.0)                    # água
     struct.pack_into("<f", packet, 0x5C, 105.0)                   # óleo
     struct.pack_into("<ffff", packet, 0x60, 80.0, 82.0, 78.0, 79.0)  # pneus
-    struct.pack_into("<i", packet, 0x70, best_lap_ms)
+    struct.pack_into("<i", packet, 0x70, packet_id)               # tick do jogo
     struct.pack_into("<h", packet, 0x74, lap_count)
     struct.pack_into("<h", packet, 0x76, 10)                      # total de voltas
-    struct.pack_into("<i", packet, 0x78, current_lap_ms)
+    struct.pack_into("<i", packet, 0x78, best_lap_ms)
     struct.pack_into("<i", packet, 0x7C, last_lap_ms)
+    struct.pack_into("<i", packet, 0x80, day_progression_ms)      # hora do dia
     struct.pack_into("<H", packet, 0x88, 7000)
     struct.pack_into("<H", packet, 0x8A, 7600)
     struct.pack_into("<H", packet, 0x8C, 330)

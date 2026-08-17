@@ -101,21 +101,34 @@ def _check_network(ip: str) -> None:
     print("   comum de 'sem rota até o host'.")
 
 
-def _open_socket() -> socket.socket | None:
-    print(f"\n2) Abrindo a porta de captura {RECEIVE_PORT}...")
+def _open_socket(*, quiet: bool = False) -> socket.socket | None:
+    """Abre a porta de recepção.
+
+    O `quiet` existe porque esta função ganhou um segundo chamador: o botão
+    "Testar conexão" da interface. Sem ele, clicar no botão cuspia `2) Abrindo a
+    porta de captura 33740...` no terminal de quem abriu o programa — um passo
+    numerado de um roteiro de linha de comando que ninguém estava rodando. O
+    `probe()` prometia, na própria docstring, não imprimir nada; a promessa era
+    falsa porque a impressão estava aqui dentro, um nível abaixo.
+    """
+    def say(message: str) -> None:
+        if not quiet:
+            print(message)
+
+    say(f"\n2) Abrindo a porta de captura {RECEIVE_PORT}...")
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("0.0.0.0", RECEIVE_PORT))
         sock.settimeout(1.0)
     except OSError as exc:
-        print(f"   FALHOU: {exc}")
+        say(f"   FALHOU: {exc}")
         if exc.errno == errno.EADDRINUSE:
-            print("   Outra cópia do programa (ou outra ferramenta de telemetria)")
-            print("   já usa esta porta. Feche-a e rode de novo.")
+            say("   Outra cópia do programa (ou outra ferramenta de telemetria)")
+            say("   já usa esta porta. Feche-a e rode de novo.")
         return None
 
-    print("   OK — porta aberta.")
+    say("   OK — porta aberta.")
     return sock
 
 
@@ -251,12 +264,16 @@ def probe(ip: str, *, wait_s: float = 6.0) -> Diagnosis:
     um diagnóstico completo, mas um botão que trava a interface por 20 s parece
     travado — e ela clica de novo, ou fecha o programa.
     """
-    sock = _open_socket()
+    sock = _open_socket(quiet=True)
     if sock is None:
         return Diagnosis(
             ok=False,
             headline="Não foi possível abrir a porta de recepção.",
-            steps=(f"Outro programa pode estar usando a porta {RECEIVE_PORT}.",),
+            steps=(
+                f"Outro programa já usa a porta {RECEIVE_PORT} — outra cópia",
+                "deste programa, ou outra ferramenta de telemetria. Feche-a",
+                "e teste de novo.",
+            ),
         )
 
     start = time.time()

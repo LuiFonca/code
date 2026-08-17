@@ -75,18 +75,23 @@ class TelemetryEngine:
     barramento. Testável com uma lista de quadros sintéticos e nada mais.
     """
 
-    def __init__(self, event_bus: EventBus) -> None:
+    def __init__(self, event_bus: EventBus, *, sample_rate_hz: int = 60) -> None:
         self._bus = event_bus
         self._buffer: list[TelemetryPoint] = []
         self._cumulative_distance = 0.0
 
+        # Milissegundos por tick do jogo. O GT7 transmite a 60 Hz, e é daqui que
+        # sai todo o tempo — ver `_elapsed_ms`.
+        self._ms_per_tick = 1000.0 / max(1, sample_rate_hz)
+        self._lap_start_packet_id: int | None = None
+
         self._last_lap_count: int | None = None
-        self._last_elapsed_ms: int | None = None
+        self._last_elapsed_ms: float | None = None
         self._last_speed_ms: float | None = None
 
         self._prev_velocity_x: float | None = None
         self._prev_velocity_z: float | None = None
-        self._prev_velocity_ms: int | None = None
+        self._prev_velocity_ms: float | None = None
 
     # ---------- estado ----------
 
@@ -105,11 +110,42 @@ class TelemetryEngine:
         self._last_lap_count = None
         self._last_elapsed_ms = None
         self._last_speed_ms = None
+        self._lap_start_packet_id = None
         self._prev_velocity_x = None
         self._prev_velocity_z = None
         self._prev_velocity_ms = None
 
     # ---------- caminho quente (~60 Hz) ----------
+
+    def _elapsed_ms(self, frame: TelemetryFrame) -> float:
+        """Tempo decorrido na volta corrente, em ms — **em ponto flutuante**.
+
+        **Derivado, porque o GT7 não o transmite.** O pacote traz o melhor tempo
+        e o último, mas não o corrente — e ler 0x78 achando que era o corrente
+        foi o que zerou a distância de toda volta capturada de um console real
+        (ver `TelemetryFrame.packet_id`).
+
+        A conta é o número de quadros do jogo desde o início da volta vezes o
+        período de amostragem. Contar quadros, e não relógio de parede, é o que
+        mantém o valor correto quando um pacote UDP se perde: o tick pula, o
+        intervalo derivado pula junto, e a integração de distância não engole a
+        lacuna como se o carro tivesse ficado parado.
+
+        Float, e não inteiro, porque a 60 Hz o período é 16,666… ms: truncar a
+        cada quadro somava 3,999 s numa freada de 4 s, e a distância — que é
+        integrada justamente sobre esse `Δt` — herdava o erro no pior lugar, o
+        ponto de frenagem. O arredondamento acontece uma vez só, quando o tempo
+        vira campo da amostra gravada.
+        """
+        if self._lap_start_packet_id is None:
+            self._lap_start_packet_id = frame.packet_id
+        ticks = frame.packet_id - self._lap_start_packet_id
+        if ticks < 0:
+            # Contador reiniciou (sessão nova, ou o jogo voltou ao menu). Sem
+            # isto, o tempo ficaria negativo e a integração pararia em silêncio.
+            self._lap_start_packet_id = frame.packet_id
+            ticks = 0
+        return ticks * self._ms_per_tick
 
     def on_frame(self, frame: TelemetryFrame) -> None:
         """Processa um quadro. Chamado ~60x/s — tudo aqui precisa ser barato."""
@@ -117,28 +153,32 @@ class TelemetryEngine:
         # Virada de volta: o contador mudou, então a volta anterior fechou.
         if self._last_lap_count is not None and frame.lap_count != self._last_lap_count:
             self._finalize_lap(frame.last_lap_ms)
+            # O relógio da volta nova começa aqui, não no início da sessão.
+            self._lap_start_packet_id = frame.packet_id
+
+        elapsed_ms = self._elapsed_ms(frame)
 
         # Pausado ou carregando: o tempo do jogo não corre, então acumular
         # amostras inflaria a distância e distorceria o delta. O contador de
         # volta ainda é atualizado, para não perder a virada.
         if frame.is_paused or frame.is_loading:
             self._last_lap_count = frame.lap_count
-            self._last_elapsed_ms = frame.current_lap_ms
+            self._last_elapsed_ms = elapsed_ms
             return
 
-        g_lateral, g_longitudinal = self._compute_g_forces(frame)
-        self._integrate_distance(frame)
+        g_lateral, g_longitudinal = self._compute_g_forces(frame, elapsed_ms)
+        self._integrate_distance(frame, elapsed_ms)
 
-        point = self._frame_to_point(frame, g_lateral, g_longitudinal)
+        point = self._frame_to_point(frame, g_lateral, g_longitudinal, elapsed_ms)
         self._buffer.append(point)
 
         self._last_lap_count = frame.lap_count
-        self._last_elapsed_ms = frame.current_lap_ms
+        self._last_elapsed_ms = elapsed_ms
         self._last_speed_ms = frame.speed_kmh / 3.6
 
         self._bus.publish(TelemetryReceived(point=point, frame=frame))
 
-    def _integrate_distance(self, frame: TelemetryFrame) -> None:
+    def _integrate_distance(self, frame: TelemetryFrame, elapsed_ms: float) -> None:
         """Distância acumulada pela **regra do trapézio**.
 
         O GT7 não transmite hodômetro por volta, e é a distância que alinha a
@@ -154,10 +194,10 @@ class TelemetryEngine:
         """
         if self._last_elapsed_ms is None or self._last_speed_ms is None:
             return
-        if frame.current_lap_ms < self._last_elapsed_ms:
+        if elapsed_ms < self._last_elapsed_ms:
             return  # relógio andou para trás: descarta em vez de somar lixo
 
-        dt_s = (frame.current_lap_ms - self._last_elapsed_ms) / 1000.0
+        dt_s = (elapsed_ms - self._last_elapsed_ms) / 1000.0
         if dt_s <= 0:
             return
 
@@ -165,7 +205,9 @@ class TelemetryEngine:
         average_speed = (self._last_speed_ms + speed_ms) / 2.0
         self._cumulative_distance += average_speed * dt_s
 
-    def _compute_g_forces(self, frame: TelemetryFrame) -> tuple[float, float]:
+    def _compute_g_forces(
+        self, frame: TelemetryFrame, elapsed_ms: float
+    ) -> tuple[float, float]:
         """Força G lateral e longitudinal, derivando o vetor velocidade.
 
         Preservado do original sem mudança — a auditoria classificou este
@@ -179,15 +221,15 @@ class TelemetryEngine:
             self._prev_velocity_x is None
             or self._prev_velocity_z is None
             or self._prev_velocity_ms is None
-            or frame.current_lap_ms <= self._prev_velocity_ms
+            or elapsed_ms <= self._prev_velocity_ms
             or frame.speed_kmh <= MIN_SPEED_FOR_G_KMH
         ):
-            self._remember_velocity(frame)
+            self._remember_velocity(frame, elapsed_ms)
             return 0.0, 0.0
 
-        dt = (frame.current_lap_ms - self._prev_velocity_ms) / 1000.0
+        dt = (elapsed_ms - self._prev_velocity_ms) / 1000.0
         if dt <= MIN_DT_S:
-            self._remember_velocity(frame)
+            self._remember_velocity(frame, elapsed_ms)
             return 0.0, 0.0
 
         ax = (frame.velocity_x - self._prev_velocity_x) / dt
@@ -202,20 +244,24 @@ class TelemetryEngine:
             g_longitudinal = (ax * fwd_x + az * fwd_z) / GRAVITY
             g_lateral = (ax * right_x + az * right_z) / GRAVITY
 
-        self._remember_velocity(frame)
+        self._remember_velocity(frame, elapsed_ms)
         return g_lateral, g_longitudinal
 
-    def _remember_velocity(self, frame: TelemetryFrame) -> None:
+    def _remember_velocity(self, frame: TelemetryFrame, elapsed_ms: float) -> None:
         self._prev_velocity_x = frame.velocity_x
         self._prev_velocity_z = frame.velocity_z
-        self._prev_velocity_ms = frame.current_lap_ms
+        self._prev_velocity_ms = elapsed_ms
 
     def _frame_to_point(
-        self, frame: TelemetryFrame, g_lateral: float, g_longitudinal: float
+        self,
+        frame: TelemetryFrame,
+        g_lateral: float,
+        g_longitudinal: float,
+        elapsed_ms: float,
     ) -> TelemetryPoint:
         """DTO de fio → modelo de domínio. Única tradução entre os dois."""
         return TelemetryPoint(
-            elapsed_ms=frame.current_lap_ms,
+            elapsed_ms=int(round(elapsed_ms)),
             distance_m=self._cumulative_distance,
             speed_kmh=frame.speed_kmh,
             rpm=frame.rpm,

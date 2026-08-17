@@ -110,6 +110,7 @@ def synthetic_lap(
     car_id: int = DEFAULT_CAR_ID,
     best_lap_ms: int = -1,
     last_lap_ms: int = -1,
+    start_packet_id: int = 0,
 ) -> Iterator[TelemetryFrame]:
     """Gera os quadros de uma volta completa. Puro e determinístico.
 
@@ -241,7 +242,12 @@ def synthetic_lap(
             body_height=0.12,
             best_lap_ms=best_lap_ms,
             last_lap_ms=last_lap_ms,
-            current_lap_ms=elapsed_ms,
+            # O tick é global e monotônico, como no console: é dele que o motor
+            # deriva o tempo da volta. Reiniciá-lo a cada volta esconderia um
+            # defeito real — o motor precisa saber achar o início da volta
+            # sozinho, e um contador que já vem zerado faria isso de graça.
+            packet_id=start_packet_id + index,
+            day_progression_ms=elapsed_ms,
             tire_temp_fl=tire_base + 3.0,
             tire_temp_fr=tire_base + 5.0,
             tire_temp_rl=tire_base,
@@ -280,20 +286,26 @@ def synthetic_session(
     paces = (0.985, 1.0, 0.995, 0.99, 1.005)
     best_ms = -1
     last_ms = -1
+    packet_id = 0
 
     for lap_index in range(lap_count):
         pace = paces[lap_index % len(paces)]
         lap_time_ms = int(base_lap_time_ms / pace)
 
-        yield from synthetic_lap(
+        emitted = 0
+        for frame in synthetic_lap(
             lap_number=lap_index + 1,
             lap_time_ms=lap_time_ms,
             pace_factor=pace,
             best_lap_ms=best_ms,
             last_lap_ms=last_ms,
+            start_packet_id=packet_id,
             **lap_kwargs,  # type: ignore[arg-type]
-        )
+        ):
+            emitted += 1
+            yield frame
 
+        packet_id += emitted
         last_ms = lap_time_ms
         best_ms = lap_time_ms if best_ms < 0 else min(best_ms, lap_time_ms)
 

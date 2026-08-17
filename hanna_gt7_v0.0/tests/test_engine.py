@@ -27,7 +27,7 @@ from gt7core.telemetry.sources.mock import synthetic_lap
 def make_frame(
     *,
     speed_kmh: float = 200.0,
-    current_lap_ms: int = 0,
+    packet_id: int = 0,
     lap_count: int = 1,
     last_lap_ms: int = -1,
     velocity_x: float = 0.0,
@@ -42,7 +42,7 @@ def make_frame(
         position_x=0.0, position_y=0.0, position_z=0.0,
         velocity_x=velocity_x, velocity_y=0.0, velocity_z=velocity_z,
         body_height=0.1, best_lap_ms=-1, last_lap_ms=last_lap_ms,
-        current_lap_ms=current_lap_ms,
+        packet_id=packet_id, day_progression_ms=0,
         tire_temp_fl=80.0, tire_temp_fr=80.0, tire_temp_rl=80.0, tire_temp_rr=80.0,
         suspension_fl=0.1, suspension_fr=0.1, suspension_rl=0.1, suspension_rr=0.1,
         tire_slip_fl=1.0, tire_slip_fr=1.0, tire_slip_rl=1.0, tire_slip_rr=1.0,
@@ -59,7 +59,7 @@ class TestIntegracaoDeDistancia:
 
         for i in range(int(duration_s * hz) + 1):
             engine.on_frame(
-                make_frame(speed_kmh=speed_kmh, current_lap_ms=int(i * 1000 / hz))
+                make_frame(speed_kmh=speed_kmh, packet_id=i)
             )
 
         expected = (speed_kmh / 3.6) * duration_s
@@ -68,17 +68,19 @@ class TestIntegracaoDeDistancia:
     def test_desaceleracao_linear_da_distancia_analitica(self, bus: EventBus) -> None:
         """Freada de 240 para 60 km/h: a regra do trapézio é exata para
         velocidade linear, então o resultado bate com (v0+v1)/2 × T."""
-        engine = TelemetryEngine(bus)
-        # 50 Hz: dt = 20 ms exatos. A 60 Hz o timestamp inteiro trunca
-        # 16,666 ms e o total vira 3,999 s — o erro seria do teste, não do motor.
+        # A taxa agora é do motor, não do quadro: é ela que converte tick em
+        # tempo. O comentário anterior avisava que a 60 Hz o timestamp inteiro
+        # truncava 16,666 ms e o total virava 3,999 s — isso deixou de valer,
+        # porque o tempo derivado é float e só arredonda ao virar amostra.
         v0_kmh, v1_kmh, duration_s, hz = 240.0, 60.0, 4.0, 50
+        engine = TelemetryEngine(bus, sample_rate_hz=hz)
         steps = int(duration_s * hz)
 
         for i in range(steps + 1):
             ratio = i / steps
             speed = v0_kmh + (v1_kmh - v0_kmh) * ratio
             engine.on_frame(
-                make_frame(speed_kmh=speed, current_lap_ms=int(i * 1000 / hz))
+                make_frame(speed_kmh=speed, packet_id=i)
             )
 
         analytic = ((v0_kmh + v1_kmh) / 2 / 3.6) * duration_s
@@ -99,11 +101,11 @@ class TestIntegracaoDeDistancia:
         dt = 1.0 / hz
         analytic = ((v0_kmh + v1_kmh) / 2 / 3.6) * duration_s
 
-        engine = TelemetryEngine(EventBus())
+        engine = TelemetryEngine(EventBus(), sample_rate_hz=hz)
         rectangle = 0.0
         for i in range(steps + 1):
             speed = v0_kmh + (v1_kmh - v0_kmh) * (i / steps)
-            engine.on_frame(make_frame(speed_kmh=speed, current_lap_ms=int(i * 1000 / hz)))
+            engine.on_frame(make_frame(speed_kmh=speed, packet_id=i))
             if i > 0:
                 rectangle += (speed / 3.6) * dt
 
@@ -130,22 +132,22 @@ class TestIntegracaoDeDistancia:
 
         for frame in frames:
             speed = frame.speed_kmh / 3.6
-            if previous_speed is not None and frame.current_lap_ms > previous_ms:
-                dt = (frame.current_lap_ms - previous_ms) / 1000
+            if previous_speed is not None and frame.packet_id > previous_ms:
+                dt = (frame.packet_id - previous_ms) / 1000
                 rectangle += speed * dt
                 trapezoid += (previous_speed + speed) / 2 * dt
-            previous_speed, previous_ms = speed, frame.current_lap_ms
+            previous_speed, previous_ms = speed, frame.packet_id
 
         assert abs(rectangle - trapezoid) < 0.01, "sobre a volta fechada, se cancelam"
 
     def test_relogio_para_tras_nao_soma_distancia(self, bus: EventBus) -> None:
         """Um pacote fora de ordem não pode inflar a distância."""
         engine = TelemetryEngine(bus)
-        engine.on_frame(make_frame(current_lap_ms=1000))
-        engine.on_frame(make_frame(current_lap_ms=2000))
+        engine.on_frame(make_frame(packet_id=60))
+        engine.on_frame(make_frame(packet_id=120))
         distance_before = engine.current_distance_m
 
-        engine.on_frame(make_frame(current_lap_ms=500))
+        engine.on_frame(make_frame(packet_id=30))
         assert engine.current_distance_m == distance_before
 
     def test_pausa_nao_acumula_distancia(self, bus: EventBus) -> None:
@@ -153,14 +155,14 @@ class TestIntegracaoDeDistancia:
         distância e distorceria o delta."""
         engine = TelemetryEngine(bus)
         for i in range(60):
-            engine.on_frame(make_frame(current_lap_ms=i * 16))
+            engine.on_frame(make_frame(packet_id=i))
         distance_before = engine.current_distance_m
         samples_before = engine.buffered_points
 
         for i in range(60, 200):
             engine.on_frame(
                 make_frame(
-                    current_lap_ms=i * 16, flags=FLAG_CAR_ON_TRACK | FLAG_PAUSED
+                    packet_id=i, flags=FLAG_CAR_ON_TRACK | FLAG_PAUSED
                 )
             )
 
@@ -177,10 +179,10 @@ class TestForcaG:
         bus.subscribe(TelemetryReceived, received.append)
 
         engine.on_frame(
-            make_frame(speed_kmh=180.0, current_lap_ms=0, velocity_x=50.0, velocity_z=0.0)
+            make_frame(speed_kmh=180.0, packet_id=0, velocity_x=50.0, velocity_z=0.0)
         )
         engine.on_frame(
-            make_frame(speed_kmh=144.0, current_lap_ms=500, velocity_x=40.0, velocity_z=0.0)
+            make_frame(speed_kmh=144.0, packet_id=30, velocity_x=40.0, velocity_z=0.0)
         )
 
         assert received[-1].point.g_longitudinal == pytest.approx(-2.04, abs=0.01)
@@ -194,11 +196,13 @@ class TestForcaG:
         bus.subscribe(TelemetryReceived, received.append)
 
         angle = math.radians(37.0)
-        for speed_ms, ms in ((50.0, 0), (40.0, 500)):
+        # 30 ticks a 60 Hz = 0,5 s — o mesmo intervalo do teste anterior, agora
+        # dito na unidade que o pacote carrega.
+        for speed_ms, tick in ((50.0, 0), (40.0, 30)):
             engine.on_frame(
                 make_frame(
                     speed_kmh=speed_ms * 3.6,
-                    current_lap_ms=ms,
+                    packet_id=tick,
                     velocity_x=speed_ms * math.cos(angle),
                     velocity_z=speed_ms * math.sin(angle),
                 )
@@ -213,8 +217,8 @@ class TestForcaG:
         received: list[TelemetryReceived] = []
         bus.subscribe(TelemetryReceived, received.append)
 
-        engine.on_frame(make_frame(speed_kmh=0.5, current_lap_ms=0, velocity_x=0.1))
-        engine.on_frame(make_frame(speed_kmh=0.5, current_lap_ms=16, velocity_x=0.2))
+        engine.on_frame(make_frame(speed_kmh=0.5, packet_id=0, velocity_x=0.1))
+        engine.on_frame(make_frame(speed_kmh=0.5, packet_id=0, velocity_x=0.2))
 
         assert received[-1].point.g_longitudinal == 0.0
         assert received[-1].point.g_lateral == 0.0
@@ -227,8 +231,8 @@ class TestDeteccaoDeVolta:
         bus.subscribe(LapBoundaryDetected, completed.append)
 
         for i in range(100):
-            engine.on_frame(make_frame(lap_count=1, current_lap_ms=i * 16))
-        engine.on_frame(make_frame(lap_count=2, current_lap_ms=0, last_lap_ms=95_000))
+            engine.on_frame(make_frame(lap_count=1, packet_id=i))
+        engine.on_frame(make_frame(lap_count=2, packet_id=0, last_lap_ms=95_000))
 
         assert len(completed) == 1
         assert completed[0].lap_number == 1
@@ -242,8 +246,8 @@ class TestDeteccaoDeVolta:
         bus.subscribe(LapBoundaryDetected, completed.append)
 
         for i in range(50):
-            engine.on_frame(make_frame(lap_count=1, current_lap_ms=i * 16))
-        engine.on_frame(make_frame(lap_count=2, current_lap_ms=0, last_lap_ms=-1))
+            engine.on_frame(make_frame(lap_count=1, packet_id=i))
+        engine.on_frame(make_frame(lap_count=2, packet_id=0, last_lap_ms=-1))
 
         assert completed == []
         assert engine.buffered_points <= 1  # estado limpo para a próxima
@@ -257,9 +261,9 @@ class TestDeteccaoDeVolta:
 
         for lap in (1, 2, 3):
             for i in range(40):
-                engine.on_frame(make_frame(lap_count=lap, current_lap_ms=i * 16))
+                engine.on_frame(make_frame(lap_count=lap, packet_id=i))
             engine.on_frame(
-                make_frame(lap_count=lap + 1, current_lap_ms=0, last_lap_ms=90_000)
+                make_frame(lap_count=lap + 1, packet_id=0, last_lap_ms=90_000)
             )
 
         counts = [len(event.points) for event in completed]

@@ -254,7 +254,7 @@ def build_core(
     live_detector = LiveEventDetector()
 
     bus = EventBus()
-    engine = TelemetryEngine(bus)
+    engine = TelemetryEngine(bus, sample_rate_hz=settings.telemetry.sample_rate_hz)
     session_manager = SessionManager(bus, sessions)
     recording = RecordingService(bus, laps, session_manager)
 

@@ -90,7 +90,31 @@ class TelemetryFrame:
     body_height: float
     best_lap_ms: int
     last_lap_ms: int
-    current_lap_ms: int
+
+    packet_id: int
+    """Contador de quadros do jogo, em 0x70. O relógio real da telemetria.
+
+    **O GT7 não transmite o tempo da volta corrente.** Essa ausência custou
+    caro: a versão anterior lia 0x78 como `current_lap_ms`, mas 0x78 é o
+    *melhor* tempo — um valor que não muda durante a volta. O motor integra
+    distância por `Δt`, e `Δt` de um valor constante é zero, então **toda volta
+    capturada de um PS5 real era gravada com distância 0,0 m**. Curvas, zonas de
+    frenagem e atribuição de perda são todas indexadas por distância; a volta
+    era salva e a análise inteira nascia morta.
+
+    O sintoma escondia a causa: o tempo de volta aparecia certo, porque vem de
+    `last_lap_ms` (0x7C), que estava no offset correto. E nada disso aparecia
+    com a fonte sintética, que constrói quadros direto e nunca passa por estes
+    offsets — é o tipo de defeito que só existe contra hardware de verdade.
+
+    Preferido à hora do dia (0x80) para derivar tempo: o tick conta quadros do
+    **jogo**, então sobrevive a perda de pacote UDP (o salto no contador revela
+    o intervalo real) e não é afetado pelo multiplicador de tempo que o GT7
+    aplica em provas de endurance.
+    """
+
+    day_progression_ms: int
+    """Hora do dia na pista, em 0x80. Decodificada por completude."""
     tire_temp_fl: float
     tire_temp_fr: float
     tire_temp_rl: float
@@ -163,11 +187,15 @@ class TelemetryFrame:
         tire_temp_fl, tire_temp_fr, tire_temp_rl, tire_temp_rr = struct.unpack(
             "<ffff", d[0x60:0x70]
         )
-        best_lap_ms = struct.unpack("<i", d[0x70:0x74])[0]
+        # 0x70 é o TICK — contador de quadros do jogo —, não o melhor tempo.
+        # A versão anterior lia `best_lap` aqui e `current_lap` em 0x78, o que
+        # deslocava dois campos e produziu o defeito descrito em `packet_id`.
+        packet_id = struct.unpack("<i", d[0x70:0x74])[0]
         lap_count = struct.unpack("<h", d[0x74:0x76])[0]
         total_laps = struct.unpack("<h", d[0x76:0x78])[0]
-        current_lap_ms = struct.unpack("<i", d[0x78:0x7C])[0]
+        best_lap_ms = struct.unpack("<i", d[0x78:0x7C])[0]
         last_lap_ms = struct.unpack("<i", d[0x7C:0x80])[0]
+        day_progression_ms = struct.unpack("<i", d[0x80:0x84])[0]
         rpm_flashing_min = struct.unpack("<H", d[0x88:0x8A])[0]
         rpm_flashing_max = struct.unpack("<H", d[0x8A:0x8C])[0]
         max_speed_kmh = struct.unpack("<H", d[0x8C:0x8E])[0]
@@ -210,7 +238,8 @@ class TelemetryFrame:
             body_height=body_height,
             best_lap_ms=best_lap_ms,
             last_lap_ms=last_lap_ms,
-            current_lap_ms=current_lap_ms,
+            packet_id=packet_id,
+            day_progression_ms=day_progression_ms,
             tire_temp_fl=tire_temp_fl,
             tire_temp_fr=tire_temp_fr,
             tire_temp_rl=tire_temp_rl,

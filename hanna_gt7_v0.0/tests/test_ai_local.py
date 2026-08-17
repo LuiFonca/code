@@ -15,6 +15,7 @@ abriu o Ollama. Isso não pode virar erro na tela — vira o debrief da Fase 4.
 
 from __future__ import annotations
 
+import io
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -455,3 +456,88 @@ class TestConfiguracao:
         assert COMPACT_SYSTEM_PROMPT.count("\n1.") == 1
         assert "4." not in COMPACT_SYSTEM_PROMPT
         assert len(COMPACT_SYSTEM_PROMPT) < len(SYSTEM_PROMPT) / 2
+
+
+class TestModeloAusente:
+    """O servidor está no ar; o modelo é que não foi baixado.
+
+    Caso real, colhido do console de um usuário:
+
+        IA indisponível (quick): servidor local respondeu 404:
+        {"error":{"message":"model 'qwen3:4b' not found","type":"not_found_error"...
+
+    A informação certa estava lá, embrulhada em JSON e sem dizer o que fazer.
+    Quem lê isso na tela conclui que a IA está quebrada — quando o servidor ter
+    respondido prova justamente o contrário: a parte difícil (instalar e subir o
+    Ollama) já deu certo, e falta um comando de uma linha.
+    """
+
+    def _cliente_que_responde_404(self):  # noqa: ANN202
+        import urllib.error
+        import urllib.request
+
+        from gt7ai.local import LocalClient, LocalEndpoint
+
+        client = LocalClient(LocalEndpoint(model="qwen3:4b"))
+
+        def falso_urlopen(*_args: object, **_kwargs: object) -> object:
+            raise urllib.error.HTTPError(
+                url="http://localhost:11434/v1/chat/completions",
+                code=404,
+                msg="Not Found",
+                hdrs=None,  # type: ignore[arg-type]
+                fp=io.BytesIO(
+                    b'{"error":{"message":"model \'qwen3:4b\' not found",'
+                    b'"type":"not_found_error","param":null,"code":null}}'
+                ),
+            )
+
+        return client, falso_urlopen
+
+    def test_diz_o_comando_que_resolve(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import urllib.request
+
+        from gt7ai.client import AIUnavailable
+
+        client, falso = self._cliente_que_responde_404()
+        monkeypatch.setattr(urllib.request, "urlopen", falso)
+
+        with pytest.raises(AIUnavailable) as erro:
+            client.complete(request())
+
+        mensagem = str(erro.value)
+        assert "ollama pull qwen3:4b" in mensagem
+        assert "não está instalado" in mensagem
+        # E não o despejo de JSON que o usuário viu.
+        assert "not_found_error" not in mensagem
+        assert '{"error"' not in mensagem
+
+    def test_outro_erro_do_servidor_continua_detalhado(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Só o 404 de modelo ausente ganha frase própria.
+
+        Um 500 continua mostrando o corpo: ali o detalhe é a única pista, e
+        inventar uma explicação amigável esconderia a causa real.
+        """
+        import urllib.error
+        import urllib.request
+
+        from gt7ai.client import AIUnavailable
+        from gt7ai.local import LocalClient, LocalEndpoint
+
+        client = LocalClient(LocalEndpoint(model="qwen3:4b"))
+
+        def falso(*_args: object, **_kwargs: object) -> object:
+            raise urllib.error.HTTPError(
+                url="http://x", code=500, msg="Server Error",
+                hdrs=None,  # type: ignore[arg-type]
+                fp=io.BytesIO(b"algo explodiu no servidor"),
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", falso)
+        with pytest.raises(AIUnavailable) as erro:
+            client.complete(request())
+
+        assert "500" in str(erro.value)
+        assert "algo explodiu" in str(erro.value)

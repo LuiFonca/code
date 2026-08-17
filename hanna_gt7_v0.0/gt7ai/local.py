@@ -182,6 +182,21 @@ class LocalClient:
                 "schema" in detail.lower() or "format" in detail.lower()
             ):
                 raise _SchemaRejected from exc
+
+            # Servidor no ar, modelo ausente. É um caso distinto o bastante para
+            # merecer a própria frase: o 404 cru dizia
+            # `{"error":{"message":"model 'qwen3:4b' not found",...}}`, que tem a
+            # informação certa embrulhada em JSON e não diz o que fazer. Quem lê
+            # isso na tela conclui que a IA está quebrada, quando falta um
+            # comando de uma linha — e o servidor ter respondido prova que a
+            # parte difícil (instalar e subir o Ollama) já deu certo.
+            if exc.code == 404 and "not found" in detail.lower():
+                wanted = payload.get("model", self._endpoint.model)
+                raise AIUnavailable(
+                    f"o modelo '{wanted}' não está instalado. "
+                    f"Rode: ollama pull {wanted}"
+                ) from exc
+
             raise AIUnavailable(
                 f"servidor local respondeu {exc.code}: {detail[:200]}"
             ) from exc

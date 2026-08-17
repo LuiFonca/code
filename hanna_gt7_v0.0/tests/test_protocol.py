@@ -39,9 +39,14 @@ class TestDecodificacao:
         assert frame.speed_kmh == pytest.approx(55.0 * 3.6)
         assert frame.rpm == pytest.approx(6400.0)
         assert frame.lap_count == 3
-        assert frame.current_lap_ms == 42_000
+        # 0x70 é o tick do jogo, 0x78 o melhor tempo. A versão anterior lia
+        # estes dois offsets como `best_lap` e `current_lap` — e o conftest
+        # escrevia nos mesmos lugares, então leitor e escritor concordavam e o
+        # teste passava com os dois deslocados. Só a captura real revelou.
+        assert frame.packet_id == 42_000
         assert frame.last_lap_ms == 101_500
         assert frame.best_lap_ms == 100_250
+        assert frame.day_progression_ms == 36_000_000
         assert frame.car_id == 1234
         assert frame.fuel == pytest.approx(42.5)
         assert frame.position_x == pytest.approx(10.0)
@@ -118,3 +123,62 @@ class TestCasosExtremos:
 
         assert frame.best_lap_ms == -1
         assert frame.last_lap_ms == -1
+
+
+class TestDistanciaComPacoteReal:
+    """A regressão que custou uma sessão inteira de pista.
+
+    Contra um PS5 de verdade, toda volta era gravada com `distance_m=0.0`. O
+    tempo de volta saía certo, os pontos eram salvos, e nada no log parecia
+    errado — mas curvas, zonas de frenagem e atribuição de perda são todas
+    indexadas por distância, então a análise inteira nascia morta.
+
+    A causa: 0x78 é o **melhor tempo**, não o tempo corrente. Um valor constante
+    dentro da volta, e a distância é integrada sobre `Δt`. Δt de uma constante é
+    zero.
+
+    Este teste percorre o pipeline pelo caminho real — bytes → `from_bytes` →
+    motor — porque foi exatamente a ausência desse caminho que deixou o defeito
+    passar: os testes de motor construíam quadros à mão, e os de protocolo
+    conferiam campos isolados. Nenhum ligava os dois.
+    """
+
+    def test_o_tick_faz_a_distancia_andar(self) -> None:
+        from gt7core.events.bus import EventBus
+        from gt7core.telemetry.engine import TelemetryEngine
+        from tests.conftest import build_plaintext_packet
+
+        engine = TelemetryEngine(EventBus(), sample_rate_hz=60)
+
+        # 1 s de captura a 60 Hz, 180 km/h constantes = 50 m.
+        for tick in range(61):
+            packet = build_plaintext_packet(speed_ms=50.0, packet_id=tick)
+            frame = TelemetryFrame.from_bytes(bytes(packet))
+            assert frame is not None
+            engine.on_frame(frame)
+
+        assert engine.current_distance_m == pytest.approx(50.0, rel=1e-6)
+
+    def test_melhor_tempo_constante_nao_e_mais_confundido_com_relogio(self) -> None:
+        """O coração do defeito, isolado.
+
+        Com o tick parado e só o melhor tempo variando, a distância **tem** de
+        continuar zerada: é a prova de que o motor não voltou a ler o campo
+        errado. Se algum dia alguém trocar `packet_id` por `best_lap_ms` de
+        novo, este teste passa a ver distância onde não deveria haver nenhuma.
+        """
+        from gt7core.events.bus import EventBus
+        from gt7core.telemetry.engine import TelemetryEngine
+        from tests.conftest import build_plaintext_packet
+
+        engine = TelemetryEngine(EventBus(), sample_rate_hz=60)
+
+        for best in (90_000, 91_000, 92_000, 93_000):
+            packet = build_plaintext_packet(
+                speed_ms=50.0, packet_id=7, best_lap_ms=best
+            )
+            frame = TelemetryFrame.from_bytes(bytes(packet))
+            assert frame is not None
+            engine.on_frame(frame)
+
+        assert engine.current_distance_m == 0.0

@@ -174,9 +174,11 @@ class TestGeradorSintetico:
         for frame in frames:
             speed = frame.speed_kmh / 3.6
             if previous_speed is not None:
-                dt = (frame.current_lap_ms - previous_ms) / 1000
+                # O tempo agora vem do tick, como no motor: o gerador não
+                # inventa mais um campo que o GT7 não transmite.
+                dt = (frame.packet_id - previous_ms) / 60.0
                 distance += (previous_speed + speed) / 2 * dt
-            previous_speed, previous_ms = speed, frame.current_lap_ms
+            previous_speed, previous_ms = speed, frame.packet_id
 
         assert distance == pytest.approx(5000.0, rel=0.01)
 
@@ -191,8 +193,12 @@ class TestGeradorSintetico:
         comparar e os testes de analytics seriam vácuos."""
         from gt7core.telemetry.sources.mock import synthetic_session
 
-        by_lap: dict[int, int] = {}
+        # Quadros por volta: o tick é global e monotônico, então a contagem
+        # de quadros de cada volta é o que revela a diferença de ritmo.
+        frames_por_volta: dict[int, int] = {}
         for frame in synthetic_session(lap_count=4):
-            by_lap[frame.lap_count] = frame.current_lap_ms
+            frames_por_volta[frame.lap_count] = (
+                frames_por_volta.get(frame.lap_count, 0) + 1
+            )
 
-        assert len(set(by_lap.values())) > 1
+        assert len(set(frames_por_volta.values())) > 1

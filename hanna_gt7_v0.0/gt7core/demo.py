@@ -232,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     bus = EventBus()
-    engine = TelemetryEngine(bus)
+    engine = TelemetryEngine(bus, sample_rate_hz=settings.telemetry.sample_rate_hz)
     report = DemoReport(bus)
 
     started = time.monotonic()
