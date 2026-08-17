@@ -36,6 +36,7 @@ from ..application import CoreApplication
 from ..design.tokens import Space, Theme
 from ..widgets.cards import Card, MetricCard, MetricGrid, StatRow
 from ..widgets.charts import DistanceChart, Series
+from ..widgets.gforce import GForceDiagram
 from ..widgets.selectors import TrackLapSelector, format_lap_time
 from ..widgets.trackmap import TrackMap, TrackMarker, TrackPath
 from .base import Page
@@ -84,13 +85,25 @@ class AnalysisPage(Page):
             DistanceChart(
                 self.theme, "Pedais", unit="%", height=110, y_range=(0.0, 105.0)
             ),
-            DistanceChart(self.theme, "Forças G", unit="g", height=110),
         ]
         for chart in self._charts:
             channels.add(chart)
             chart.hovered.connect(self._on_hover)
             chart.hover_left.connect(self._on_hover_left)
-        middle.addWidget(channels, stretch=3)
+        # O círculo mora na coluna larga, abaixo dos canais. Sair de dois
+        # gráficos para três deixou um vazio grande aqui, e o envelope de
+        # aderência é justamente o gráfico que precisa de área: espremido, a
+        # nuvem vira um borrão e a forma — que é a informação inteira — some.
+        grip_card = Card("Círculo de atrito")
+        self._gforce = GForceDiagram(self.theme, height=300)
+        grip_card.add(self._gforce)
+
+        left = QVBoxLayout()
+        left.setSpacing(Space.LG.px)
+        left.addWidget(channels)
+        left.addWidget(grip_card)
+        left.addStretch(1)
+        middle.addLayout(left, stretch=3)
 
         right = QVBoxLayout()
         right.setSpacing(Space.LG.px)
@@ -224,20 +237,14 @@ class AnalysisPage(Page):
                 ),
             ]
         )
-        self._charts[2].set_series(
-            [
-                Series(
-                    "lat",
-                    palette.channel_steering,
-                    [(p.distance_m, p.g_lateral) for p in points],
-                ),
-                Series(
-                    "long",
-                    palette.channel_gear,
-                    [(p.distance_m, p.g_longitudinal) for p in points],
-                ),
-            ]
+        # A volta inteira vira nuvem no círculo de atrito. G por distância
+        # respondia "quanto de G houve no metro 1.200", que não é pergunta que
+        # alguém faça; o envelope bidimensional mostra como a aderência
+        # disponível foi repartida entre frear, acelerar e curvar.
+        self._gforce.set_points(
+            [(p.g_lateral, p.g_longitudinal) for p in points]
         )
+        self._gforce.set_current(None)
 
         apex_marks = [
             (corner.apex_distance_m, f"C{corner.index}", palette.text_muted)
@@ -338,6 +345,10 @@ class AnalysisPage(Page):
         rows["throttle"].set_value(f"{point.throttle:.0f} %")
         rows["brake"].set_value(f"{point.brake:.0f} %")
         rows["gear"].set_value(str(point.gear) if point.gear > 0 else "N")
+        # A bola liga o ponto da pista sob o cursor ao lugar dele no envelope
+        # de aderência — é o que transforma a nuvem em leitura, em vez de
+        # decoração.
+        self._gforce.set_current((point.g_lateral, point.g_longitudinal))
 
         corner = corner_at(self._corners, distance_m)
         rows["corner"].set_value(
@@ -348,6 +359,7 @@ class AnalysisPage(Page):
         for chart in self._charts:
             chart.set_cursor(None)
         self._map.set_cursor(None)
+        self._gforce.set_current(None)
 
     def _on_row_selected(self) -> None:
         """Selecionar uma curva na tabela move o cursor dos gráficos até ela."""

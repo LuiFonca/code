@@ -45,6 +45,33 @@ MIN_SPEED_FOR_G_KMH = 5.0
 MIN_SPEED_XZ_MS = 0.5
 MIN_DT_S = 0.001
 
+# Coerência interna de uma volta: distância percorrida contra o que a velocidade
+# média e o tempo prometem. Uma volta pode ter distância um pouco menor que a
+# integral ingênua (pausa, quadro perdido), mas não uma ordem de grandeza —
+# abaixo de 10% do esperado, os dois números não descrevem a mesma volta.
+MIN_PLAUSIBLE_DISTANCE_RATIO = 0.10
+
+# Abaixo disto não há o que contradizer: carro parado no box a volta inteira
+# tem distância baixa legitimamente, e comparar razões perto de zero produziria
+# descarte por ruído.
+MIN_EXPECTED_DISTANCE_M = 50.0
+
+
+def _expected_distance_m(points: list[TelemetryPoint], lap_time_ms: int) -> float:
+    """Distância que a velocidade média promete para o tempo da volta.
+
+    Deliberadamente grosseira — média simples, sem trapézio. Ela não substitui a
+    integração; existe só para detectar contradição de ordem de grandeza, e para
+    isso precisa ser calculada por um caminho **independente** daquele que
+    produziu o número sob suspeita. Um verificador que reusasse a integração
+    concordaria com ela inclusive quando ela está errada, que foi exatamente
+    como o defeito original passou pelos testes.
+    """
+    if not points:
+        return 0.0
+    mean_speed_ms = sum(p.speed_kmh for p in points) / len(points) / 3.6
+    return mean_speed_ms * (lap_time_ms / 1000.0)
+
 
 # ---------- eventos publicados ----------
 
@@ -310,6 +337,38 @@ class TelemetryEngine:
             _log.debug(
                 "volta descartada",
                 extra={"lap": lap_number, "samples": len(points), "time_ms": lap_time_ms},
+            )
+            return
+
+        expected = _expected_distance_m(points, lap_time_ms)
+        if expected > MIN_EXPECTED_DISTANCE_M and (
+            distance < expected * MIN_PLAUSIBLE_DISTANCE_RATIO
+        ):
+            # A volta é internamente contraditória: o carro andou a essa
+            # velocidade por esse tempo e não saiu do lugar.
+            #
+            # Esta guarda existe por causa de um defeito real. Dois offsets
+            # trocados no protocolo faziam o tempo derivado ficar constante, e
+            # toda volta capturada de um PS5 era gravada com distância 0,0 m —
+            # com tempo certo, amostras certas e nenhum erro em lugar nenhum. O
+            # dono do programa rodou uma sessão inteira antes de perceber,
+            # porque nada denunciou.
+            #
+            # Descartar perde a volta, e é de propósito: distância é o índice de
+            # toda a análise, então uma volta sem distância não é uma volta com
+            # menos informação — é uma que produz curvas, freadas e perdas
+            # inventadas. Guardá-la poluiria histórico e melhor-volta com dados
+            # que parecem bons. Um aviso alto e nenhuma volta é recuperável;
+            # análise confiante sobre lixo, não.
+            _log.warning(
+                "volta descartada: distância incoerente com velocidade e tempo",
+                extra={
+                    "lap": lap_number,
+                    "distance_m": round(distance, 1),
+                    "expected_m": round(expected, 1),
+                    "time_ms": lap_time_ms,
+                    "samples": len(points),
+                },
             )
             return
 

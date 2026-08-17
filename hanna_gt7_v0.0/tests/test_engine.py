@@ -230,13 +230,18 @@ class TestDeteccaoDeVolta:
         completed: list[LapBoundaryDetected] = []
         bus.subscribe(LapBoundaryDetected, completed.append)
 
+        # 100 quadros a 60 Hz = 1,67 s. O tempo declarado precisa bater com
+        # isso: o motor agora descarta volta cuja distância contradiz
+        # velocidade × tempo, e a versão anterior deste teste declarava 95 s
+        # para 1,67 s de dados — impossível, e aceito em silêncio justamente
+        # como o defeito que a guarda passou a pegar.
         for i in range(100):
             engine.on_frame(make_frame(lap_count=1, packet_id=i))
-        engine.on_frame(make_frame(lap_count=2, packet_id=0, last_lap_ms=95_000))
+        engine.on_frame(make_frame(lap_count=2, packet_id=0, last_lap_ms=1_667))
 
         assert len(completed) == 1
         assert completed[0].lap_number == 1
-        assert completed[0].lap_time_ms == 95_000
+        assert completed[0].lap_time_ms == 1_667
         assert len(completed[0].points) == 100
 
     def test_volta_sem_tempo_valido_e_descartada(self, bus: EventBus) -> None:
@@ -260,10 +265,12 @@ class TestDeteccaoDeVolta:
         bus.subscribe(LapBoundaryDetected, completed.append)
 
         for lap in (1, 2, 3):
+            # 40 quadros a 60 Hz = 667 ms — o tempo declarado acompanha,
+            # para a volta ser fisicamente possível.
             for i in range(40):
                 engine.on_frame(make_frame(lap_count=lap, packet_id=i))
             engine.on_frame(
-                make_frame(lap_count=lap + 1, packet_id=0, last_lap_ms=90_000)
+                make_frame(lap_count=lap + 1, packet_id=0, last_lap_ms=667)
             )
 
         counts = [len(event.points) for event in completed]
