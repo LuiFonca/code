@@ -401,36 +401,48 @@ class TestConfiguracao:
         assert config.provider == "local"
         assert not config.api_key
 
-    def test_sem_chave_o_carregador_escolhe_local(self, monkeypatch) -> None:  # noqa: ANN001
+    def test_sem_chave_o_carregador_escolhe_local(
+        self, monkeypatch, tmp_path  # noqa: ANN001
+    ) -> None:
+        """Padrão do carregador, isolado do `.env` de quem roda.
+
+        `env_file=None` cai em `Path(".env")` — o arquivo do diretório atual.
+        Estes dois testes passavam só porque o repositório não tinha um; numa
+        cópia entregue com `.env` configurado eles falhavam, e a falha era do
+        teste, que afirmava testar padrões e na verdade lia a máquina alheia.
+        """
         for name in ("GT7_AI_API_KEY", "GT7_AI_PROVIDER", "GT7_AI_ENABLED"):
             monkeypatch.delenv(name, raising=False)
-        settings = Settings.load(env_file=None)
+        settings = Settings.load(env_file=tmp_path / "inexistente.env")
         assert settings.ai.is_local
         assert settings.ai.enabled, "o local é gratuito: não há motivo para vir desligado"
 
-    def test_com_chave_o_carregador_escolhe_a_nuvem(self, monkeypatch) -> None:  # noqa: ANN001
+    def test_com_chave_o_carregador_escolhe_a_nuvem(
+        self, monkeypatch, tmp_path  # noqa: ANN001
+    ) -> None:
         monkeypatch.setenv("GT7_AI_API_KEY", "sk-ant-teste")
         monkeypatch.delenv("GT7_AI_PROVIDER", raising=False)
-        settings = Settings.load(env_file=None)
+        monkeypatch.delenv("GT7_AI_ENABLED", raising=False)
+        settings = Settings.load(env_file=tmp_path / "inexistente.env")
         assert not settings.ai.is_local
         assert settings.ai.enabled
 
-    def test_provedor_explicito_ganha_da_chave(self, monkeypatch) -> None:  # noqa: ANN001
+    def test_provedor_explicito_ganha_da_chave(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         """Ter chave não obriga a gastá-la."""
         monkeypatch.setenv("GT7_AI_API_KEY", "sk-ant-teste")
         monkeypatch.setenv("GT7_AI_PROVIDER", "local")
-        assert Settings.load(env_file=None).ai.is_local
+        assert Settings.load(env_file=tmp_path / "inexistente.env").ai.is_local
 
-    def test_nuvem_sem_chave_nao_liga(self, monkeypatch) -> None:  # noqa: ANN001
+    def test_nuvem_sem_chave_nao_liga(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("GT7_AI_PROVIDER", "anthropic")
         monkeypatch.delenv("GT7_AI_API_KEY", raising=False)
-        assert not Settings.load(env_file=None).ai.enabled
+        assert not Settings.load(env_file=tmp_path / "inexistente.env").ai.enabled
 
-    def test_endereco_e_modelo_vem_do_ambiente(self, monkeypatch) -> None:  # noqa: ANN001
+    def test_endereco_e_modelo_vem_do_ambiente(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         """Portar para outra máquina não pode exigir editar código."""
         monkeypatch.setenv("GT7_AI_LOCAL_URL", "http://192.168.0.9:8080/v1")
         monkeypatch.setenv("GT7_AI_LOCAL_MODEL", "gemma3:4b")
-        config = Settings.load(env_file=None).ai
+        config = Settings.load(env_file=tmp_path / "inexistente.env").ai
         assert config.local_url == "http://192.168.0.9:8080/v1"
         assert config.local_model == "gemma3:4b"
         # Sem modelo rápido explícito, usa o mesmo: com 4B, manter dois modelos
@@ -443,9 +455,9 @@ class TestConfiguracao:
         engineer = RaceEngineer.from_settings(settings)
         assert engineer.is_online, "o cliente local deve ser montado sem checar o servidor"
 
-    def test_desligada_por_ambiente_continua_valendo(self, monkeypatch) -> None:  # noqa: ANN001
+    def test_desligada_por_ambiente_continua_valendo(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setenv("GT7_AI_ENABLED", "false")
-        assert not Settings.load(env_file=None).ai.enabled
+        assert not Settings.load(env_file=tmp_path / "inexistente.env").ai.enabled
 
     def test_prompt_compacto_no_local_completo_na_nuvem(self) -> None:
         from gt7ai.prompts import COMPACT_SYSTEM_PROMPT, SYSTEM_PROMPT, system_prompt_for
