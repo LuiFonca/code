@@ -21,9 +21,13 @@ A bola marca onde o carro está **agora**. Num rastro estático a nuvem já cont
 história da volta; a bola é o que liga a nuvem ao ponto da pista que o cursor
 está examinando, e ao vivo é ela que se move.
 
-Convenção de sinal: longitudinal **positivo é aceleração**, negativo é frenagem,
-e o eixo Y é desenhado com o positivo para cima. Frear aparece embaixo, que é
-onde a intuição de quem pilota espera — o corpo vai para a frente e para baixo.
+Convenção de sinal: o diagrama marca **para onde o peso vai**, e não para onde o
+carro acelera. Freando, o peso vai à frente e o ponto sobe; numa curva à direita
+o peso vai à esquerda e o ponto vai à esquerda. É a leitura de quem pilota — o
+que o corpo sente — e é como o próprio medidor do GT7 desenha. O motor produz o
+oposto exato disso, nos dois eixos (aceleração do carro, que é o certo para a
+física e para o banco); a conversão acontece na entrada deste widget, em
+`_to_display`, e em lugar nenhum mais.
 """
 
 from __future__ import annotations
@@ -58,6 +62,30 @@ READOUT_H = 22
 BALL_RADIUS = 6.0
 
 
+def _to_display(lateral: float, longitudinal: float) -> tuple[float, float]:
+    """Da convenção do motor para a do diagrama.
+
+    O `TelemetryEngine` entrega a **aceleração do carro**: longitudinal positivo
+    quando ganha velocidade, lateral positivo quando a aceleração aponta para o
+    lado direito do carro — ou seja, numa curva à direita. É a convenção certa
+    para a física, é a que está gravada no banco e é a que `max_braking_g` lê no
+    relatório.
+
+    O diagrama G-G, porém, se lê pelo outro lado: o ponto marca para onde o peso
+    é jogado. Freando, o peso vai à frente (ponto sobe); numa curva à direita ele
+    vai à esquerda (ponto vai à esquerda). É o oposto exato da aceleração do
+    carro, nos dois eixos — daí os dois sinais trocados aqui.
+
+    A conversão fica **na entrada do widget**, e só aqui, por dois motivos.
+    Fazê-la no motor trocaria o sinal gravado, misturando duas convenções na
+    mesma tabela e invertendo o relatório de frenagem. Fazê-la só na pintura
+    deixaria a leitura numérica embaixo do gráfico discordando da posição do
+    ponto — um ponto desenhado no topo exibindo "long -1,20 g". Convertendo na
+    borda, tudo daqui para dentro fala uma língua só.
+    """
+    return -lateral, -longitudinal
+
+
 class GForceDiagram(QWidget):
     """Círculo de atrito com rastro da volta e indicador do carro."""
 
@@ -75,20 +103,22 @@ class GForceDiagram(QWidget):
     # ---------- dados ----------
 
     def set_points(self, points: list[tuple[float, float]]) -> None:
-        """Define a nuvem da volta: pares (g_lateral, g_longitudinal).
+        """Define a nuvem da volta: pares (g_lateral, g_longitudinal) do motor.
+
+        Converte para a convenção do diagrama na entrada — ver `_to_display`.
 
         A escala é calculada **uma vez** aqui, e não a cada repintura. É a mesma
         lição do `DistanceChart`, onde recalcular os limites por ponto tornava a
         pintura O(n²) e travava a interface por quase um segundo numa volta
         inteira.
         """
-        self._points = points
+        self._points = [_to_display(lat, lon) for lat, lon in points]
         self._scale = self._compute_scale()
         self.update()
 
     def set_current(self, value: tuple[float, float] | None) -> None:
         """Onde o carro está agora — ou onde o cursor está apontando."""
-        self._current = value
+        self._current = None if value is None else _to_display(*value)
         self.update()
 
     def clear(self) -> None:
@@ -158,10 +188,14 @@ class GForceDiagram(QWidget):
         )
 
     def _to_pixel(self, lateral: float, longitudinal: float, rect: QRectF) -> QPointF:
+        """Coordenadas **já na convenção do diagrama** para pixels.
+
+        Quem chama daqui para dentro já passou por `_to_display`; este método não
+        troca sinal nenhum de convenção. O único sinal invertido é o do Y, porque
+        o Y do Qt cresce para baixo e o positivo do diagrama sobe na tela.
+        """
         half = rect.width() / 2.0
         x = rect.center().x() + (lateral / self._scale) * half
-        # Sinal invertido: `longitudinal` positivo é aceleração e sobe na tela,
-        # mas o Y do Qt cresce para baixo.
         y = rect.center().y() - (longitudinal / self._scale) * half
         return QPointF(x, y)
 
@@ -210,25 +244,34 @@ class GForceDiagram(QWidget):
 
         # Rótulos nos quatro sentidos. Dizem o que o eixo significa em palavras,
         # porque "longitudinal negativo" não é como ninguém pensa enquanto pilota.
+        #
+        # Freia em cima e acelera embaixo: o diagrama mostra para onde o peso vai,
+        # e freando o peso vai à frente. Os rótulos precisam acompanhar a
+        # convenção — com eles trocados, o gráfico afirma o contrário do que
+        # desenha, e nada na tela denuncia.
         painter.drawText(
             QRectF(center.x() + 4, rect.top() - 2, half - 4, 14),
-            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-            "acelera",
-        )
-        painter.drawText(
-            QRectF(center.x() + 4, rect.bottom() - 12, half - 4, 14),
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
             "freia",
         )
         painter.drawText(
+            QRectF(center.x() + 4, rect.bottom() - 12, half - 4, 14),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+            "acelera",
+        )
+        # No lado lateral o rótulo nomeia a **curva**, não o lado da tela. Dizer
+        # só "esquerda" aqui reabriria a confusão pelo outro lado: numa curva à
+        # direita o peso vai à esquerda, e quem virasse à direita veria a bola
+        # cair sob a palavra "esquerda" sem entender por quê.
+        painter.drawText(
             QRectF(rect.left() - MARGIN, center.y() - 16, MARGIN + 46, 14),
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-            "esquerda",
+            "curva à dir.",
         )
         painter.drawText(
             QRectF(rect.right() - 46, center.y() - 16, MARGIN + 46, 14),
             int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
-            "direita",
+            "curva à esq.",
         )
 
         # Na diagonal, e não sobre o eixo horizontal: ali eles caíam em cima

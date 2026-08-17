@@ -8,8 +8,13 @@ bidimensional.
 
 O que se verifica aqui é geometria, porque é onde uma leitura errada nasce sem
 parecer erro: um quadro não-quadrado transforma um envelope circular em elipse e
-passa a sugerir assimetria de aderência que não existe; e um sinal invertido põe
-a frenagem em cima, onde a intuição de quem pilota espera aceleração.
+passa a sugerir assimetria de aderência que não existe; e um sinal trocado gira
+a nuvem inteira em 180° sem que nada na tela denuncie — foi exatamente assim que
+o diagrama saiu invertido nos dois eixos e só o console revelou.
+
+A convenção verificada aqui é a de **peso**, não a de aceleração do carro: o
+ponto marca para onde o peso é jogado, que é como o medidor do próprio GT7 se lê.
+O motor entrega o oposto nos dois eixos, e a conversão mora na entrada do widget.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ import pytest
 
 pytest.importorskip("PySide6", reason="o widget é Qt")
 
+from PySide6.QtCore import QPointF  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gt7app.design.tokens import get_theme  # noqa: E402
@@ -38,6 +44,19 @@ def diagrama(app: QApplication) -> GForceDiagram:  # noqa: ARG001
     widget = GForceDiagram(get_theme("dark"))
     widget.resize(400, 320)
     return widget
+
+
+def _pixel(
+    diagrama: GForceDiagram, g_lateral: float, g_longitudinal: float
+) -> QPointF:
+    """Onde o widget desenha um ponto entregue **na convenção do motor**.
+
+    Passa pela API pública para incluir a conversão de convenção no que está
+    sendo verificado; é a peça que o defeito de inversão morava.
+    """
+    diagrama.set_current((g_lateral, g_longitudinal))
+    assert diagrama._current is not None  # noqa: SLF001
+    return diagrama._to_pixel(*diagrama._current, diagrama._plot_rect())  # noqa: SLF001
 
 
 class TestEscala:
@@ -128,29 +147,72 @@ class TestGeometria:
         rect = diagrama._plot_rect()  # noqa: SLF001
         assert rect.width() == pytest.approx(rect.height())
 
-    def test_acelerar_sobe_e_frear_desce(self, diagrama: GForceDiagram) -> None:
-        """A convenção que a intuição de quem pilota espera.
+    def test_frear_sobe_e_acelerar_desce(self, diagrama: GForceDiagram) -> None:
+        """Freando o peso vai à frente, e a bola sobe.
 
-        O Y do Qt cresce para baixo, então sem a inversão de sinal a frenagem
-        apareceria no topo — e o gráfico ficaria de cabeça para baixo sem nada
-        na tela denunciando.
+        O motor entrega o oposto — longitudinal negativo na frenagem, porque é a
+        aceleração do carro — e é o widget que converte. Este teste passa pela
+        API pública de propósito: é lá que a convenção mora, e chamar
+        `_to_pixel` direto (como a versão anterior fazia) pula justamente a peça
+        que estava errada.
         """
-        diagrama.set_points([(0.0, 1.0), (0.0, -1.0)])
         rect = diagrama._plot_rect()  # noqa: SLF001
 
-        acelerando = diagrama._to_pixel(0.0, 1.0, rect)  # noqa: SLF001
-        freando = diagrama._to_pixel(0.0, -1.0, rect)  # noqa: SLF001
+        freando = _pixel(diagrama, 0.0, -1.0)
+        acelerando = _pixel(diagrama, 0.0, 1.0)
 
-        assert acelerando.y() < freando.y()
-        assert acelerando.y() < rect.center().y()
-        assert freando.y() > rect.center().y()
+        assert freando.y() < acelerando.y()
+        assert freando.y() < rect.center().y()
+        assert acelerando.y() > rect.center().y()
 
-    def test_direita_vai_para_a_direita(self, diagrama: GForceDiagram) -> None:
+    def test_curva_a_direita_joga_a_bola_para_a_esquerda(
+        self, diagrama: GForceDiagram
+    ) -> None:
+        """Numa curva à direita o peso vai para o lado esquerdo do carro.
+
+        Por isso o rótulo daquele lado diz "curva à dir." e não "esquerda": ele
+        nomeia a curva, não o lado da tela.
+        """
         rect = diagrama._plot_rect()  # noqa: SLF001
-        assert (
-            diagrama._to_pixel(1.0, 0.0, rect).x()  # noqa: SLF001
-            > diagrama._to_pixel(-1.0, 0.0, rect).x()  # noqa: SLF001
-        )
+
+        # Convenção do motor: lateral positivo é aceleração para a direita, que
+        # é o que acontece numa curva à direita.
+        curva_direita = _pixel(diagrama, 1.0, 0.0)
+        curva_esquerda = _pixel(diagrama, -1.0, 0.0)
+
+        assert curva_direita.x() < curva_esquerda.x()
+        assert curva_direita.x() < rect.center().x()
+        assert curva_esquerda.x() > rect.center().x()
+
+    def test_a_leitura_numerica_concorda_com_a_posicao(
+        self, diagrama: GForceDiagram
+    ) -> None:
+        """O número embaixo do gráfico e a posição da bola falam a mesma língua.
+
+        Converter só na hora de pintar deixaria a bola no topo com o texto
+        "long -1,20 g" logo abaixo — as duas metades do mesmo widget afirmando
+        coisas opostas. Converter na entrada é o que impede isso.
+        """
+        rect = diagrama._plot_rect()  # noqa: SLF001
+        diagrama.set_current((0.0, -1.0))  # motor: frenagem
+
+        lateral, longitudinal = diagrama._current  # type: ignore[misc]  # noqa: SLF001
+        assert longitudinal > 0, "frenagem é positiva na convenção do diagrama"
+        alvo = diagrama._to_pixel(lateral, longitudinal, rect)  # noqa: SLF001
+        assert alvo.y() < rect.center().y()
+
+    def test_a_nuvem_usa_a_mesma_convencao_da_bola(
+        self, diagrama: GForceDiagram
+    ) -> None:
+        """Senão a bola apareceria espelhada dentro da própria nuvem.
+
+        São dois caminhos de entrada distintos — `set_points` para a volta,
+        `set_current` para o cursor — e nada além deste teste obriga os dois a
+        converterem igual.
+        """
+        diagrama.set_points([(0.8, -1.0)])
+        diagrama.set_current((0.8, -1.0))
+        assert diagrama._points[0] == diagrama._current  # noqa: SLF001
 
     def test_a_origem_cai_no_centro(self, diagrama: GForceDiagram) -> None:
         rect = diagrama._plot_rect()  # noqa: SLF001
