@@ -38,13 +38,18 @@ from ..design.tokens import Palette, Theme
 
 MARGIN = 26
 
-#: Escala mínima do eixo, em g. Um carro de rua raramente passa de 1,2 g; sem um
-#: piso, uma volta lenta encheria o quadro com ruído de ±0,1 g e daria a
-#: impressão de estar no limite.
-MIN_SCALE_G = 1.2
+#: Limites de eixo oferecidos, em g. Degraus fixos, e não uma escala colada no
+#: pico, porque escala contínua impede comparação: a mesma volta desenha o mesmo
+#: envelope em qualquer tamanho de quadro, e duas voltas com picos diferentes
+#: viram desenhos incomparáveis. Com degraus, um envelope maior *parece* maior.
+SCALE_STEPS_G = (2.0, 3.0, 4.0, 5.0)
 
-#: Anéis de referência desenhados ao fundo, em g.
-RINGS_G = (0.5, 1.0, 1.5, 2.0)
+#: Menor degrau. Também o piso do modo automático: sem ele, uma volta mansa de
+#: 0,3 g encheria o quadro e daria a impressão de estar no limite de aderência.
+MIN_SCALE_G = SCALE_STEPS_G[0]
+
+#: Espaçamento dos anéis de referência, em g.
+RING_STEP_G = 0.5
 
 #: Altura reservada, embaixo, para a leitura numérica.
 READOUT_H = 22
@@ -61,6 +66,7 @@ class GForceDiagram(QWidget):
         self._theme = theme
         self._points: list[tuple[float, float]] = []
         self._current: tuple[float, float] | None = None
+        self._forced_scale: float | None = None
         self._scale = MIN_SCALE_G
 
         self.setMinimumHeight(height)
@@ -106,10 +112,32 @@ class GForceDiagram(QWidget):
             return 0.0
         return max(math.hypot(lat, lon) for lat, lon in self._points)
 
+    def set_scale(self, scale_g: float | None) -> None:
+        """Fixa o limite dos eixos, ou volta ao automático com `None`."""
+        self._forced_scale = scale_g
+        self._scale = self._compute_scale()
+        self.update()
+
     def _compute_scale(self) -> float:
-        if not self._points:
-            return MIN_SCALE_G
-        return max(MIN_SCALE_G, self.peak_g * 1.1)
+        """Automático: o **menor degrau que contém** o pico da volta.
+
+        2,8 g desenha num quadro de 3 g; 4,2 g num de 5 g. Escolher o menor que
+        cabe é o que mantém o envelope grande na tela sem cortá-lo — e o degrau
+        fixo é o que permite comparar duas voltas de olho, porque um envelope
+        maior passa a de fato ocupar mais espaço em vez de ser reescalado para
+        preencher o mesmo quadro.
+        """
+        if self._forced_scale is not None:
+            return self._forced_scale
+        pico = self.peak_g
+        for degrau in SCALE_STEPS_G:
+            if pico <= degrau:
+                return degrau
+        # Acima do último degrau, continua subindo no mesmo passo em vez de
+        # cortar o dado: um pico de 6 g é implausível num carro, mas se chegar,
+        # ver o ponto importa mais que respeitar a lista.
+        passo = SCALE_STEPS_G[-1] - SCALE_STEPS_G[-2]
+        return SCALE_STEPS_G[-1] + passo * ((pico - SCALE_STEPS_G[-1]) // passo + 1)
 
     # ---------- geometria ----------
 
@@ -163,9 +191,7 @@ class GForceDiagram(QWidget):
         half = rect.width() / 2.0
         center = rect.center()
 
-        for ring in RINGS_G:
-            if ring > self._scale:
-                continue
+        for ring in self._rings():
             radius = (ring / self._scale) * half
             painter.drawEllipse(center, radius, radius)
 
@@ -210,9 +236,7 @@ class GForceDiagram(QWidget):
         # ilegível. A 45° o anel fica rotulado onde há espaço vazio em
         # praticamente qualquer volta — o envelope raramente enche os cantos.
         diagonal = math.sqrt(0.5)
-        for ring in RINGS_G:
-            if ring > self._scale:
-                continue
+        for ring in self._rings():
             radius = (ring / self._scale) * half
             painter.drawText(
                 QRectF(
@@ -224,6 +248,23 @@ class GForceDiagram(QWidget):
                 int(Qt.AlignmentFlag.AlignCenter),
                 f"{ring:.1f}g",
             )
+
+    def _rings(self) -> list[float]:
+        """Anéis de meio em meio g, até o limite — e nunca mais que cinco.
+
+        Num quadro de 5 g, um anel a cada 0,5 g são dez circunferências: o fundo
+        vira hachura e a nuvem some dentro dela. Acima de cinco anéis o passo
+        dobra.
+        """
+        passo = RING_STEP_G
+        while self._scale / passo > 5:
+            passo *= 2
+        anel = passo
+        aneis: list[float] = []
+        while anel <= self._scale + 1e-9:
+            aneis.append(anel)
+            anel += passo
+        return aneis
 
     def _paint_placeholder(
         self, painter: QPainter, rect: QRectF, palette: Palette

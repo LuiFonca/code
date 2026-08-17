@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -104,10 +105,100 @@ class HistoryPage(Page):
         reload_button.setObjectName(OBJ_GHOST_BUTTON)
         reload_button.clicked.connect(self.refresh)
 
+        self._delete_selected = QPushButton("Excluir selecionadas")
+        self._delete_selected.setObjectName(OBJ_GHOST_BUTTON)
+        self._delete_selected.clicked.connect(self._on_delete_selected)
+
+        self._delete_all = QPushButton("Excluir tudo da pista")
+        self._delete_all.setObjectName(OBJ_GHOST_BUTTON)
+        self._delete_all.clicked.connect(self._on_delete_all)
+
         layout.addWidget(QLabel("Pista:"))
         layout.addWidget(self._track_combo)
         layout.addWidget(reload_button)
+        layout.addWidget(self._delete_selected)
+        layout.addWidget(self._delete_all)
         return bar
+
+    # ---------- exclusão ----------
+
+    def _selected_laps(self) -> list[Lap]:
+        """As voltas das linhas marcadas, na ordem da tabela."""
+        linhas = sorted({i.row() for i in self._table.selectedIndexes()})
+        return [self._laps[i] for i in linhas if 0 <= i < len(self._laps)]
+
+    def _confirm(self, titulo: str, texto: str) -> bool:
+        """Exclusão é irreversível e não tem desfazer — então pergunta.
+
+        A telemetria de uma volta são ~6.000 amostras que só existem porque
+        alguém pilotou. Um clique errado num botão ao lado de "Atualizar"
+        apagaria uma sessão inteira sem nada a recuperar.
+        """
+        resposta = QMessageBox.question(
+            self,
+            titulo,
+            texto,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return resposta == QMessageBox.StandardButton.Yes
+
+    def _on_delete_selected(self) -> None:
+        voltas = self._selected_laps()
+        if not voltas:
+            self._note.setText("selecione ao menos uma volta na tabela")
+            return
+
+        if not self._confirm(
+            "Excluir voltas",
+            f"Excluir {len(voltas)} volta(s) selecionada(s)?\n\n"
+            "A telemetria gravada é apagada e não há como recuperar.",
+        ):
+            return
+
+        for volta in voltas:
+            # `id` é opcional no modelo (uma volta ainda não gravada não tem
+            # um), mas tudo que chega à tabela veio do banco.
+            if volta.id is not None:
+                self.core.laps.delete(volta.id)
+        self._after_delete(f"{len(voltas)} volta(s) excluída(s)")
+
+    def _on_delete_all(self) -> None:
+        track_id = self._track_combo.currentData()
+        if track_id is None:
+            return
+        nome = self._track_combo.currentText()
+        total = len(self._laps)
+        if not total:
+            self._note.setText("não há voltas para excluir")
+            return
+
+        if not self._confirm(
+            "Excluir tudo da pista",
+            f"Excluir TODAS as {total} voltas de {nome}?\n\n"
+            "A telemetria gravada é apagada e não há como recuperar.",
+        ):
+            return
+
+        self.core.laps.delete_by_track(int(track_id))
+        self._after_delete(f"todas as voltas de {nome} foram excluídas")
+
+    def _after_delete(self, mensagem: str) -> None:
+        """Recarrega e avisa as outras páginas, que agora seguram voltas mortas.
+
+        Sem `invalidate`, Análise e Comparar continuariam exibindo uma volta que
+        não existe mais no banco — e o próximo clique nelas iria buscar amostras
+        de um `lap_id` apagado.
+        """
+        self._reload_laps()
+        self._note.setText(mensagem)
+
+        # A janela é quem conhece as páginas; `core` não, e nem deveria. Marcar
+        # as irmãs como sujas faz cada uma recarregar ao ser aberta.
+        shell = self.window()
+        for page in getattr(shell, "_pages", ()):
+            if page is not self:
+                page.invalidate()
 
     # ---------- dados ----------
 

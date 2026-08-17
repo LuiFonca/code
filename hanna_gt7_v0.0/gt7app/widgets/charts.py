@@ -34,10 +34,39 @@ from ..design.tokens import Palette, Theme
 
 # Margens internas do gráfico. A esquerda é maior porque abriga os rótulos do
 # eixo Y; a inferior, os de distância.
+#: Escala de velocidade: começa em 0–300 km/h e sobe de 100 em 100 se o carro
+#: passar disso. Um teto fixo é o que torna duas voltas comparáveis de olho —
+#: com escala colada no pico, a mesma curva parece agressiva numa volta lenta.
+SPEED_TOP_MIN_KMH = 300.0
+SPEED_STEP_KMH = 100.0
+
 MARGIN_LEFT = 46
 MARGIN_RIGHT = 12
 MARGIN_TOP = 22
 MARGIN_BOTTOM = 22
+
+
+def _format_x(value: float, unit: str) -> str:
+    """Rótulo do eixo X. Segundos pedem uma casa; metros, nenhuma.
+
+    Com `.0f` em ambos, uma janela de 8 s virava "0 s, 2 s, 4 s, 6 s, 8 s" e
+    perdia justamente a resolução que faz o eixo de tempo valer a pena.
+    """
+    if unit == "s":
+        return f"{value:.1f} {unit}"
+    return f"{value:.0f} {unit}"
+
+
+def _step_up(value: float, step: float, minimum: float | None) -> float:
+    """Arredonda para cima até o próximo múltiplo de `step`, com piso.
+
+    `_step_up(197, 100, 300)` → 300; `_step_up(317, 100, 300)` → 400. É o que
+    faz a escala de velocidade subir de 100 em 100 em vez de colar no pico.
+    """
+    top = minimum if minimum is not None else step
+    while value > top:
+        top += step
+    return top
 
 
 @dataclass(slots=True)
@@ -75,6 +104,8 @@ class DistanceChart(QWidget):
         unit: str = "",
         height: int = 150,
         y_range: tuple[float, float] | None = None,
+        y_step: float | None = None,
+        y_top_min: float | None = None,
         x_unit: str = "m",
     ) -> None:
         super().__init__()
@@ -83,11 +114,21 @@ class DistanceChart(QWidget):
         self._unit = unit
         self._x_unit = x_unit
         self._forced_range = y_range
+
+        #: Degrau da escala vertical, e teto mínimo. Com `y_step=100` e
+        #: `y_top_min=300`, uma volta que chega a 197 km/h desenha até 300 e uma
+        #: que chega a 317 desenha até 400. Existe porque escala automática
+        #: mente por omissão: a mesma curva de velocidade parece agressiva numa
+        #: volta lenta e mansa numa rápida, e comparar duas voltas de olho vira
+        #: impossível. Degrau fixo mantém o traço legível **e** comparável.
+        self._y_step = y_step
+        self._y_top_min = y_top_min
         self._series: list[Series] = []
         # Faixa vertical memorizada. Recalculada só quando as séries mudam —
         # ver a nota em `_y_bounds`.
         self._bounds: tuple[float, float] = y_range or (0.0, 1.0)
         self._cursor_m: float | None = None
+        self._min_x = 0.0
         self._max_distance = 0.0
         self._markers: list[tuple[float, str, str]] = []
 
@@ -103,8 +144,21 @@ class DistanceChart(QWidget):
         self._max_distance = max(
             (s.points[-1][0] for s in series if not s.is_empty), default=0.0
         )
+        # O eixo começa onde os dados começam, não em zero. Ao vivo o rastro
+        # guarda só os últimos 800 m, então aos 1.500 m os dados vão de 700 a
+        # 1.500 — ancorado em zero, o gráfico desenhava metade vazia e o traço
+        # se espremia na direita. Era o "gráfico pela metade" relatado.
+        self._min_x = min(
+            (s.points[0][0] for s in series if not s.is_empty), default=0.0
+        )
         self._bounds = self._y_bounds()
         self.update()
+
+    def set_x_unit(self, unit: str) -> None:
+        """Troca o rótulo do eixo X (m ou s). Quem troca também troca os dados."""
+        if self._x_unit != unit:
+            self._x_unit = unit
+            self.update()
 
     def set_markers(self, markers: list[tuple[float, str, str]]) -> None:
         """Marcas verticais: (distância, rótulo, cor). Usado para ápices e setores."""
@@ -120,6 +174,7 @@ class DistanceChart(QWidget):
         self._series = []
         self._markers = []
         self._cursor_m = None
+        self._min_x = 0.0
         self._max_distance = 0.0
         self._bounds = self._forced_range or (0.0, 1.0)
         self.update()
@@ -170,23 +225,50 @@ class DistanceChart(QWidget):
             return 0.0, 1.0
 
         low, high = min(values), max(values)
+
+        # **Zero sempre no eixo.** Sem isso, uma volta cuja velocidade varia de
+        # 180 a 200 km/h desenha uma serra dramática entre esses dois valores, e
+        # os 20 km/h de variação ocupam a altura toda. O olho lê inclinação, não
+        # números: escala flutuante transforma ruído em drama e faz duas voltas
+        # parecidas parecerem diferentes. Ancorar em zero devolve a proporção.
+        low = min(0.0, low)
+        high = max(0.0, high)
+
+        if self._y_step:
+            high = _step_up(high, self._y_step, self._y_top_min)
+            if low < 0:
+                low = -_step_up(-low, self._y_step, None)
+            return low, high
+
         if high - low < 1e-9:
-            return low - 1.0, high + 1.0
-        # Uma folga de 8% impede que o pico encoste na borda superior, onde
-        # ficaria visualmente cortado.
-        padding = (high - low) * 0.08
-        return low - padding, high + padding
+            return low, high + 1.0
+        # Uma folga de 8% no topo impede que o pico encoste na borda, onde
+        # ficaria visualmente cortado. O piso fica colado no zero de propósito.
+        return low, high + (high - low) * 0.08
+
+    @property
+    def _x_span(self) -> float:
+        return (self._max_distance - self._min_x) or 1.0
+
+    def _x_pixel(self, x_value: float, rect: QRectF) -> float:
+        """Valor do eixo X → pixel. **Uma** fórmula, quatro chamadores.
+
+        Estava repetida em `_to_pixel`, nos rótulos, nos marcadores e no cursor.
+        Repetir a conta é como o cursor um dia apontaria para um lugar diferente
+        do traço — e nada na tela diria qual dos dois está certo.
+        """
+        return rect.left() + ((x_value - self._min_x) / self._x_span) * rect.width()
 
     def _to_pixel(self, distance_m: float, value: float, rect: QRectF) -> QPointF:
         low, high = self._bounds
         span = high - low or 1.0
-        x = rect.left() + (distance_m / (self._max_distance or 1.0)) * rect.width()
         y = rect.bottom() - ((value - low) / span) * rect.height()
-        return QPointF(x, y)
+        return QPointF(self._x_pixel(distance_m, rect), y)
 
     def _to_distance(self, x_pixel: float, rect: QRectF) -> float:
         ratio = (x_pixel - rect.left()) / (rect.width() or 1.0)
-        return max(0.0, min(1.0, ratio)) * self._max_distance
+        ratio = max(0.0, min(1.0, ratio))
+        return self._min_x + ratio * self._x_span
 
     # ---------- pintura ----------
 
@@ -245,7 +327,7 @@ class DistanceChart(QWidget):
         if self._max_distance > 0:
             painter.setPen(QPen(QColor(palette.text_muted), 1))
             for i in range(5):
-                distance = (i / 4) * self._max_distance
+                distance = self._min_x + (i / 4) * self._x_span
                 x = rect.left() + (i / 4) * rect.width()
                 # Prende o rótulo dentro do widget: centrado, o primeiro e o
                 # último sangram para fora e aparecem cortados ("3799 r").
@@ -253,7 +335,7 @@ class DistanceChart(QWidget):
                 painter.drawText(
                     QRectF(left, rect.bottom() + 4, 60, 14),
                     int(Qt.AlignmentFlag.AlignCenter),
-                    f"{distance:.0f} {self._x_unit}",
+                    _format_x(distance, self._x_unit),
                 )
 
     def _paint_placeholder(
@@ -288,7 +370,7 @@ class DistanceChart(QWidget):
         for distance, label, color in self._markers:
             if self._max_distance <= 0:
                 continue
-            x = rect.left() + (distance / self._max_distance) * rect.width()
+            x = self._x_pixel(distance, rect)
             pen = QPen(QColor(color), 1)
             pen.setStyle(Qt.PenStyle.DotLine)
             painter.setPen(pen)
@@ -300,7 +382,7 @@ class DistanceChart(QWidget):
         if self._cursor_m is None or self._max_distance <= 0:
             return
 
-        x = rect.left() + (self._cursor_m / self._max_distance) * rect.width()
+        x = self._x_pixel(self._cursor_m, rect)
         painter.setPen(QPen(QColor(palette.text_secondary), 1))
         painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
 

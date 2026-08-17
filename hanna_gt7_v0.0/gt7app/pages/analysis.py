@@ -17,6 +17,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -35,8 +36,13 @@ from gt7core.domain.models import TelemetryPoint
 from ..application import CoreApplication
 from ..design.tokens import Space, Theme
 from ..widgets.cards import Card, MetricCard, MetricGrid, StatRow
-from ..widgets.charts import DistanceChart, Series
-from ..widgets.gforce import GForceDiagram
+from ..widgets.charts import (
+    SPEED_STEP_KMH,
+    SPEED_TOP_MIN_KMH,
+    DistanceChart,
+    Series,
+)
+from ..widgets.gforce import SCALE_STEPS_G, GForceDiagram
 from ..widgets.selectors import TrackLapSelector, format_lap_time
 from ..widgets.trackmap import TrackMap, TrackMarker, TrackPath
 from .base import Page
@@ -56,6 +62,8 @@ class AnalysisPage(Page):
     def __init__(self, core: CoreApplication, theme: Theme) -> None:
         self._points: list[TelemetryPoint] = []
         self._corners: list[Corner] = []
+        self._x_mode = "distance"
+        self._lap_time_ms = 0
         super().__init__(core, theme)
 
     # ---------- construção ----------
@@ -81,9 +89,16 @@ class AnalysisPage(Page):
 
         channels = Card("Canais por distância")
         self._charts = [
-            DistanceChart(self.theme, "Velocidade", unit="km/h", height=130),
             DistanceChart(
-                self.theme, "Pedais", unit="%", height=110, y_range=(0.0, 105.0)
+                self.theme,
+                "Velocidade",
+                unit="km/h",
+                height=130,
+                y_step=SPEED_STEP_KMH,
+                y_top_min=SPEED_TOP_MIN_KMH,
+            ),
+            DistanceChart(
+                self.theme, "Pedais", unit="%", height=110, y_range=(0.0, 100.0)
             ),
         ]
         for chart in self._charts:
@@ -94,8 +109,20 @@ class AnalysisPage(Page):
         # gráficos para três deixou um vazio grande aqui, e o envelope de
         # aderência é justamente o gráfico que precisa de área: espremido, a
         # nuvem vira um borrão e a forma — que é a informação inteira — some.
-        grip_card = Card("Círculo de atrito")
+        grip_card = Card("Força G")
         self._gforce = GForceDiagram(self.theme, height=300)
+
+        self._x_selector = QComboBox()
+        self._x_selector.addItems(["Eixo: distância", "Eixo: tempo"])
+        self._x_selector.currentIndexChanged.connect(self._on_x_mode)
+        channels.add(self._x_selector)
+
+        self._g_scale = QComboBox()
+        self._g_scale.addItem("Limite: automático", None)
+        for degrau in SCALE_STEPS_G:
+            self._g_scale.addItem(f"Limite: {degrau:.0f} g", degrau)
+        self._g_scale.currentIndexChanged.connect(self._on_g_scale)
+        grip_card.add(self._g_scale)
         grip_card.add(self._gforce)
 
         left = QVBoxLayout()
@@ -195,6 +222,7 @@ class AnalysisPage(Page):
         self._tyres.setText("")
 
     def _populate(self, lap_time_ms: int) -> None:
+        self._lap_time_ms = lap_time_ms
         palette = self.theme.palette
         points = self._points
 
@@ -219,7 +247,7 @@ class AnalysisPage(Page):
                 Series(
                     "vel",
                     palette.channel_speed,
-                    [(p.distance_m, p.speed_kmh) for p in points],
+                    [(self._x_of(p), p.speed_kmh) for p in points],
                 )
             ]
         )
@@ -228,12 +256,12 @@ class AnalysisPage(Page):
                 Series(
                     "acel",
                     palette.channel_throttle,
-                    [(p.distance_m, p.throttle) for p in points],
+                    [(self._x_of(p), p.throttle) for p in points],
                 ),
                 Series(
                     "freio",
                     palette.channel_brake,
-                    [(p.distance_m, p.brake) for p in points],
+                    [(self._x_of(p), p.brake) for p in points],
                 ),
             ]
         )
@@ -246,8 +274,12 @@ class AnalysisPage(Page):
         )
         self._gforce.set_current(None)
 
+        # Os ápices são marcados em **distância**; no eixo de tempo eles
+        # precisam virar o instante correspondente, senão a marca "C2" aparece
+        # num ponto do gráfico onde o carro nem estava.
         apex_marks = [
-            (corner.apex_distance_m, f"C{corner.index}", palette.text_muted)
+            (self._x_at_distance(corner.apex_distance_m), f"C{corner.index}",
+             palette.text_muted)
             for corner in self._corners
         ]
         for chart in self._charts:
@@ -330,14 +362,21 @@ class AnalysisPage(Page):
 
     # ---------- interação ----------
 
-    def _on_hover(self, distance_m: float) -> None:
-        for chart in self._charts:
-            chart.set_cursor(distance_m)
-        self._map.set_cursor(distance_m)
+    def _on_hover(self, x_value: float) -> None:
+        """O valor recebido está na unidade do eixo ativo — metros ou segundos.
 
-        point = _point_at(self._points, distance_m)
+        O mapa da pista, porém, sempre pensa em distância: ele desenha o traçado
+        e não sabe nada de tempo. Por isso a conversão acontece aqui, no ponto
+        onde as duas leituras se encontram.
+        """
+        for chart in self._charts:
+            chart.set_cursor(x_value)
+
+        point = self._point_at_x(x_value)
         if point is None:
+            self._map.set_cursor(None)
             return
+        self._map.set_cursor(point.distance_m)
 
         rows = self._detail_rows
         rows["distance"].set_value(f"{point.distance_m:.0f} m")
@@ -350,10 +389,55 @@ class AnalysisPage(Page):
         # decoração.
         self._gforce.set_current((point.g_lateral, point.g_longitudinal))
 
-        corner = corner_at(self._corners, distance_m)
+        # A curva é indexada por distância, sempre — o eixo pode estar em
+        # tempo, mas a pista não muda de forma por causa disso.
+        corner = corner_at(self._corners, point.distance_m)
         rows["corner"].set_value(
             f"{corner.index} ({corner.severity})" if corner else "—"
         )
+
+    def _x_at_distance(self, distance_m: float) -> float:
+        """Converte uma distância para a unidade do eixo em uso."""
+        if self._x_mode != "time":
+            return distance_m
+        point = _point_at(self._points, distance_m)
+        return point.elapsed_ms / 1000.0 if point else distance_m
+
+    def _point_at_x(self, x_value: float) -> TelemetryPoint | None:
+        """Amostra sob o cursor, na unidade do eixo ativo.
+
+        Sem isto, no modo tempo o cursor procuraria "a amostra a 42 metros"
+        recebendo 42 **segundos** — e apontaria para o começo da volta enquanto
+        o mouse está no fim.
+        """
+        if not self._points:
+            return None
+        if self._x_mode != "time":
+            return _point_at(self._points, x_value)
+        alvo_ms = x_value * 1000.0
+        return min(self._points, key=lambda p: abs(p.elapsed_ms - alvo_ms))
+
+    def _x_of(self, point: TelemetryPoint) -> float:
+        """Distância ou tempo, conforme o seletor.
+
+        Por distância, duas voltas se sobrepõem no mesmo ponto da pista mesmo
+        com ritmos diferentes — é o que permite ver *onde* a diferença nasce.
+        Por tempo, vê-se quanto cada trecho custou em segundos, que a distância
+        comprime justamente onde o carro está devagar.
+        """
+        return point.elapsed_ms / 1000.0 if self._x_mode == "time" else point.distance_m
+
+    def _on_x_mode(self, index: int) -> None:
+        self._x_mode = "time" if index == 1 else "distance"
+        for chart in self._charts:
+            chart.set_x_unit("s" if self._x_mode == "time" else "m")
+        if self._points:
+            self._populate(self._lap_time_ms)
+
+    def _on_g_scale(self, index: int) -> None:
+        """Automático é o primeiro item, e devolve `None` — que é o que
+        `set_scale` entende como "escolha o menor degrau que couber"."""
+        self._gforce.set_scale(self._g_scale.itemData(index))
 
     def _on_hover_left(self) -> None:
         for chart in self._charts:
@@ -368,7 +452,10 @@ class AnalysisPage(Page):
             return
         index = rows[0].row()
         if 0 <= index < len(self._corners):
-            self._on_hover(self._corners[index].apex_distance_m)
+            # A tabela guarda distância; o cursor fala a unidade do eixo.
+            self._on_hover(
+                self._x_at_distance(self._corners[index].apex_distance_m)
+            )
 
 
 def _point_at(

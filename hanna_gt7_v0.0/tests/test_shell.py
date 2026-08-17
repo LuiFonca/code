@@ -456,3 +456,70 @@ class TestSeloAcompanhaATrocaDeFonte:
         assert not live._synthetic_badge.isVisible(), (
             "o selo continuou afirmando que a telemetria real é sintética"
         )
+
+
+class TestPausaCongelaOsNumeros:
+    """Pausar o jogo não pode apagar o que se quer justamente olhar.
+
+    A escolha anterior era apagar, para distinguir "carro parado" de
+    "transmissão perdida". Mas o caso comum é o jogo pausado, e ali apagar
+    destrói os valores do instante em que se pausou. A barra de status assume a
+    tarefa de avisar — que era o único motivo de apagar.
+    """
+
+    def test_os_valores_permanecem(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        live = window._pages[0]  # noqa: SLF001
+        window._activate(0)  # noqa: SLF001
+        app.processEvents()
+
+        live._grid.cards["speed"].set_value("187")  # noqa: SLF001
+        live._on_stale()  # noqa: SLF001
+        app.processEvents()
+
+        assert live._grid.cards["speed"]._value.text() == "187"  # noqa: SLF001
+
+    def test_a_barra_avisa_que_nao_e_tempo_real(self, shell) -> None:  # noqa: ANN001
+        window, _core, _app = shell
+        live = window._pages[0]  # noqa: SLF001
+        live._on_stale()  # noqa: SLF001
+        assert "congelados" in live._status.text().lower()
+
+
+class TestEixoPorTempo:
+    def test_o_seletor_troca_a_unidade_dos_graficos(self, shell) -> None:  # noqa: ANN001
+        window, _core, app = shell
+        live = window._pages[0]  # noqa: SLF001
+        window._activate(0)  # noqa: SLF001
+        app.processEvents()
+
+        live._x_selector.setCurrentIndex(1)  # noqa: SLF001
+        app.processEvents()
+
+        assert live._x_mode == "time"  # noqa: SLF001
+        assert live._speed_chart._x_unit == "s"  # noqa: SLF001
+        assert live._pedals_chart._x_unit == "s"  # noqa: SLF001
+
+        live._x_selector.setCurrentIndex(0)  # noqa: SLF001
+        assert live._speed_chart._x_unit == "m"  # noqa: SLF001
+
+    def test_na_analise_o_cursor_encontra_a_amostra_certa(self, shell) -> None:  # noqa: ANN001
+        """No modo tempo o cursor recebe segundos.
+
+        Sem tradução, `_point_at` procuraria "a amostra a 42 metros" recebendo
+        42 **segundos** e apontaria para o começo da volta com o mouse no fim.
+        """
+        window, _core, app = shell
+        window._activate(1)  # noqa: SLF001
+        app.processEvents()
+
+        page = window._pages[1]  # noqa: SLF001
+        assert page._points, "a fixture precisa de uma volta carregada"  # noqa: SLF001
+
+        alvo = page._points[len(page._points) // 2]  # noqa: SLF001
+        page._x_selector.setCurrentIndex(1)  # noqa: SLF001
+        app.processEvents()
+
+        encontrado = page._point_at_x(alvo.elapsed_ms / 1000.0)  # noqa: SLF001
+        assert encontrado is not None
+        assert encontrado.distance_m == pytest.approx(alvo.distance_m, abs=1.0)

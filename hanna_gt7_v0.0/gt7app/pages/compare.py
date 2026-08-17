@@ -32,7 +32,12 @@ from ..application import CoreApplication
 from ..design.tokens import Space, Theme
 from ..widgets.advice import AdviceCard
 from ..widgets.cards import Card, MetricCard, MetricGrid
-from ..widgets.charts import DistanceChart, Series
+from ..widgets.charts import (
+    SPEED_STEP_KMH,
+    SPEED_TOP_MIN_KMH,
+    DistanceChart,
+    Series,
+)
 from ..widgets.selectors import TrackLapSelector
 from ..widgets.trackmap import TrackMap, TrackMarker, TrackPath
 from .base import Page
@@ -93,7 +98,12 @@ class ComparePage(Page):
             self.theme, "Delta acumulado", unit="s", height=140
         )
         self._speed_chart = DistanceChart(
-            self.theme, "Velocidade", unit="km/h", height=140
+            self.theme,
+            "Velocidade",
+            unit="km/h",
+            height=140,
+            y_step=SPEED_STEP_KMH,
+            y_top_min=SPEED_TOP_MIN_KMH,
         )
         charts.add(self._delta_chart)
         charts.add(self._speed_chart)

@@ -21,7 +21,11 @@ pytest.importorskip("PySide6", reason="o widget é Qt")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gt7app.design.tokens import get_theme  # noqa: E402
-from gt7app.widgets.gforce import MIN_SCALE_G, GForceDiagram  # noqa: E402
+from gt7app.widgets.gforce import (  # noqa: E402
+    MIN_SCALE_G,
+    SCALE_STEPS_G,
+    GForceDiagram,
+)
 
 
 @pytest.fixture(scope="module")
@@ -45,6 +49,53 @@ class TestEscala:
     def test_a_escala_acompanha_o_pico(self, diagrama: GForceDiagram) -> None:
         diagrama.set_points([(1.8, 0.0), (0.0, -1.2)])
         assert diagrama.scale_g > 1.8, "o ponto de pico ficaria fora do quadro"
+
+    @pytest.mark.parametrize(
+        ("pico", "esperado"),
+        [(0.3, 2.0), (1.9, 2.0), (2.8, 3.0), (3.5, 4.0), (4.2, 5.0), (4.9, 5.0)],
+    )
+    def test_automatico_escolhe_o_menor_degrau_que_cabe(
+        self, diagrama: GForceDiagram, pico: float, esperado: float
+    ) -> None:
+        """2,8 g desenha num quadro de 3; 4,2 g num de 5.
+
+        Escolher o menor degrau que contém o pico mantém o envelope grande sem
+        cortá-lo — e o degrau fixo é o que permite comparar duas voltas de olho.
+        """
+        diagrama.set_points([(pico, 0.0)])
+        assert diagrama.scale_g == esperado
+
+    def test_pico_acima_do_ultimo_degrau_nao_corta_o_dado(
+        self, diagrama: GForceDiagram
+    ) -> None:
+        """6 g é implausível num carro, mas se chegar, ver o ponto importa mais
+        que respeitar a lista de degraus."""
+        diagrama.set_points([(6.2, 0.0)])
+        assert diagrama.scale_g >= 6.2
+
+    @pytest.mark.parametrize("limite", SCALE_STEPS_G)
+    def test_limite_fixo_ganha_do_automatico(
+        self, diagrama: GForceDiagram, limite: float
+    ) -> None:
+        diagrama.set_points([(0.4, 0.1)])
+        diagrama.set_scale(limite)
+        assert diagrama.scale_g == limite
+
+    def test_voltar_ao_automatico(self, diagrama: GForceDiagram) -> None:
+        diagrama.set_points([(2.8, 0.0)])
+        diagrama.set_scale(5.0)
+        assert diagrama.scale_g == 5.0
+
+        diagrama.set_scale(None)
+        assert diagrama.scale_g == 3.0
+
+    def test_o_fundo_nunca_vira_hachura(self, diagrama: GForceDiagram) -> None:
+        """Num quadro de 5 g, um anel a cada 0,5 g são dez circunferências: a
+        nuvem some dentro da grade."""
+        for limite in SCALE_STEPS_G:
+            diagrama.set_scale(limite)
+            assert len(diagrama._rings()) <= 5  # noqa: SLF001
+            assert diagrama._rings()[-1] <= limite + 1e-9  # noqa: SLF001
 
     def test_pico_e_o_g_combinado_e_nao_o_maior_de_um_eixo(
         self, diagrama: GForceDiagram

@@ -136,7 +136,7 @@ por varredura do diretório e exige que cada um esteja na lista de proibições,
 para que um plugin novo não crie um buraco silencioso no guarda.
 
 É o que permite a mesma análise rodar na interface, num teste, no bot e na voz
-sem duplicação — e é o que torna 620 testes possíveis, já que nenhum deles
+sem duplicação — e é o que torna 679 testes possíveis, já que nenhum deles
 precisa de servidor gráfico, rede ou console ligado.
 
 ### Cada camada degrada sozinha
@@ -277,7 +277,7 @@ gt7ai/            Race Engineer          gt7discord/    Bot
 
 gt7voice/         Rádio falado
   speaker.py   quem fala (protocolo)
-  system.py    say / SAPI / espeak-ng      tests/    620 testes
+  system.py    say / SAPI / espeak-ng      tests/    679 testes
   radio.py     o que vira fala             docs/     a auditoria de origem
 ```
 
@@ -306,7 +306,7 @@ acontece num lugar só (`sources/factory.py`), a partir da configuração.
 ```bash
 pip3 install -e ".[dev]"
 
-python3 -m pytest              # 620 testes, ~2min15
+python3 -m pytest              # 679 testes, ~2min15
 python3 -m ruff check .        # lint
 python3 -m mypy                # tipos (strict, 93 arquivos)
 ```

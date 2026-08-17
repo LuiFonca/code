@@ -34,7 +34,12 @@ from ..design.theme import OBJ_GHOST_BUTTON, OBJ_STATUS_BAR
 from ..design.tokens import Space, Theme
 from ..viewmodels.live import LiveViewModel
 from ..widgets.cards import Badge, Card, MetricCard, MetricGrid
-from ..widgets.charts import DistanceChart, Series
+from ..widgets.charts import (
+    SPEED_STEP_KMH,
+    SPEED_TOP_MIN_KMH,
+    DistanceChart,
+    Series,
+)
 from ..widgets.radio import RadioCard
 from .base import Page
 
@@ -59,7 +64,8 @@ class LivePage(Page):
         self, core: CoreApplication, theme: Theme, view_model: LiveViewModel
     ) -> None:
         self._vm = view_model
-        self._trail: list[tuple[float, float, float, float]] = []
+        self._trail: list[tuple[float, float, float, float, float]] = []
+        self._x_mode = "distance"
         self._pending_repaint = False
         super().__init__(core, theme)
         self._connect()
@@ -85,12 +91,13 @@ class LivePage(Page):
         self.content.addWidget(self._synthetic_badge)
         self._update_synthetic_badge()
 
-        self._grid = MetricGrid(columns=6)
+        self._grid = MetricGrid(columns=7)
         for key, label, unit in (
             ("speed", "Velocidade", "km/h"),
             ("gear", "Marcha", ""),
             ("rpm", "RPM", ""),
-            ("delta", "Delta", "s"),
+            ("delta", "Delta melhor volta", "s"),
+            ("delta_prev", "Delta última volta", "s"),
             ("lap", "Volta", ""),
             ("distance", "Distância", "m"),
         ):
@@ -99,10 +106,15 @@ class LivePage(Page):
 
         traces = Card("Últimos 800 metros")
         self._speed_chart = DistanceChart(
-            self.theme, "Velocidade", unit="km/h", height=140
+            self.theme,
+            "Velocidade",
+            unit="km/h",
+            height=140,
+            y_step=SPEED_STEP_KMH,
+            y_top_min=SPEED_TOP_MIN_KMH,
         )
         self._pedals_chart = DistanceChart(
-            self.theme, "Pedais", unit="%", height=120, y_range=(0.0, 105.0)
+            self.theme, "Pedais", unit="%", height=120, y_range=(0.0, 100.0)
         )
         traces.add(self._speed_chart)
         traces.add(self._pedals_chart)
@@ -130,6 +142,15 @@ class LivePage(Page):
         self._track_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._reload_tracks()
 
+        # Eixo X: distância ou tempo. Não é preferência estética — são duas
+        # perguntas. Por distância, "onde na pista"; duas voltas se sobrepõem
+        # no mesmo ponto do traçado mesmo com ritmos diferentes. Por tempo,
+        # "quanto tempo levou"; é o que revela quanto uma freada custou em
+        # segundos, que a distância comprime.
+        self._x_selector = QComboBox()
+        self._x_selector.addItems(["Eixo: distância", "Eixo: tempo"])
+        self._x_selector.currentIndexChanged.connect(self._on_x_mode)
+
         self._start_button = QPushButton("Conectar")
         self._stop_button = QPushButton("Parar")
         self._stop_button.setObjectName(OBJ_GHOST_BUTTON)
@@ -137,9 +158,24 @@ class LivePage(Page):
 
         layout.addWidget(QLabel("Pista:"))
         layout.addWidget(self._track_input)
+        layout.addWidget(self._x_selector)
         layout.addWidget(self._start_button)
         layout.addWidget(self._stop_button)
         return bar
+
+    def _x_of(self, row: tuple[float, float, float, float, float]) -> float:
+        """Qual coluna do rastro vira o eixo X."""
+        return row[1] if self._x_mode == "time" else row[0]
+
+    def _on_x_mode(self, index: int) -> None:
+        self._x_mode = "time" if index == 1 else "distance"
+        unidade = "s" if self._x_mode == "time" else "m"
+        for chart in (self._speed_chart, self._pedals_chart):
+            chart.set_x_unit(unidade)
+        # Redesenha já: esperar o próximo quadro deixaria o gráfico com o eixo
+        # novo e os dados velhos por até 66 ms, o que pisca.
+        self._pending_repaint = True
+        self._repaint_traces()
 
     def _connect_radio(self) -> None:
         """Liga o detector do núcleo ao engenheiro, passando pela thread da UI.
@@ -330,7 +366,13 @@ class LivePage(Page):
         cards["lap"].set_value(str(event.frame.lap_count))
 
         self._trail.append(
-            (point.distance_m, point.speed_kmh, point.throttle, point.brake)
+            (
+                point.distance_m,
+                point.elapsed_ms / 1000.0,
+                point.speed_kmh,
+                point.throttle,
+                point.brake,
+            )
         )
         # Descarta o que saiu da janela de rastro, mantendo a lista curta em vez
         # de crescer a volta inteira.
@@ -350,7 +392,7 @@ class LivePage(Page):
                 Series(
                     "vel",
                     palette.channel_speed,
-                    [(d, v) for d, v, _, _ in self._trail],
+                    [(self._x_of(row), row[2]) for row in self._trail],
                 )
             ]
         )
@@ -359,30 +401,45 @@ class LivePage(Page):
                 Series(
                     "acel",
                     palette.channel_throttle,
-                    [(d, t) for d, _, t, _ in self._trail],
+                    [(self._x_of(row), row[3]) for row in self._trail],
                 ),
                 Series(
                     "freio",
                     palette.channel_brake,
-                    [(d, b) for d, _, _, b in self._trail],
+                    [(self._x_of(row), row[4]) for row in self._trail],
                 ),
             ]
         )
 
-    def _on_delta(self, best: float | None, _previous: float | None) -> None:
-        card = self._grid.cards["delta"]
-        if best is None:
-            card.set_value("—", self.theme.palette.text_muted)
-            return
-        card.set_value(f"{best:+.3f}", self.theme.palette.delta(best))
+    def _on_delta(self, best: float | None, previous: float | None) -> None:
+        """Os dois deltas, rotulados.
+
+        Antes havia um cartão só, escrito "Delta", mostrando a diferença contra
+        a **melhor** volta — e o delta contra a anterior já era calculado e
+        descartado. Sem rótulo, não havia como saber qual dos dois se estava
+        lendo, e são perguntas diferentes: a melhor mede quanto falta para o seu
+        teto, a anterior mede se você está evoluindo agora.
+        """
+        for chave, valor in (("delta", best), ("delta_prev", previous)):
+            card = self._grid.cards[chave]
+            if valor is None:
+                card.set_value("—", self.theme.palette.text_muted)
+            else:
+                card.set_value(f"{valor:+.3f}", self.theme.palette.delta(valor))
 
     def _on_connection(self, state: str, message: str) -> None:
         self._status.setText(message or f"Conexão: {state}")
 
     def _on_stale(self) -> None:
-        """Distingue 'carro parado' de 'transmissão perdida'."""
-        self._grid.clear_values(self.theme)
-        self._status.setText("Sem telemetria")
+        """Sem pacote há um tempo: **congela** os números em vez de apagá-los.
+
+        Apagar era a escolha anterior, para distinguir "carro parado" de
+        "transmissão perdida". Mas o caso comum é o jogo pausado, e ali apagar
+        destrói justamente o que se quer olhar: os valores do instante em que se
+        pausou. Congelar preserva, e a barra de status assume a tarefa de dizer
+        que aquilo não é mais tempo real — que era o único motivo de apagar.
+        """
+        self._status.setText("PAUSADO ou sem telemetria — valores congelados")
 
     def _on_lap_saved(self, event: LapSaved) -> None:
         minutes, remainder = divmod(event.lap.lap_time_ms, 60_000)
