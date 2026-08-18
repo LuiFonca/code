@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -113,12 +114,57 @@ class HistoryPage(Page):
         self._delete_all.setObjectName(OBJ_GHOST_BUTTON)
         self._delete_all.clicked.connect(self._on_delete_all)
 
+        # Renomear fica **antes** dos botões de excluir, e não ao lado deles:
+        # é a operação que salva o acervo quando o nome saiu errado, e a única
+        # alternativa que existia antes era apagar as voltas.
+        self._rename = QPushButton("Renomear pista…")
+        self._rename.setObjectName(OBJ_GHOST_BUTTON)
+        self._rename.clicked.connect(self._on_rename_track)
+
         layout.addWidget(QLabel("Pista:"))
         layout.addWidget(self._track_combo)
         layout.addWidget(reload_button)
+        layout.addWidget(self._rename)
         layout.addWidget(self._delete_selected)
         layout.addWidget(self._delete_all)
         return bar
+
+    # ---------- renomear ----------
+
+    def _on_rename_track(self) -> None:
+        """Troca o nome da pista sem perder as voltas dela.
+
+        O catálogo entra como sugestão editável em vez de lista fechada: os 105
+        circuitos cobrem o caso comum, mas layouts e variantes que o catálogo não
+        tem continuam digitáveis. Uma lista fechada obrigaria a escolher um nome
+        errado quando o certo não estivesse nela.
+        """
+        track_id = self._track_combo.currentData()
+        if track_id is None:
+            return
+        atual = self._track_combo.currentText()
+
+        nomes = sorted(
+            {t.name for t in self.core.catalog.tracks.values() if t.name},
+            key=str.lower,
+        )
+        novo, confirmou = QInputDialog.getItem(
+            self,
+            "Renomear pista",
+            f"Novo nome para “{atual}”:",
+            nomes,
+            nomes.index(atual) if atual in nomes else 0,
+            True,
+        )
+        if not confirmou or not novo.strip() or novo.strip() == atual:
+            return
+
+        destino = self.core.tracks.rename(int(track_id), novo.strip())
+        self.refresh()
+        index = self._track_combo.findData(destino)
+        if index >= 0:
+            self._track_combo.setCurrentIndex(index)
+        self._note.setText(f"Pista renomeada para “{novo.strip()}”.")
 
     # ---------- exclusão ----------
 

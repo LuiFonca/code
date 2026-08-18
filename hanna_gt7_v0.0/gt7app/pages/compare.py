@@ -12,15 +12,18 @@ ordenado por perda, a primeira linha já é o que treinar amanhã.
 
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from gt7core.analytics.corners import detect_corners
@@ -43,6 +46,113 @@ from ..widgets.trackmap import TrackMap, TrackMarker, TrackPath
 from .base import Page
 
 SEGMENT_COLUMNS = ("Trecho", "Início", "Δ tempo", "Diagnóstico")
+
+#: Linhas do cartão do cursor: (chave, rótulo, unidade).
+CURSOR_ROWS = (
+    ("speed", "Velocidade", "km/h"),
+    ("throttle", "Acelerador", "%"),
+    ("brake", "Freio", "%"),
+    ("gear", "Marcha", ""),
+)
+
+
+class CursorComparison(QWidget):
+    """Três colunas por canal: referência, comparada e a diferença.
+
+    A página já mostrava as duas curvas sobrepostas, o que responde "onde elas
+    divergem" mas não "por quanto" — para isso o olho tem de medir a distância
+    entre dois traços contra um eixo, que é justamente o que o olho não faz bem.
+    A terceira coluna faz a subtração, que é a leitura que interessa: 8 km/h a
+    menos na saída da curva 4 é um número acionável; dois traços quase juntos
+    não são.
+
+    A diferença é sempre **comparada − referência**, e a ordem está escrita no
+    cabeçalho. Sem isso, um `−8` seria ambíguo entre "perdeu 8" e "ganhou 8", e
+    o cartão inteiro viraria adivinhação.
+    """
+
+    def __init__(self, theme: Theme) -> None:
+        super().__init__()
+        self._theme = theme
+        self._values: dict[str, tuple[QLabel, QLabel, QLabel]] = {}
+
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(Space.XS.px)
+
+        for column, titulo in enumerate(("", "referência", "comparada", "dif.")):
+            cabecalho = QLabel(titulo)
+            cabecalho.setProperty("role", "muted")
+            if column:
+                cabecalho.setAlignment(Qt.AlignmentFlag.AlignRight)
+            grid.addWidget(cabecalho, 0, column)
+
+        for row, (key, rotulo, unidade) in enumerate(CURSOR_ROWS, start=1):
+            nome = QLabel(rotulo)
+            nome.setProperty("role", "muted")
+            grid.addWidget(nome, row, 0)
+
+            celulas = []
+            for column in (1, 2, 3):
+                celula = QLabel("—")
+                celula.setAlignment(Qt.AlignmentFlag.AlignRight)
+                grid.addWidget(celula, row, column)
+                celulas.append(celula)
+            self._values[key] = (celulas[0], celulas[1], celulas[2])
+            del unidade
+
+        grid.setColumnStretch(0, 2)
+        for column in (1, 2, 3):
+            grid.setColumnStretch(column, 1)
+
+    def set_values(
+        self,
+        reference: TelemetryPoint,
+        analysed: TelemetryPoint,
+    ) -> None:
+        palette = self._theme.palette
+
+        def marcha(point: TelemetryPoint) -> str:
+            return str(point.gear) if point.gear > 0 else "N"
+
+        leituras = {
+            "speed": (
+                f"{reference.speed_kmh:.1f}",
+                f"{analysed.speed_kmh:.1f}",
+                analysed.speed_kmh - reference.speed_kmh,
+            ),
+            "throttle": (
+                f"{reference.throttle:.0f}",
+                f"{analysed.throttle:.0f}",
+                analysed.throttle - reference.throttle,
+            ),
+            "brake": (
+                f"{reference.brake:.0f}",
+                f"{analysed.brake:.0f}",
+                analysed.brake - reference.brake,
+            ),
+            "gear": (marcha(reference), marcha(analysed), analysed.gear - reference.gear),
+        }
+
+        for key, (ref_texto, ana_texto, diferenca) in leituras.items():
+            ref_label, ana_label, dif_label = self._values[key]
+            ref_label.setText(ref_texto)
+            ana_label.setText(ana_texto)
+            dif_label.setText(f"{diferenca:+.1f}" if key != "gear" else f"{diferenca:+d}")
+            # Verde quando a volta comparada está por cima **naquele canal**.
+            # Mais freio não é melhor nem pior sem contexto, então o freio fica
+            # neutro em vez de fingir um julgamento.
+            if key in ("speed", "throttle"):
+                cor = palette.green if diferenca > 0 else palette.yellow
+                dif_label.setStyleSheet(f"color: {cor};" if diferenca else "")
+            else:
+                dif_label.setStyleSheet("")
+
+    def clear(self) -> None:
+        for celulas in self._values.values():
+            for celula in celulas:
+                celula.setText("—")
+                celula.setStyleSheet("")
 
 
 class ComparePage(Page):
@@ -118,11 +228,27 @@ class ComparePage(Page):
         self._speed_chart.hovered.connect(self._on_hover)
         middle.addWidget(charts, stretch=3)
 
+        right = QVBoxLayout()
+        right.setSpacing(Space.LG.px)
+
         map_card = Card("Traçados sobrepostos")
         self._map = TrackMap(self.theme, height=300)
         self._map.hovered.connect(self._on_hover)
         map_card.add(self._map)
-        middle.addWidget(map_card, stretch=2)
+        right.addWidget(map_card)
+
+        cursor_card = Card("No cursor")
+        self._cursor_distance = QLabel("—")
+        self._cursor_distance.setProperty("role", "muted")
+        self._cursor_delta = QLabel("—")
+        self._cursor_comparison = CursorComparison(self.theme)
+        cursor_card.add(self._cursor_distance)
+        cursor_card.add(self._cursor_comparison)
+        cursor_card.add(self._cursor_delta)
+        right.addWidget(cursor_card)
+        right.addStretch(1)
+
+        middle.addLayout(right, stretch=2)
         self.content.addLayout(middle)
 
         table_card = Card("Perda por trecho — do pior para o menor")
@@ -209,6 +335,10 @@ class ComparePage(Page):
         self._speed_chart.clear()
         self._map.clear()
         self._table.setRowCount(0)
+        self._cursor_comparison.clear()
+        self._cursor_distance.setText("—")
+        self._cursor_delta.setText("—")
+        self._cursor_delta.setStyleSheet("")
         self._hint.setText(hint)
 
     def _populate(self) -> None:
@@ -365,10 +495,33 @@ class ComparePage(Page):
                 )
 
     def _on_hover(self, distance_m: float) -> None:
-        """Um cursor só, compartilhado pelos dois gráficos e pelo mapa."""
+        """Um cursor só, compartilhado pelos dois gráficos, pelo mapa e pelo
+        cartão de leitura."""
         self._delta_chart.set_cursor(distance_m)
         self._speed_chart.set_cursor(distance_m)
         self._map.set_cursor(distance_m)
+
+        referencia = _point_at(self._reference, distance_m)
+        comparada = _point_at(self._analysed, distance_m)
+        if referencia is None or comparada is None:
+            self._cursor_comparison.clear()
+            return
+
+        self._cursor_distance.setText(f"{distance_m:.0f} m")
+        self._cursor_comparison.set_values(referencia, comparada)
+
+        # O delta sai do próprio gráfico, interpolado, em vez de ser recalculado
+        # aqui: dois caminhos para o mesmo número acabam discordando em algum
+        # canto, e aí nada na tela diz qual dos dois está certo.
+        leituras = self._delta_chart.value_at(distance_m)
+        if leituras:
+            segundos = leituras[0][1]
+            self._cursor_delta.setText(f"delta acumulado {segundos:+.3f} s")
+            self._cursor_delta.setStyleSheet(
+                f"color: {self.theme.palette.delta(segundos)};"
+            )
+        else:
+            self._cursor_delta.setText("—")
 
     def _on_row_selected(self) -> None:
         rows = self._table.selectionModel().selectedRows()

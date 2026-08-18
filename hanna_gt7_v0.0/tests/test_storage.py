@@ -23,7 +23,11 @@ import pytest
 
 from gt7core.domain.models import Car, Lap, TelemetryPoint, Track
 from gt7core.events.bus import EventBus
-from gt7core.storage.database import SqliteDatabase, compute_sector_times
+from gt7core.storage.database import (
+    SCHEMA_VERSION,
+    SqliteDatabase,
+    compute_sector_times,
+)
 from gt7core.storage.repositories import (
     SqliteCarRepository,
     SqliteLapRepository,
@@ -85,7 +89,15 @@ class TestSchema:
         assert {"tracks", "cars", "sessions", "laps", "lap_frames", "sector_times"} <= tables
 
     def test_versao_do_schema(self, db: SqliteDatabase) -> None:
-        assert db.connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        """Contra a constante, e não contra um literal.
+
+        Escrito à mão, este número precisa ser editado a cada migração — e um
+        teste que só pede edição não verifica nada, ensina a ignorá-lo.
+        """
+        assert (
+            db.connection.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION
+        )
 
     def test_indices_criados_depois_das_migracoes(self, db: SqliteDatabase) -> None:
         """A ordem importa: os índices referenciam colunas que só existem depois
@@ -124,7 +136,10 @@ class TestSchema:
 
         migrated = SqliteDatabase(path)
 
-        assert migrated.connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert (
+            migrated.connection.execute("PRAGMA user_version").fetchone()[0]
+            == SCHEMA_VERSION
+        )
         # O dado antigo sobreviveu.
         assert migrated.connection.execute("SELECT COUNT(*) FROM laps").fetchone()[0] == 1
         # E a coluna nova existe, nula para as voltas de antes.
@@ -133,6 +148,49 @@ class TestSchema:
             is None
         )
         migrated.close()
+
+    def test_migracao_de_banco_v6_grava_flags(self, tmp_path) -> None:
+        """A coluna `flags` chega a um banco v6 sem apagar as voltas dele.
+
+        E chega **nula**: a volta gravada antes da migração não tem o estado dos
+        auxílios medido, e preenchê-la com 0 faria a tela afirmar "TCS nunca
+        atuou" sobre uma volta em que ninguém observou o TCS.
+        """
+        path = tmp_path / "v6.db"
+        base = SqliteDatabase(path)
+        base.connection.executescript("""
+            INSERT INTO tracks (name, created_at) VALUES ('Suzuka', 1000);
+            INSERT INTO laps (track_id, lap_time_ms, recorded_at, frame_count)
+                VALUES (1, 95000, 1000, 1);
+            INSERT INTO lap_frames
+                (lap_id, seq, elapsed_ms, distance_m, speed_kmh, rpm, gear,
+                 throttle, brake)
+                VALUES (1, 0, 0, 0.0, 100.0, 5000.0, 3, 100.0, 0.0);
+        """)
+        base.connection.execute("PRAGMA user_version = 6")
+        base.connection.commit()
+        base.close()
+
+        migrated = SqliteDatabase(path)
+        try:
+            assert (
+                migrated.connection.execute("PRAGMA user_version").fetchone()[0]
+                == SCHEMA_VERSION
+            )
+            assert (
+                migrated.connection.execute(
+                    "SELECT COUNT(*) FROM lap_frames"
+                ).fetchone()[0]
+                == 1
+            )
+            assert (
+                migrated.connection.execute(
+                    "SELECT flags FROM lap_frames"
+                ).fetchone()[0]
+                is None
+            )
+        finally:
+            migrated.close()
 
 
 class TestGravacaoDeVolta:
@@ -610,3 +668,57 @@ class TestConexaoPorThread:
         finally:
             primeiro.close()
             segundo.close()
+
+
+class TestRenomearPista:
+    """Renomear existe porque um nome errado se espalha e não sai sozinho.
+
+    Uma sessão gravada sob "192.168.15.156" — o IP do PS5 digitado no campo de
+    pista — deixa esse rótulo em todo seletor do programa, e até aqui a única
+    saída era apagar as voltas.
+    """
+
+    def test_troca_o_nome_preservando_as_voltas(
+        self, laps: SqliteLapRepository, db: SqliteDatabase
+    ) -> None:
+        tracks = SqliteTrackRepository(db)
+        track_id = tracks.get_or_create("192.168.15.156")
+        laps.save(make_lap(track_id, 95_000))
+
+        final = tracks.rename(track_id, "Interlagos")
+
+        assert final == track_id
+        pista = tracks.get_by_id(final)
+        assert pista is not None
+        assert pista.name == "Interlagos"
+        assert len(laps.get_by_track(final)) == 1
+
+    def test_renomear_para_pista_existente_funde_as_duas(
+        self, laps: SqliteLapRepository, db: SqliteDatabase
+    ) -> None:
+        """O caso que mais acontece: a pista certa já está gravada.
+
+        Recusar por "nome já existe" deixaria o acervo partido em dois
+        exatamente onde se pediu para juntá-lo.
+        """
+        tracks = SqliteTrackRepository(db)
+        errada = tracks.get_or_create("192.168.15.156")
+        certa = tracks.get_or_create("Interlagos")
+        laps.save(make_lap(errada, 95_000))
+        laps.save(make_lap(certa, 94_000))
+
+        final = tracks.rename(errada, "Interlagos")
+
+        assert final == certa
+        assert len(laps.get_by_track(certa)) == 2, "as duas voltas foram para a mesma pista"
+        assert tracks.get_by_id(errada) is None, "a duplicata sai do seletor"
+
+    def test_nome_vazio_e_recusado(self, db: SqliteDatabase) -> None:
+        tracks = SqliteTrackRepository(db)
+        track_id = tracks.get_or_create("Suzuka")
+
+        with pytest.raises(ValueError):
+            tracks.rename(track_id, "   ")
+
+        pista = tracks.get_by_id(track_id)
+        assert pista is not None and pista.name == "Suzuka"

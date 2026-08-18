@@ -417,6 +417,49 @@ class SqliteTrackRepository:
         ).fetchall()
         return [Track(id=r[0], name=r[1]) for r in rows]
 
+    def rename(self, track_id: int, new_name: str) -> int:
+        """Renomeia a pista, **preservando as voltas**. Devolve o id final.
+
+        Existe porque um nome errado é uma sujeira que se espalha e não sai
+        sozinha: uma sessão gravada sob "192.168.15.156" — o IP do PS5 digitado
+        no campo de pista — deixa esse rótulo em todo seletor do programa, e a
+        única alternativa antes disto era apagar as voltas.
+
+        Se já existe uma pista com o nome de destino, as voltas **migram** para
+        ela e a duplicata é removida. É o caso que mais importa na prática:
+        quem digitou o IP quase sempre também tem a pista certa gravada, e
+        recusar a operação por "nome já existe" deixaria o acervo partido em
+        dois exatamente onde se pediu para juntá-lo.
+        """
+        clean = new_name.strip()
+        if not clean:
+            raise ValueError("nome de pista vazio")
+
+        with self._db.lock:
+            existente = self._conn.execute(
+                "SELECT id FROM tracks WHERE name = ? AND id != ?", (clean, track_id)
+            ).fetchone()
+
+            if existente is None:
+                self._conn.execute(
+                    "UPDATE tracks SET name = ? WHERE id = ?", (clean, track_id)
+                )
+                final_id = track_id
+            else:
+                final_id = int(existente[0])
+                self._conn.execute(
+                    "UPDATE laps SET track_id = ? WHERE track_id = ?",
+                    (final_id, track_id),
+                )
+                self._conn.execute(
+                    "UPDATE sessions SET track_id = ? WHERE track_id = ?",
+                    (final_id, track_id),
+                )
+                self._conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+            self._conn.commit()
+
+        return final_id
+
     def delete(self, track_id: int) -> None:
         with self._db.lock:
             self._conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))

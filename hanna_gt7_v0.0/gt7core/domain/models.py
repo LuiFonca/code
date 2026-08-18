@@ -55,6 +55,19 @@ class TelemetryPoint:
     oil_temp: float
     water_temp: float
 
+    flags: int | None = None
+    """Bitfield de estado do pacote (0x8E) — inclui TCS e ASM atuando.
+
+    `None`, e não 0, em voltas gravadas antes deste campo existir: 0 afirmaria
+    "nenhum auxílio atuou", e isso não foi medido. A tela precisa distinguir
+    "não atuou" de "não foi gravado", senão uma volta antiga passa a alegar
+    pilotagem limpa que ninguém verificou.
+
+    Guardado como inteiro em vez de dois booleanos de propósito: o bit do ABS
+    ainda não está identificado na engenharia reversa, e quando estiver, ele já
+    terá sido gravado — sem outra migração e sem perder as voltas de agora.
+    """
+
     @property
     def elapsed_s(self) -> float:
         return self.elapsed_ms / 1000.0

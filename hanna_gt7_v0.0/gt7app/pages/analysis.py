@@ -26,15 +26,24 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from gt7core.analytics.aids import AIDS, aid_spans, unknown_bits, was_recorded
 from gt7core.analytics.braking import BrakingZone, detect_braking_zones
 from gt7core.analytics.corners import Corner, corner_at, detect_corners
 from gt7core.analytics.series import sector_boundaries_m
+from gt7core.analytics.steering import yaw_rate_series
 from gt7core.analytics.throttle import ThrottleApplication, analyse_throttle
-from gt7core.analytics.tyres import detect_tyre_events, temperature_balance
+from gt7core.analytics.tyres import (
+    WHEELS,
+    detect_tyre_events,
+    infer_slip_convention,
+    slip_ratio,
+    temperature_balance,
+)
 from gt7core.domain.models import TelemetryPoint
 
 from ..application import CoreApplication
 from ..design.tokens import Space, Theme
+from ..widgets.aidband import AidBand
 from ..widgets.cards import Card, MetricCard, MetricGrid, StatRow
 from ..widgets.charts import (
     SPEED_STEP_KMH,
@@ -45,12 +54,30 @@ from ..widgets.charts import (
 from ..widgets.gforce import SCALE_STEPS_G, GForceDiagram
 from ..widgets.selectors import TrackLapSelector, format_lap_time
 from ..widgets.trackmap import TrackMap, TrackMarker, TrackPath
+from ..widgets.tyres import TyreTemperatures
 from .base import Page
 
 CORNER_COLUMNS = ("Curva", "Ápice", "Vel. mín.", "Raio", "Freada", "Saída")
 
 # Os mesmos setores do histórico — o corte precisa ser o mesmo entre telas.
 NUM_SECTORS = 3
+
+#: Índices em `self._charts`. Nomeados porque `self._charts[3]` num arquivo de
+#: 500 linhas não diz qual gráfico é, e trocar dois por engano é um defeito que
+#: só aparece olhando a tela.
+CHART_SPEED, CHART_PEDALS, CHART_YAW, CHART_GRIP = 0, 1, 2, 3
+
+#: Rótulo de cada roda no gráfico de aderência, na ordem de `WHEELS`.
+WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
+
+#: Degraus do eixo de guinada, em °/s. Fixo pelo mesmo motivo da velocidade:
+#: escala colada no pico faz duas voltas parecidas parecerem diferentes.
+YAW_STEP_DEG = 30.0
+YAW_TOP_MIN_DEG = 60.0
+
+#: Aderência em %, onde 100 é a roda girando na velocidade do carro.
+GRIP_STEP_PCT = 25.0
+GRIP_TOP_MIN_PCT = 125.0
 
 
 class AnalysisPage(Page):
@@ -100,11 +127,43 @@ class AnalysisPage(Page):
             DistanceChart(
                 self.theme, "Pedais", unit="%", height=110, y_range=(0.0, 100.0)
             ),
+            # Guinada, e não "esterço": o pacote de 296 bytes do GT7 não
+            # transmite ângulo de volante. Ver `gt7core.analytics.steering` —
+            # o que dá para saber com certeza é quanto o carro girou, que é a
+            # pergunta por trás de olhar um canal de volante.
+            DistanceChart(
+                self.theme,
+                "Guinada — giro do carro  (+ direita)",
+                unit="°/s",
+                height=110,
+                y_step=YAW_STEP_DEG,
+                y_top_min=YAW_TOP_MIN_DEG,
+            ),
+            DistanceChart(
+                self.theme,
+                "Aderência por roda  (100% = rodando limpo)",
+                unit="%",
+                height=120,
+                y_step=GRIP_STEP_PCT,
+                y_top_min=GRIP_TOP_MIN_PCT,
+            ),
         ]
         for chart in self._charts:
             channels.add(chart)
             chart.hovered.connect(self._on_hover)
             chart.hover_left.connect(self._on_hover_left)
+
+        # Aviso do canal de escorregamento, logo abaixo do gráfico que ele
+        # qualifica. Ver `_fill_grip_chart`.
+        self._grip_hint = QLabel("")
+        self._grip_hint.setWordWrap(True)
+        channels.add(self._grip_hint)
+
+        # A faixa dos auxílios fecha a coluna de canais, alinhada ao mesmo eixo
+        # X: é embaixo de "aderência" que ela se lê, porque TCS atuando e roda
+        # patinando são o mesmo evento visto de dois lados.
+        self._aid_band = AidBand(self.theme, aids=tuple(AIDS))
+        channels.add(self._aid_band)
         # O círculo mora na coluna larga, abaixo dos canais. Sair de dois
         # gráficos para três deixou um vazio grande aqui, e o envelope de
         # aderência é justamente o gráfico que precisa de área: espremido, a
@@ -125,10 +184,27 @@ class AnalysisPage(Page):
         grip_card.add(self._g_scale)
         grip_card.add(self._gforce)
 
+        # Temperatura ao lado da força G, e não noutra parte da página: as duas
+        # respondem à mesma pergunta por caminhos diferentes. O envelope diz
+        # quanta aderência o pneu entregou; a temperatura diz se ele estava na
+        # janela para entregar. Lado a lado, um envelope pequeno com pneu azul
+        # se explica sozinho.
+        tyre_card = Card("Temperatura dos pneus")
+        self._tyre_temps = TyreTemperatures(self.theme, height=210)
+        self._tyre_caption = QLabel("")
+        self._tyre_caption.setWordWrap(True)
+        tyre_card.add(self._tyre_temps)
+        tyre_card.add(self._tyre_caption)
+
+        grip_row = QHBoxLayout()
+        grip_row.setSpacing(Space.LG.px)
+        grip_row.addWidget(grip_card, stretch=3)
+        grip_row.addWidget(tyre_card, stretch=2)
+
         left = QVBoxLayout()
         left.setSpacing(Space.LG.px)
         left.addWidget(channels)
-        left.addWidget(grip_card)
+        left.addLayout(grip_row)
         left.addStretch(1)
         middle.addLayout(left, stretch=3)
 
@@ -185,6 +261,10 @@ class AnalysisPage(Page):
         self._tyres.setWordWrap(True)
         self.content.addWidget(self._tyres)
 
+        self._flags_hint = QLabel("")
+        self._flags_hint.setWordWrap(True)
+        self.content.addWidget(self._flags_hint)
+
     # ---------- dados ----------
 
     def refresh(self) -> None:
@@ -220,6 +300,11 @@ class AnalysisPage(Page):
         self._map.clear()
         self._table.setRowCount(0)
         self._tyres.setText("")
+        self._flags_hint.setText("")
+        self._grip_hint.setText("")
+        self._aid_band.clear()
+        self._tyre_temps.clear()
+        self._tyre_caption.setText("")
 
     def _populate(self, lap_time_ms: int) -> None:
         self._lap_time_ms = lap_time_ms
@@ -265,6 +350,28 @@ class AnalysisPage(Page):
                 ),
             ]
         )
+        # Um mapa distância → eixo ativo, construído **uma vez**. As séries
+        # derivadas (guinada, aderência, auxílios) nascem indexadas por
+        # distância; converter cada ponto chamando `_x_at_distance` custaria uma
+        # varredura da volta inteira por ponto, que é a repintura quadrática que
+        # já travou esta página por 800 ms uma vez.
+        x_at = {p.distance_m: self._x_of(p) for p in points}
+
+        self._charts[CHART_YAW].set_series(
+            [
+                Series(
+                    "guinada",
+                    palette.channel_steering,
+                    [
+                        (x_at.get(distancia, distancia), graus)
+                        for distancia, graus in yaw_rate_series(points)
+                    ],
+                )
+            ]
+        )
+        self._fill_grip_chart(points, x_at)
+        self._fill_aid_band(points, x_at)
+
         # A volta inteira vira nuvem no círculo de atrito. G por distância
         # respondia "quanto de G houve no metro 1.200", que não é pergunta que
         # alguém faça; o envelope bidimensional mostra como a aderência
@@ -273,6 +380,11 @@ class AnalysisPage(Page):
             [(p.g_lateral, p.g_longitudinal) for p in points]
         )
         self._gforce.set_current(None)
+
+        # Sem cursor, a temperatura mostrada é a média da volta — o resumo. Ao
+        # passar o mouse ela vira a do ponto, e é aí que se vê o pneu esquentando
+        # numa sequência de curvas do mesmo lado.
+        self._show_average_temperatures(points)
 
         # Os ápices são marcados em **distância**; no eixo de tempo eles
         # precisam virar o instante correspondente, senão a marca "C2" aparece
@@ -331,6 +443,131 @@ class AnalysisPage(Page):
         balance = temperature_balance(points)
         self._tyres.setText(f"Pneus: {balance.describe()}" if balance else "")
 
+    def _fill_grip_chart(
+        self, points: list[TelemetryPoint], x_at: dict[float, float]
+    ) -> None:
+        """Uma série por roda, em % da velocidade do carro.
+
+        100% é a roda girando exatamente com o carro. Abaixo de 92% ela está
+        travando sob freio; acima de 108%, patinando. O gráfico de acelerador e
+        freio não mostra nada disso — lá as duas situações aparecem como pedal
+        no fundo, que é justamente por que este canal existe.
+
+        Amostras abaixo do limiar de velocidade viram **lacuna**, não zero: a
+        razão ali é numericamente instável, e um zero desenharia travamento
+        total onde só houve divisão por um número pequeno.
+        """
+        palette = self.theme.palette
+        cores = {
+            "fl": palette.channel_speed,
+            "fr": palette.green,
+            "rl": palette.orange,
+            "rr": palette.purple,
+        }
+        convencao = infer_slip_convention(points)
+
+        series = []
+        for roda in WHEELS:
+            valores = [
+                (x_at.get(p.distance_m, p.distance_m), razao * 100.0)
+                for p in points
+                if (razao := slip_ratio(p, roda, convencao)) is not None
+            ]
+            series.append(Series(WHEEL_LABELS[roda], cores[roda], valores))
+        self._charts[CHART_GRIP].set_series(series)
+        self._warn_if_slip_implausible(series)
+
+    def _warn_if_slip_implausible(self, series: list[Series]) -> None:
+        """Avisa quando o canal de escorregamento não parece ser o que se supõe.
+
+        Numa volta inteira, as quatro rodas passam a esmagadora maioria do tempo
+        rodando limpas: a média tem de ficar perto de 100%. Uma média muito
+        longe disso não é pilotagem ruim — é o canal não estar chegando como o
+        código presume. O campo `tire_slip_*` não tem especificação oficial, e o
+        offset de onde ele é lido veio de engenharia reversa; um offset errado
+        entrega um número que o gráfico desenha com toda a confiança do mundo.
+
+        O aviso é a diferença entre um gráfico errado e um gráfico que avisa que
+        pode estar errado. Foi exatamente esse tipo de silêncio que deixou toda
+        volta de PS5 real ser gravada com distância 0,0 m sem ninguém notar.
+        """
+        valores = [v for s in series for _, v in s.points]
+        if not valores:
+            self._grip_hint.setText("")
+            return
+
+        media = sum(valores) / len(valores)
+        if 60.0 <= media <= 160.0:
+            self._grip_hint.setText("")
+            return
+
+        self._grip_hint.setText(
+            f"Aderência média da volta: {media:.0f}% — implausível. As quatro "
+            "rodas passam quase toda a volta perto de 100%, então este canal "
+            "provavelmente não está chegando como o código presume (o campo "
+            "`tire_slip` do GT7 não tem especificação oficial). Trate este "
+            "gráfico e a contagem de travamentos como não confiáveis até "
+            "conferir."
+        )
+
+    def _fill_aid_band(
+        self, points: list[TelemetryPoint], x_at: dict[float, float]
+    ) -> None:
+        """Faixas de TCS e ASM, ou o motivo de não haver faixa nenhuma."""
+        if not was_recorded(points):
+            # Faixa vazia afirmaria "nenhum auxílio atuou" sobre uma volta em
+            # que ninguém observou os auxílios. Dizer isso em texto é a única
+            # saída honesta.
+            self._aid_band.set_note(
+                "auxílios não gravados nesta volta — só voltas novas trazem o dado"
+            )
+            return
+
+        self._aid_band.set_note("")
+        spans = {
+            aid: [
+                (
+                    x_at.get(t.start_distance_m, t.start_distance_m),
+                    x_at.get(t.end_distance_m, t.end_distance_m),
+                )
+                for t in aid_spans(points, aid)
+            ]
+            for aid in AIDS
+        }
+        self._aid_band.set_spans(
+            spans, x_range=(self._x_of(points[0]), self._x_of(points[-1]))
+        )
+
+        # Caça ao ABS: o bit dele não está identificado, e este é o instrumento
+        # que o encontra sem chutar offset — ver `gt7core.analytics.aids`.
+        if desconhecidos := unknown_bits(points):
+            self._hint_unknown_bits(desconhecidos)
+
+    def _hint_unknown_bits(self, bits: int) -> None:
+        """Rótulo próprio, e não o de pneus.
+
+        Escrito no rótulo de balanço de pneus, este aviso era apagado três
+        linhas depois pelo texto do balanço — apareceria só nas voltas sem
+        balanço calculado, que é o pior tipo de intermitência: some sem motivo
+        visível e vira "aquilo às vezes aparece".
+        """
+        posicoes = [str(i) for i in range(16) if bits & (1 << i)]
+        self._flags_hint.setText(
+            f"Bits de estado sem nome nesta volta: {', '.join(posicoes)}. "
+            "Um deles pode ser o ABS — compare uma volta com ABS ligado e outra "
+            "com ele desligado para isolar qual."
+        )
+
+    def _show_average_temperatures(self, points: list[TelemetryPoint]) -> None:
+        total = len(points)
+        self._tyre_temps.set_temperatures(
+            sum(p.tire_temp_fl for p in points) / total,
+            sum(p.tire_temp_fr for p in points) / total,
+            sum(p.tire_temp_rl for p in points) / total,
+            sum(p.tire_temp_rr for p in points) / total,
+        )
+        self._tyre_caption.setText("média da volta")
+
     def _fill_table(
         self, zones: list[BrakingZone], applications: list[ThrottleApplication]
     ) -> None:
@@ -372,11 +609,24 @@ class AnalysisPage(Page):
         for chart in self._charts:
             chart.set_cursor(x_value)
 
+        self._aid_band.set_cursor(x_value)
+
         point = self._point_at_x(x_value)
         if point is None:
             self._map.set_cursor(None)
             return
         self._map.set_cursor(point.distance_m)
+
+        self._tyre_temps.set_temperatures(
+            point.tire_temp_fl,
+            point.tire_temp_fr,
+            point.tire_temp_rl,
+            point.tire_temp_rr,
+        )
+        atuando = self._aid_band.active_at(x_value)
+        self._tyre_caption.setText(
+            f"no cursor · {' + '.join(atuando)} atuando" if atuando else "no cursor"
+        )
 
         rows = self._detail_rows
         rows["distance"].set_value(f"{point.distance_m:.0f} m")
@@ -444,6 +694,11 @@ class AnalysisPage(Page):
             chart.set_cursor(None)
         self._map.set_cursor(None)
         self._gforce.set_current(None)
+        self._aid_band.set_cursor(None)
+        # Volta para o resumo da volta em vez de congelar no último ponto
+        # apontado, que ficaria parecendo o estado atual do carro.
+        if self._points:
+            self._show_average_temperatures(self._points)
 
     def _on_row_selected(self) -> None:
         """Selecionar uma curva na tabela move o cursor dos gráficos até ela."""

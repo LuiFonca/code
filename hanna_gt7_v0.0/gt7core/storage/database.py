@@ -46,7 +46,7 @@ from ..observability.logging import get_logger
 
 _log = get_logger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 UNKNOWN_CAR_NAME = "Desconhecido"
 UNKNOWN_TRACK_NAME = "Pista não identificada"
@@ -193,7 +193,8 @@ class SqliteDatabase:
                 suspension_rl REAL, suspension_rr REAL,
                 tire_slip_fl REAL, tire_slip_fr REAL,
                 tire_slip_rl REAL, tire_slip_rr REAL,
-                turbo_boost REAL, oil_temp REAL, water_temp REAL
+                turbo_boost REAL, oil_temp REAL, water_temp REAL,
+                flags INTEGER
             );
             CREATE TABLE IF NOT EXISTS sector_times (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,6 +250,15 @@ class SqliteDatabase:
                 );
             """)
             self._try_alter("laps", "session_id INTEGER REFERENCES sessions(id)")
+
+        if current and current < 7:
+            # 6 -> 7: o bitfield de estado do pacote passa a ser gravado por
+            # amostra, que é o que permite mostrar TCS e ASM atuando numa volta
+            # já guardada. Voltas antigas ficam com NULL — "não foi gravado", e
+            # não "não atuou". A distinção importa: 0 faria uma volta antiga
+            # alegar pilotagem sem auxílio que ninguém mediu.
+            _log.info("migrando banco", extra={"from": current, "to": 7})
+            self._try_alter("lap_frames", "flags INTEGER")
 
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()

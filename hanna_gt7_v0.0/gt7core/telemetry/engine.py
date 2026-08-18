@@ -308,6 +308,7 @@ class TelemetryEngine:
             suspension_fr=frame.suspension_fr,
             suspension_rl=frame.suspension_rl,
             suspension_rr=frame.suspension_rr,
+            flags=frame.flags,
             tire_slip_fl=frame.tire_slip_fl,
             tire_slip_fr=frame.tire_slip_fr,
             tire_slip_rl=frame.tire_slip_rl,
