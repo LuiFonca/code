@@ -20,7 +20,7 @@ from datetime import datetime  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from gt7app.application import build_core, build_gui  # noqa: E402
-from gt7app.pages.analysis import CHART_GRIP, CHART_YAW  # noqa: E402
+from gt7app.pages.analysis import CHART_BOOST, CHART_GRIP, CHART_YAW  # noqa: E402
 from gt7core.config.settings import Settings  # noqa: E402
 from gt7core.domain.models import Lap  # noqa: E402
 from gt7core.telemetry.protocol import (  # noqa: E402
@@ -245,3 +245,149 @@ class TestAvisoDeCanalImplausivel:
         pagina._warn_if_slip_implausible([])  # noqa: SLF001
 
         assert pagina._grip_hint.text() == ""  # noqa: SLF001
+
+
+class TestCanaisDaComparacao:
+    """Os canais que a comparação ganhou: pedais, auxílios e turbo.
+
+    O que importa prender aqui é a **correspondência de cor com volta**. Os
+    mesmos dois traços aparecem agora em cinco gráficos, no mapa e na faixa de
+    auxílios; se um deles trocar as cores, a mesma cor passa a significar voltas
+    diferentes em quadros vizinhos — e nada na tela denuncia.
+    """
+
+    def test_acelerador_e_freio_tem_as_duas_voltas(self, montado) -> None:  # noqa: ANN001
+        window, _ = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        pagina.refresh()
+
+        for chart in (pagina._throttle_chart, pagina._brake_chart):  # noqa: SLF001
+            assert not chart.is_empty
+            assert [s.label for s in chart._series] == ["referência", "comparada"]  # noqa: SLF001
+
+    def test_a_cor_significa_a_mesma_volta_em_todo_lugar(self, montado) -> None:  # noqa: ANN001
+        window, _ = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        pagina.refresh()
+        cores = pagina._colors  # noqa: SLF001
+
+        for chart in (
+            pagina._speed_chart,  # noqa: SLF001
+            pagina._throttle_chart,  # noqa: SLF001
+            pagina._brake_chart,  # noqa: SLF001
+        ):
+            referencia, comparada = chart._series  # noqa: SLF001
+            assert referencia.color == cores.reference
+            assert comparada.color == cores.compared
+
+        mapa_ref, mapa_comp = pagina._map._paths  # noqa: SLF001
+        assert mapa_ref.color == cores.reference
+        assert mapa_comp.color == cores.compared
+
+    def test_as_duas_cores_do_mapa_contrastam(self, montado) -> None:  # noqa: ANN001
+        """Roxo e azul são vizinhos: sobrepostos, os dois traçados viravam uma
+        linha só e a comparação de linha de corrida ficava ilegível."""
+        window, _ = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        cores = pagina._colors  # noqa: SLF001
+
+        def rgb(hexa: str) -> tuple[int, int, int]:
+            limpo = hexa.lstrip("#")
+            return tuple(int(limpo[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+        r1, g1, b1 = rgb(cores.reference)
+        r2, g2, b2 = rgb(cores.compared)
+
+        assert cores.reference != cores.compared
+        # Separação em canal **azul**: é o eixo em que roxo e azul se pareciam.
+        assert abs(b1 - b2) > 80, "as duas cores continuam vizinhas demais"
+
+    def test_a_faixa_tem_uma_linha_por_auxilio_e_por_volta(self, montado) -> None:  # noqa: ANN001
+        window, _ = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        pagina.refresh()
+
+        assert set(pagina._aid_band._spans) == {  # noqa: SLF001
+            "TCS ref.", "TCS comp.", "ASM ref.", "ASM comp.",
+        }
+        assert pagina._aid_band._spans["TCS ref."]  # noqa: SLF001
+        assert pagina._aid_band._spans["TCS comp."]  # noqa: SLF001
+
+    def test_a_faixa_colore_por_volta_e_nao_por_auxilio(self, montado) -> None:  # noqa: ANN001
+        window, _ = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        cores = pagina._colors  # noqa: SLF001
+        do_widget = pagina._aid_band._colors  # noqa: SLF001
+
+        assert do_widget["TCS ref."] == do_widget["ASM ref."] == cores.reference
+        assert do_widget["TCS comp."] == do_widget["ASM comp."] == cores.compared
+
+    def test_o_abs_e_declarado_ausente_em_vez_de_omitido(self, montado) -> None:  # noqa: ANN001
+        """Sem a frase, a ausência do ABS pareceria "o ABS não atuou"."""
+        window, _ = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        pagina.refresh()
+
+        assert "ABS" in pagina._aid_hint.text()  # noqa: SLF001
+
+
+class TestTurboSomeQuandoNaoExiste:
+    def test_com_turbo_o_grafico_aparece(self, montado) -> None:  # noqa: ANN001
+        window, _ = montado
+        for indice in (1, 2):
+            pagina = window._pages[indice]  # noqa: SLF001
+            pagina.refresh()
+
+        analise = window._pages[1]  # noqa: SLF001
+        assert not analise._charts[CHART_BOOST].isHidden()  # noqa: SLF001
+        assert analise._boost_hint.text() == ""  # noqa: SLF001
+
+        comparacao = window._pages[2]  # noqa: SLF001
+        assert not comparacao._boost_chart.isHidden()  # noqa: SLF001
+
+    def test_carro_aspirado_esconde_o_grafico_nas_duas_abas(self, montado) -> None:  # noqa: ANN001
+        """Uma reta no zero ocupando 120 px é um gráfico que não responde nada.
+
+        Some, e a linha de texto no lugar impede que a ausência vire "cadê o
+        gráfico que estava aqui?".
+        """
+        window, core = montado
+        track_id = core.tracks.get_or_create("Interlagos")
+
+        core.engine.reset()
+        for frame in synthetic_lap(lap_time_ms=95_000):
+            core.engine.on_frame(frame)
+        aspirados = []
+        for p in core.engine._buffer:  # noqa: SLF001
+            campos = {f: getattr(p, f) for f in p.__slots__}
+            campos["turbo_boost"] = 1.0  # atmosférica: zero bar de sobrealimentação
+            aspirados.append(type(p)(**campos))
+
+        lap_id = core.laps.save(
+            Lap(
+                track_id=track_id,
+                lap_time_ms=95_000,
+                start_time=datetime.now(),
+                points=aspirados,
+            )
+        )
+
+        analise = window._pages[1]  # noqa: SLF001
+        analise.refresh()
+        analise._on_lap_selected(lap_id)  # noqa: SLF001
+
+        assert analise._charts[CHART_BOOST].isHidden()  # noqa: SLF001
+        assert "aspirado" in analise._boost_hint.text()  # noqa: SLF001
+
+    def test_basta_uma_volta_ter_turbo_para_o_quadro_aparecer(self, montado) -> None:  # noqa: ANN001
+        """Trocar de carro entre as voltas é legítimo, e aí a reta no zero de um
+        deles é justamente a comparação."""
+        window, _ = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        pagina.refresh()
+
+        for p in pagina._reference:  # noqa: SLF001
+            object.__setattr__(p, "turbo_boost", 1.0)
+        pagina._fill_boost()  # noqa: SLF001
+
+        assert not pagina._boost_chart.isHidden(), "a comparada ainda tem turbo"  # noqa: SLF001

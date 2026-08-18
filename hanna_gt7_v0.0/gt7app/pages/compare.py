@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gt7core.analytics.aids import aid_spans, was_recorded
 from gt7core.analytics.corners import detect_corners
 from gt7core.analytics.series import LapSeries, compute_delta_series
 from gt7core.analytics.timeloss import TimeLossReport, analyse_time_loss
@@ -33,7 +34,9 @@ from gt7core.domain.models import TelemetryPoint
 
 from ..application import CoreApplication
 from ..design.tokens import Space, Theme
+from ..pages.analysis import BOOST_PRESENT_BAR, BOOST_STEP_BAR, BOOST_TOP_MIN_BAR
 from ..widgets.advice import AdviceCard
+from ..widgets.aidband import AidBand
 from ..widgets.cards import Card, MetricCard, MetricGrid
 from ..widgets.charts import (
     SPEED_STEP_KMH,
@@ -47,6 +50,35 @@ from .base import Page
 
 SEGMENT_COLUMNS = ("Trecho", "Início", "Δ tempo", "Diagnóstico")
 
+#: Linhas da faixa de auxílios: um auxílio por volta.
+#:
+#: O ABS não está aqui porque **o bit dele não está identificado** na engenharia
+#: reversa do pacote — ver `gt7core.analytics.aids`. Inventar uma linha "ABS"
+#: alimentada por um bit chutado seria pior que não ter: ela pareceria medida.
+COMPARE_AID_ROWS = ("TCS ref.", "TCS comp.", "ASM ref.", "ASM comp.")
+
+#: Rótulo curto de cada linha. A calha da faixa tem 46 px — a largura da margem
+#: esquerda dos gráficos, que ela precisa respeitar para alinhar com o eixo X.
+#: "TCS comp." não cabe e saía truncado em "; comp."; a linha diz o auxílio e a
+#: **cor** diz a volta, que já é a convenção do resto da página.
+AID_ROW_LABELS = {
+    "TCS ref.": "TCS",
+    "TCS comp.": "TCS",
+    "ASM ref.": "ASM",
+    "ASM comp.": "ASM",
+}
+
+#: Da linha da faixa para o auxílio de verdade.
+AID_OF_ROW = {
+    "TCS ref.": "TCS",
+    "TCS comp.": "TCS",
+    "ASM ref.": "ASM",
+    "ASM comp.": "ASM",
+}
+
+#: Quais linhas pertencem à volta comparada (o resto é a referência).
+COMPARED_ROWS = frozenset({"TCS comp.", "ASM comp."})
+
 #: Linhas do cartão do cursor: (chave, rótulo, unidade).
 CURSOR_ROWS = (
     ("speed", "Velocidade", "km/h"),
@@ -54,6 +86,28 @@ CURSOR_ROWS = (
     ("brake", "Freio", "%"),
     ("gear", "Marcha", ""),
 )
+
+
+class LapColors:
+    """As duas cores da página, num lugar só.
+
+    Eram roxo e azul, e roxo e azul são vizinhos: sobrepostos no mapa, os dois
+    traçados viravam uma linha só e a comparação de linha de corrida — que é a
+    razão de o mapa existir aqui — ficava ilegível.
+
+    Amarelo contra azul é o par de maior separação que a paleta oferece: difere
+    em matiz **e** em luminosidade, então sobrevive à sobreposição e também a
+    quem não distingue vermelho de verde.
+
+    A regra que importa é a consistência: a mesma cor significa a mesma volta no
+    mapa, nos cinco gráficos, na faixa de auxílios e na legenda. Duas definições
+    em arquivos diferentes é como o mapa acabaria dizendo que amarelo é a
+    referência enquanto o gráfico diz que é a comparada.
+    """
+
+    def __init__(self, theme: Theme) -> None:
+        self.reference = theme.palette.yellow
+        self.compared = theme.palette.channel_speed
 
 
 class CursorComparison(QWidget):
@@ -166,7 +220,14 @@ class ComparePage(Page):
         self._analysed: list[TelemetryPoint] = []
         #: Cursor travado por clique — ver a nota igual na página de análise.
         self._frozen = False
+        self._colors = LapColors(theme)
         super().__init__(core, theme)
+
+    def _aid_row_colors(self) -> dict[str, str]:
+        return {
+            row: (self._colors.compared if row in COMPARED_ROWS else self._colors.reference)
+            for row in COMPARE_AID_ROWS
+        }
 
     # ---------- construção ----------
 
@@ -212,7 +273,7 @@ class ComparePage(Page):
         middle = QHBoxLayout()
         middle.setSpacing(Space.LG.px)
 
-        charts = Card("Delta e velocidade por distância")
+        charts = Card("Canais por distância")
         self._delta_chart = DistanceChart(
             self.theme, "Delta acumulado", unit="s", height=140
         )
@@ -224,12 +285,52 @@ class ComparePage(Page):
             y_step=SPEED_STEP_KMH,
             y_top_min=SPEED_TOP_MIN_KMH,
         )
-        charts.add(self._delta_chart)
-        charts.add(self._speed_chart)
-        self._delta_chart.hovered.connect(self._on_hover)
-        self._speed_chart.hovered.connect(self._on_hover)
-        self._delta_chart.clicked.connect(self._on_click)
-        self._speed_chart.clicked.connect(self._on_click)
+        # Acelerador e freio em gráficos **separados**, e não os quatro traços
+        # num só. Sobrepostos, dois aceleradores e dois freios viram um emaranhado
+        # em que não se lê nem qual volta nem qual pedal; separados, cada quadro
+        # tem só duas linhas e a diferença entre elas é a informação inteira.
+        self._throttle_chart = DistanceChart(
+            self.theme, "Acelerador", unit="%", height=120, y_range=(0.0, 100.0)
+        )
+        self._brake_chart = DistanceChart(
+            self.theme, "Freio", unit="%", height=120, y_range=(0.0, 100.0)
+        )
+        self._boost_chart = DistanceChart(
+            self.theme,
+            "Pressão de turbo",
+            unit="bar",
+            height=120,
+            y_step=BOOST_STEP_BAR,
+            y_top_min=BOOST_TOP_MIN_BAR,
+        )
+
+        self._charts = [
+            self._delta_chart,
+            self._speed_chart,
+            self._throttle_chart,
+            self._brake_chart,
+            self._boost_chart,
+        ]
+        for chart in self._charts:
+            charts.add(chart)
+            chart.hovered.connect(self._on_hover)
+            chart.clicked.connect(self._on_click)
+
+        # Quatro linhas: dois auxílios × duas voltas. A cor identifica a volta,
+        # e não o auxílio — a pergunta aqui é qual das duas pediu mais ajuda ao
+        # computador, e onde.
+        self._aid_band = AidBand(
+            self.theme,
+            aids=COMPARE_AID_ROWS,
+            colors=self._aid_row_colors(),
+            labels=AID_ROW_LABELS,
+        )
+        charts.add(self._aid_band)
+
+        self._aid_hint = QLabel("")
+        self._aid_hint.setWordWrap(True)
+        charts.add(self._aid_hint)
+
         middle.addWidget(charts, stretch=3)
 
         right = QVBoxLayout()
@@ -340,17 +441,18 @@ class ComparePage(Page):
 
     def _clear(self, hint: str) -> None:
         self._summary.clear_values(self.theme)
-        self._delta_chart.clear()
-        self._speed_chart.clear()
+        for chart in self._charts:
+            chart.clear()
+            chart.set_cursor_locked(False)
         self._map.clear()
+        self._aid_band.clear()
+        self._aid_hint.setText("")
         self._table.setRowCount(0)
         self._cursor_comparison.clear()
         self._cursor_distance.setText("—")
         self._cursor_delta.setText("—")
         self._cursor_delta.setStyleSheet("")
         self._frozen = False
-        for chart in (self._delta_chart, self._speed_chart):
-            chart.set_cursor_locked(False)
         self._hint.setText(hint)
 
     def _populate(self) -> None:
@@ -372,26 +474,21 @@ class ComparePage(Page):
         self._delta_chart.set_series(
             [Series("delta", palette.accent, delta_series)]
         )
-        self._speed_chart.set_series(
-            [
-                Series(
-                    "referência",
-                    palette.purple,
-                    [(p.distance_m, p.speed_kmh) for p in self._reference],
-                ),
-                Series(
-                    "comparada",
-                    palette.channel_speed,
-                    [(p.distance_m, p.speed_kmh) for p in self._analysed],
-                ),
-            ]
-        )
+        self._speed_chart.set_series(self._pair("speed_kmh"))
+        self._throttle_chart.set_series(self._pair("throttle"))
+        self._brake_chart.set_series(self._pair("brake"))
+        self._fill_boost()
+        self._fill_aid_band()
 
         # As marcas destacam onde se perdeu, não todas as curvas: um gráfico
         # cheio de linhas pontilhadas não destaca nada.
+        #
+        # A cor da marca é neutra, e não mais o amarelo: amarelo agora identifica
+        # a volta de referência, e uma marca amarela no meio de traços amarelos
+        # passaria a parecer parte do dado.
         self._delta_chart.set_markers(
             [
-                (segment.start_distance_m, segment.label, palette.yellow)
+                (segment.start_distance_m, segment.label, palette.text_muted)
                 for segment in report.worst(3)
             ]
         )
@@ -400,13 +497,13 @@ class ComparePage(Page):
             [
                 TrackPath(
                     "referência",
-                    palette.purple,
+                    self._colors.reference,
                     [(p.position_x, p.position_z) for p in self._reference],
                     distances=[p.distance_m for p in self._reference],
                 ),
                 TrackPath(
                     "comparada",
-                    palette.channel_speed,
+                    self._colors.compared,
                     [(p.position_x, p.position_z) for p in self._analysed],
                     dashed=True,
                     distances=[p.distance_m for p in self._analysed],
@@ -436,6 +533,82 @@ class ComparePage(Page):
             "O tempo de cada trecho é a variação do delta dentro dele — "
             "não o delta acumulado. Por isso um trecho ruim não contamina os "
             "seguintes."
+        )
+
+    def _pair(self, attribute: str) -> list[Series]:
+        """As duas voltas no mesmo canal, sempre nesta ordem e nestas cores.
+
+        Uma função só para os três gráficos: repetir o par a cada canal é como
+        um deles acabaria com as cores trocadas, e aí a mesma cor significaria
+        voltas diferentes em dois quadros vizinhos.
+        """
+        return [
+            Series(
+                "referência",
+                self._colors.reference,
+                [(p.distance_m, float(getattr(p, attribute))) for p in self._reference],
+            ),
+            Series(
+                "comparada",
+                self._colors.compared,
+                [(p.distance_m, float(getattr(p, attribute))) for p in self._analysed],
+            ),
+        ]
+
+    def _fill_boost(self) -> None:
+        """Turbo só entra na tela se houver turbo.
+
+        Num carro aspirado o quadro seria duas retas no zero ocupando 120 px de
+        uma página que já é longa — um gráfico que não responde nada. Some
+        inteiro, e a linha de texto no lugar existe para a ausência não virar
+        "cadê o gráfico que estava aqui?".
+
+        Basta **uma** das voltas ter turbo para o quadro aparecer: comparar o
+        mesmo carro é o caso normal, mas trocar de carro entre as voltas é
+        legítimo, e aí a reta no zero de um deles é justamente a comparação.
+        """
+        pico = max(
+            (p.boost_bar for p in self._reference + self._analysed),
+            default=0.0,
+        )
+        tem_turbo = pico >= BOOST_PRESENT_BAR
+
+        self._boost_chart.setVisible(tem_turbo)
+        if tem_turbo:
+            self._boost_chart.set_series(self._pair("boost_bar"))
+        else:
+            self._boost_chart.clear()
+
+    def _fill_aid_band(self) -> None:
+        """TCS e ASM das duas voltas, quatro linhas no mesmo eixo."""
+        gravado = was_recorded(self._reference) and was_recorded(self._analysed)
+        if not gravado:
+            self._aid_band.set_note(
+                "auxílios não gravados numa das voltas — só voltas novas trazem o dado"
+            )
+            self._aid_hint.setText("")
+            return
+
+        self._aid_band.set_note("")
+        spans: dict[str, list[tuple[float, float]]] = {}
+        for row in COMPARE_AID_ROWS:
+            pontos = self._analysed if row in COMPARED_ROWS else self._reference
+            spans[row] = [
+                (t.start_distance_m, t.end_distance_m)
+                for t in aid_spans(pontos, AID_OF_ROW[row])
+            ]
+
+        fim = max(self._reference[-1].distance_m, self._analysed[-1].distance_m)
+        self._aid_band.set_spans(spans, x_range=(0.0, fim))
+
+        # O ABS não tem linha porque o bit dele não está identificado. Dizer
+        # isso é diferente de omitir: sem a frase, a ausência pareceria "o ABS
+        # não atuou".
+        self._aid_hint.setText(
+            "Duas linhas por auxílio: a de cima é a referência, a de baixo a "
+            "comparada — as mesmas cores do mapa e dos gráficos. O ABS não "
+            "aparece porque o bit dele não está identificado no pacote do GT7; "
+            "a aba de Análise reporta bits desconhecidos, que é como achá-lo."
         )
 
     # ---------- engenheiro ----------
@@ -514,7 +687,7 @@ class ComparePage(Page):
         perdia a leitura.
         """
         self._frozen = not self._frozen
-        for chart in (self._delta_chart, self._speed_chart):
+        for chart in self._charts:
             chart.set_cursor_locked(self._frozen)
         if self._frozen:
             self._move_cursor(distance_m)
@@ -527,9 +700,10 @@ class ComparePage(Page):
         self._move_cursor(distance_m)
 
     def _move_cursor(self, distance_m: float) -> None:
-        self._delta_chart.set_cursor(distance_m)
-        self._speed_chart.set_cursor(distance_m)
+        for chart in self._charts:
+            chart.set_cursor(distance_m)
         self._map.set_cursor(distance_m)
+        self._aid_band.set_cursor(distance_m)
 
         referencia = _point_at(self._reference, distance_m)
         comparada = _point_at(self._analysed, distance_m)

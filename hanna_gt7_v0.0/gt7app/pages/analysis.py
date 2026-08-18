@@ -632,6 +632,23 @@ class AnalysisPage(Page):
         sozinho não diz nada disso — lá o pedal já está em 100%.
         """
         palette = self.theme.palette
+
+        # Carro aspirado: o quadro seria uma reta no zero ocupando 110 px de uma
+        # página já longa — um gráfico que não responde nada. Some inteiro, e a
+        # linha de texto no lugar existe para a ausência não virar "cadê o
+        # gráfico que estava aqui?".
+        pico = max((p.boost_bar for p in points), default=0.0)
+        tem_turbo = pico >= BOOST_PRESENT_BAR
+
+        self._charts[CHART_BOOST].setVisible(tem_turbo)
+        self._boost_hint.setText(
+            "" if tem_turbo else "Sem turbo nesta volta — o carro é aspirado."
+        )
+
+        if not tem_turbo:
+            self._charts[CHART_BOOST].clear()
+            return
+
         self._charts[CHART_BOOST].set_series(
             [
                 Series(
@@ -640,15 +657,6 @@ class AnalysisPage(Page):
                     [(x_at.get(p.distance_m, p.distance_m), p.boost_bar) for p in points],
                 )
             ]
-        )
-
-        # Carro aspirado desenha uma linha reta no zero, que parece gráfico
-        # quebrado. Dizer que não há turbo é a diferença entre "não mediu" e
-        # "não tem o que medir".
-        pico = max((p.boost_bar for p in points), default=0.0)
-        self._boost_hint.setText(
-            "" if pico >= BOOST_PRESENT_BAR
-            else "Sem turbo nesta volta — o carro é aspirado."
         )
 
     def _fill_aid_band(

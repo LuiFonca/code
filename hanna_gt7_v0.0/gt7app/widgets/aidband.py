@@ -39,10 +39,31 @@ MIN_BLOCK_W = 2.0
 class AidBand(QWidget):
     """Tiras de atuação, alinhadas ao eixo X dos gráficos de canal."""
 
-    def __init__(self, theme: Theme, *, aids: tuple[str, ...] = ("TCS", "ASM")) -> None:
+    def __init__(
+        self,
+        theme: Theme,
+        *,
+        aids: tuple[str, ...] = ("TCS", "ASM"),
+        colors: dict[str, str] | None = None,
+        labels: dict[str, str] | None = None,
+    ) -> None:
         super().__init__()
         self._theme = theme
         self._aids = aids
+        #: Rótulo exibido, separado da chave da linha.
+        #:
+        #: A calha do rótulo tem a largura da margem esquerda dos gráficos — ela
+        #: **precisa** ter, senão a faixa deixa de alinhar com o eixo X deles, e
+        #: um bloco de atuação cairia ao lado do ponto do gráfico em que o
+        #: auxílio atuou. Em 46 px cabe "TCS", não "TCS comp.": na comparação os
+        #: rótulos saíam truncados em "; comp." e "iSM ref.". A saída é a linha
+        #: dizer o auxílio e a **cor** dizer a volta, que já é a convenção da
+        #: página inteira.
+        self._labels = labels or {}
+        #: Cor por linha. Na análise a linha identifica o **auxílio**; na
+        #: comparação identifica a **volta**, porque lá há quatro linhas (dois
+        #: auxílios × duas voltas) e a pergunta é qual volta acionou mais.
+        self._colors = colors or {}
         self._spans: dict[str, list[tuple[float, float]]] = {a: [] for a in aids}
         self._min_x = 0.0
         self._max_x = 1.0
@@ -151,7 +172,7 @@ class AidBand(QWidget):
         painter.drawText(
             QRectF(0.0, rect.top(), float(MARGIN_LEFT - 6), rect.height()),
             int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter),
-            aid,
+            self._labels.get(aid, aid),
         )
 
         # O leito da tira, sempre desenhado: sem ele, "o TCS não atuou" e "o TCS
@@ -162,7 +183,11 @@ class AidBand(QWidget):
         painter.setBrush(leito)
         painter.drawRoundedRect(rect, 3.0, 3.0)
 
-        cor = QColor(palette.yellow if aid == "TCS" else palette.purple)
+        cor = QColor(
+            self._colors.get(
+                aid, palette.yellow if aid.startswith("TCS") else palette.purple
+            )
+        )
         painter.setBrush(cor)
         for start, end in self._spans.get(aid, []):
             x0 = self._x_pixel(start)
