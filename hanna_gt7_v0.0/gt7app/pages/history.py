@@ -42,7 +42,13 @@ from ..widgets.cards import Card, MetricCard, MetricGrid
 from ..widgets.selectors import format_delta, format_lap_time
 from .base import Page
 
-HISTORY_COLUMNS = ("Volta", "Tempo", "Δ melhor", "Setor 1", "Setor 2", "Setor 3", "Data")
+HISTORY_COLUMNS = (
+    "Volta", "Carro", "Tempo", "Δ melhor", "Setor 1", "Setor 2", "Setor 3", "Data",
+)
+
+#: Índice da coluna de carro, para o alinhamento à esquerda junto com "Volta".
+#: Nome de carro é texto e centralizado fica ilegível numa lista.
+CAR_COLUMN = 1
 NUM_SECTORS = 3
 
 # Quantas voltas carregar com amostras para calcular setores. Carregar todas
@@ -59,10 +65,16 @@ class HistoryPage(Page):
 
     def __init__(self, core: CoreApplication, theme: Theme) -> None:
         self._laps: list[Lap] = []
+        self._car_names: dict[int, str] = {}
         super().__init__(core, theme)
 
     def build(self) -> None:
-        self.header.add_action(self._build_toolbar())
+        # A barra vai para o **corpo**, e não para o cabeçalho. No cabeçalho ela
+        # disputava a linha com o título: seis controles à direita de "Histórico"
+        # não cabem na largura, e o resultado era a barra flutuando no meio da
+        # página com um vazio enorme em volta. No corpo ela é uma linha comum,
+        # ancorada à esquerda, e sobra largura para a tabela.
+        self.content.addWidget(self._build_toolbar())
 
         self._summary = MetricGrid(columns=4)
         for key, label, unit in (
@@ -83,11 +95,19 @@ class HistoryPage(Page):
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
+        # Todas as colunas ao conteúdo, **menos a do carro**, que fica com a
+        # sobra. Esticando todas por igual, tempo e setor — que são números
+        # curtos e de largura fixa — recebiam o mesmo espaço que "Porsche 911
+        # GT3 RS", e só o nome do carro saía cortado. Cortar o nome é o pior
+        # lugar para economizar largura: é o único campo da linha que não se
+        # deduz do resto.
+        cabecalho = self._table.horizontalHeader()
+        cabecalho.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        cabecalho.setSectionResizeMode(CAR_COLUMN, QHeaderView.ResizeMode.Stretch)
         table_card.add(self._table)
-        self.content.addWidget(table_card)
+        # Esticador na tabela: é ela que se beneficia de espaço, e sem isto a
+        # sobra ia para os vãos entre os cartões.
+        self.content.addWidget(table_card, stretch=1)
 
         self._note = QLabel("")
         self._note.setObjectName(OBJ_STATUS_BAR)
@@ -127,7 +147,23 @@ class HistoryPage(Page):
         layout.addWidget(self._rename)
         layout.addWidget(self._delete_selected)
         layout.addWidget(self._delete_all)
+        layout.addStretch(1)
         return bar
+
+    def _car_name(self, car_id: int | None) -> str:
+        """Nome do carro da volta, com cache.
+
+        Sem o cache seria uma consulta por linha da tabela; com vinte voltas de
+        um mesmo carro, dezenove delas perguntariam de novo a mesma coisa. O
+        cache é por página e não invalida: nome de carro não muda, e o `car_id`
+        vem do catálogo do jogo.
+        """
+        if car_id is None:
+            return "—"
+        if car_id not in self._car_names:
+            car = self.core.cars.get_by_id(car_id)
+            self._car_names[car_id] = car.name if car else "—"
+        return self._car_names[car_id]
 
     # ---------- renomear ----------
 
@@ -307,6 +343,7 @@ class HistoryPage(Page):
             lap_sectors = sectors.get(lap.id, [None] * NUM_SECTORS)
             cells = [
                 f"#{lap.id}",
+                self._car_name(lap.car_id),
                 format_lap_time(lap.lap_time_ms),
                 (
                     "★"
@@ -325,7 +362,7 @@ class HistoryPage(Page):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(
                     Qt.AlignmentFlag.AlignCenter
-                    if column
+                    if column and column != CAR_COLUMN
                     else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                 )
                 self._table.setItem(row, column, item)

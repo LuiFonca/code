@@ -19,6 +19,8 @@ import pytest
 
 from gt7core.config.settings import Settings, StorageConfig, TelemetryConfig
 
+from .conftest import dispose_window
+
 HAS_QT = importlib.util.find_spec("PySide6") is not None
 
 pytestmark = pytest.mark.skipif(
@@ -65,7 +67,7 @@ def shell(tmp_path: Path, qt_app):  # noqa: ANN001, ANN201
 
     yield window, core, qt_app
 
-    window.close()
+    dispose_window(window, qt_app)
 
 
 class TestNavegacao:

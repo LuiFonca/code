@@ -210,11 +210,30 @@ class TelemetryFrame:
         throttle = struct.unpack("<B", d[0x91:0x92])[0] / 255 * 100
         brake = struct.unpack("<B", d[0x92:0x93])[0] / 255 * 100
 
+        # Rotação das rodas (rad/s), raio do pneu (m) e altura de suspensão, nesta
+        # ordem e coladas. Os offsets antigos — 0x98 para suspensão e 0xE4 para
+        # escorregamento — estavam errados, e a prova veio da tela: **as quatro
+        # rodas marcavam 0,000 a volta inteira**, contra um PS5 real. Um canal de
+        # telemetria não é identicamente zero; 0xE4 cai no bloco não usado do
+        # pacote (0xD4–0xF4) e 0x98 dentro do vetor do plano da pista.
+        #
+        # A cadeia que fixa estes três é verificável de trás para frente a partir
+        # de um ponto conhecido-bom: `car_id` em 0x124 funciona (a detecção de
+        # carro funciona), e 0x104 + 8 razões de marcha × 4 bytes = 0x124. Antes
+        # das razões vêm embreagem e transmissão (0xF4–0x104), antes o bloco não
+        # usado (0xD4), e antes dele os três grupos de quatro floats abaixo.
+        wheel_rps = struct.unpack("<ffff", d[0xA4:0xB4])
+        tire_radius = struct.unpack("<ffff", d[0xB4:0xC4])
         suspension_fl, suspension_fr, suspension_rl, suspension_rr = struct.unpack(
-            "<ffff", d[0x98:0xA8]
+            "<ffff", d[0xC4:0xD4]
         )
-        tire_slip_fl, tire_slip_fr, tire_slip_rl, tire_slip_rr = struct.unpack(
-            "<ffff", d[0xE4:0xF4]
+
+        # Velocidade da superfície do pneu, em m/s. **Fisicamente definida**:
+        # |ω| × raio. É o que elimina a ambiguidade que o módulo de análise vinha
+        # contornando por inferência — não havia campo "escorregamento" no
+        # pacote, havia rotação e raio, e o escorregamento sempre foi derivado.
+        tire_slip_fl, tire_slip_fr, tire_slip_rl, tire_slip_rr = (
+            abs(rps) * radius for rps, radius in zip(wheel_rps, tire_radius, strict=True)
         )
         car_id = struct.unpack("<i", d[0x124:0x128])[0]
 

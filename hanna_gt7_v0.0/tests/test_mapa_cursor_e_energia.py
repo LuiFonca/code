@@ -26,6 +26,7 @@ from gt7app.widgets.trackmap import TrackMap, TrackPath  # noqa: E402
 from gt7core.config.settings import Settings  # noqa: E402
 from gt7core.domain.models import Lap  # noqa: E402
 from gt7core.telemetry.sources.mock import synthetic_lap  # noqa: E402
+from tests.conftest import dispose_window  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -57,7 +58,7 @@ def montado(app: QApplication, tmp_path):  # noqa: ANN001, ARG001
             )
         window = build_gui(core)
         yield window
-        window.close()
+        dispose_window(window)
     finally:
         core.close()
 

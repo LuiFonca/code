@@ -38,6 +38,7 @@ gravação da volta seria um mau negócio.
 from __future__ import annotations
 
 import contextlib
+import itertools
 import sqlite3
 import threading
 from pathlib import Path
@@ -47,6 +48,26 @@ from ..observability.logging import get_logger
 _log = get_logger(__name__)
 
 SCHEMA_VERSION = 7
+
+_memory_counter = itertools.count()
+_memory_lock = threading.Lock()
+
+
+def _next_memory_id() -> int:
+    """Nome único para cada banco em memória.
+
+    Era `id(self)`, e **o CPython reaproveita `id()`**: um objeto liberado cede
+    o endereço ao próximo, e o banco novo herdava o nome do antigo. Com cache
+    compartilhado isso significa herdar os *dados* do antigo se alguma conexão
+    dele ainda estiver aberta — voltas de um teste aparecendo noutro, de forma
+    intermitente e sem nada em comum entre os dois.
+
+    Um contador nunca reaproveita, e é o que torna cada banco em memória
+    genuinamente privado.
+    """
+    with _memory_lock:
+        return next(_memory_counter)
+
 
 UNKNOWN_CAR_NAME = "Desconhecido"
 UNKNOWN_TRACK_NAME = "Pista não identificada"
@@ -68,7 +89,7 @@ class SqliteDatabase:
             # cache compartilhado dá o comportamento esperado: mesma base, várias
             # conexões. O nome é único por instância para dois `SqliteDatabase`
             # em memória não se enxergarem — que é o que os testes assumem.
-            self._db_path = f"file:gt7mem{id(self)}?mode=memory&cache=shared"
+            self._db_path = f"file:gt7mem{_next_memory_id()}?mode=memory&cache=shared"
             self._uri = True
             # Uma conexão âncora mantida aberta: com cache compartilhado, o banco
             # é destruído quando a **última** conexão fecha, e sem esta o schema

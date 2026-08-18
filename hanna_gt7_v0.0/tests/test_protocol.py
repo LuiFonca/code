@@ -24,7 +24,11 @@ from gt7core.telemetry.protocol import (
     salsa20_decode,
 )
 
-from .conftest import build_plaintext_packet, encrypt_packet
+from .conftest import (
+    LOCKED_WHEEL_RATIO,
+    build_plaintext_packet,
+    encrypt_packet,
+)
 
 
 class TestDecodificacao:
@@ -182,3 +186,61 @@ class TestDistanciaComPacoteReal:
             engine.on_frame(frame)
 
         assert engine.current_distance_m == 0.0
+
+
+class TestRodasESuspensao:
+    """Os campos que ninguém verificava — e que estavam nos offsets errados.
+
+    Contra um PS5 real as quatro rodas marcavam **0,000 a volta inteira**: o
+    escorregamento era lido de 0xE4, que cai no bloco não usado do pacote, e a
+    suspensão de 0x98, que cai dentro do vetor do plano da pista. Nenhum teste
+    olhava para eles, então a suíte inteira passava com dois canais mortos.
+
+    A lição é a de sempre neste arquivo: campo decodificado sem asserção é campo
+    não decodificado.
+    """
+
+    def test_velocidade_de_superficie_sai_de_rotacao_vezes_raio(self) -> None:
+        """Não existe campo "escorregamento" no pacote — existem rotação e raio.
+
+        A velocidade da superfície é |ω| × raio, que é fisicamente definida.
+        Antes disto o módulo de análise inferia a convenção do canal por
+        magnitude, porque ninguém sabia o que aquele número era.
+        """
+        frame = TelemetryFrame.from_bytes(build_plaintext_packet(speed_ms=55.0))
+
+        # Três rodas limpas: superfície na velocidade do carro.
+        for roda in ("tire_slip_fl", "tire_slip_fr", "tire_slip_rl"):
+            assert getattr(frame, roda) == pytest.approx(55.0, rel=1e-3)
+
+        # A quarta gira a 80% — travando sob freio.
+        assert frame.tire_slip_rr == pytest.approx(55.0 * LOCKED_WHEEL_RATIO, rel=1e-3)
+
+    def test_a_razao_de_escorregamento_fecha_com_a_velocidade(self) -> None:
+        """A leitura que a tela mostra: 100% é a roda rodando limpa.
+
+        Este é o número que aparecia como 0% na volta inteira.
+        """
+        frame = TelemetryFrame.from_bytes(build_plaintext_packet(speed_ms=55.0))
+
+        assert frame.tire_slip_fl / 55.0 == pytest.approx(1.0, rel=1e-3)
+        assert frame.tire_slip_rr / 55.0 == pytest.approx(LOCKED_WHEEL_RATIO, rel=1e-3)
+
+    def test_suspensao_sai_do_offset_certo(self) -> None:
+        frame = TelemetryFrame.from_bytes(build_plaintext_packet())
+
+        assert frame.suspension_fl == pytest.approx(0.11, abs=1e-6)
+        assert frame.suspension_fr == pytest.approx(0.12, abs=1e-6)
+        assert frame.suspension_rl == pytest.approx(0.13, abs=1e-6)
+        assert frame.suspension_rr == pytest.approx(0.14, abs=1e-6)
+
+    def test_nenhuma_roda_zera_num_pacote_valido(self) -> None:
+        """O sintoma exato que apareceu contra o console.
+
+        Um canal de telemetria não é identicamente zero. Se este teste cair, o
+        offset voltou a apontar para o bloco não usado do pacote.
+        """
+        frame = TelemetryFrame.from_bytes(build_plaintext_packet())
+
+        for roda in ("fl", "fr", "rl", "rr"):
+            assert getattr(frame, f"tire_slip_{roda}") > 0.0

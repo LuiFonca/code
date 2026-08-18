@@ -22,6 +22,12 @@ from gt7core.storage.repositories import SqliteLapRepository, SqliteTrackReposit
 
 from ..design.tokens import Space
 
+#: Larguras mínimas, em pixels. O catálogo tem nomes como "24 Heures du Mans
+#: Racing Circuit No Chicane"; caber todos deixaria o combo maior que a janela,
+#: então a medida é o suficiente para identificar sem ambiguidade.
+TRACK_COMBO_MIN_W = 230
+LAP_COMBO_MIN_W = 170
+
 
 def format_lap_time(total_ms: int) -> str:
     """`m:ss.mmm` — o formato que o jogo mostra."""
@@ -104,6 +110,12 @@ class TrackLapSelector(QWidget):
         # alinhamento é por distância no mesmo traçado. O segundo seletor da
         # comparação esconde a pista e segue a do primeiro — oferecer a escolha
         # era convidar para uma comparação sem sentido.
+        # "Autodromo de Interlagos" aparecia como "Interlago": o combo assumia a
+        # largura do item mais curto da lista. Os nomes do catálogo do GT7 são
+        # longos, e um nome de pista cortado no meio deixa de identificar a pista.
+        self._track_combo.setMinimumWidth(TRACK_COMBO_MIN_W)
+        self._lap_combo.setMinimumWidth(LAP_COMBO_MIN_W)
+
         self._track_label = QLabel("Pista:")
         self._track_label.setVisible(show_track)
         self._track_combo.setVisible(show_track)

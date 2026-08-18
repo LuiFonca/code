@@ -16,9 +16,10 @@ no log.
 
 from __future__ import annotations
 
+import contextlib
 from functools import partial
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -98,6 +99,32 @@ class AppShell(QMainWindow):
         self._wire_keep_awake()
 
         self._activate(0)
+        self._autoconnect()
+
+    def _autoconnect(self) -> None:
+        """Tenta a conexão com o que já está configurado, ao abrir.
+
+        Adiada por um `singleShot` de zero: `_on_start` mexe na barra de status
+        e no selo da página ao vivo, e chamá-la ainda dentro do construtor da
+        janela é agir sobre widgets cuja geometria não foi calculada. O atraso
+        zero põe a chamada na primeira volta do laço de eventos, com a janela já
+        montada — é a diferença entre "conecta ao abrir" e "conecta ao abrir,
+        menos naquela vez em que a tela ficou estranha".
+        """
+        live = self._pages[0]
+        if not hasattr(live, "try_autoconnect"):
+            return
+
+        # `QTimer` **com dono**, e não `QTimer.singleShot`. O estático não tem
+        # pai: disparado depois de a janela fechar, ele chama um método de uma
+        # página cujo núcleo já foi desmontado, e o erro que aparece é
+        # "banco já fechado" — num teste completamente diferente, porque o
+        # disparo cai no próximo `processEvents()` de quem for. Parentado ao
+        # `self`, o temporizador morre junto com a janela.
+        self._autoconnect_timer = QTimer(self)
+        self._autoconnect_timer.setSingleShot(True)
+        self._autoconnect_timer.timeout.connect(live.try_autoconnect)
+        self._autoconnect_timer.start(0)
 
     def _wire_keep_awake(self) -> None:
         """Segura a máquina acordada enquanto o programa está em primeiro plano.
@@ -116,6 +143,22 @@ class AppShell(QMainWindow):
             return
         app.applicationStateChanged.connect(self._on_app_state)  # type: ignore[attr-defined]
         self._on_app_state(app.applicationState())  # type: ignore[attr-defined]
+
+    def _unwire_keep_awake(self) -> None:
+        """Desfaz a ligação com o estado da aplicação ao fechar.
+
+        Uma conexão para o `QApplication` **sobrevive à janela**: fechada, ela
+        continua recebendo mudanças de estado e chamando métodos de um objeto
+        cujo núcleo já foi desmontado. É a mesma classe de defeito que a ordem
+        de desmonte deste `closeEvent` existe para evitar, por outra porta — e
+        apareceu como uma cascata de `eventFilter` terminando em "banco já
+        fechado" quando duas janelas viveram no mesmo processo.
+        """
+        app = QApplication.instance()
+        if app is None:  # pragma: no cover - só sem QApplication
+            return
+        with contextlib.suppress(RuntimeError, TypeError):
+            app.applicationStateChanged.disconnect(self._on_app_state)  # type: ignore[attr-defined]
 
     def _on_app_state(self, state: Qt.ApplicationState) -> None:
         if state == Qt.ApplicationState.ApplicationActive:
@@ -339,6 +382,10 @@ class AppShell(QMainWindow):
         self._vm.close()
         self._adapter.close()
         self._core.close()
+        # Para o temporizador antes de tudo: se ele disparar depois do
+        # `close()` do núcleo, chama a página com o banco já fechado.
+        self._autoconnect_timer.stop()
+        self._unwire_keep_awake()
         self._keep_awake.release()
         _log.info("janela encerrada")
         super().closeEvent(event)

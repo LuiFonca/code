@@ -314,6 +314,10 @@ class AnalysisPage(Page):
         self._flags_hint.setWordWrap(True)
         self.content.addWidget(self._flags_hint)
 
+        self._cursor_hint = QLabel("")
+        self._cursor_hint.setWordWrap(True)
+        self.content.addWidget(self._cursor_hint)
+
     # ---------- dados ----------
 
     def refresh(self) -> None:
@@ -350,6 +354,7 @@ class AnalysisPage(Page):
         self._table.setRowCount(0)
         self._tyres.setText("")
         self._flags_hint.setText("")
+        self._cursor_hint.setText("")
         self._grip_hint.setText("")
         self._boost_hint.setText("")
         self._frozen = False
@@ -687,24 +692,35 @@ class AnalysisPage(Page):
             spans, x_range=(self._x_of(points[0]), self._x_of(points[-1]))
         )
 
-        # Caça ao ABS: o bit dele não está identificado, e este é o instrumento
-        # que o encontra sem chutar offset — ver `gt7core.analytics.aids`.
-        if desconhecidos := unknown_bits(points):
-            self._hint_unknown_bits(desconhecidos)
+        self._report_abs(unknown_bits(points))
 
-    def _hint_unknown_bits(self, bits: int) -> None:
-        """Rótulo próprio, e não o de pneus.
+    def _report_abs(self, bits: int) -> None:
+        """Diz o estado do ABS **em toda volta**, e não só quando há bit novo.
 
-        Escrito no rótulo de balanço de pneus, este aviso era apagado três
-        linhas depois pelo texto do balanço — apareceria só nas voltas sem
-        balanço calculado, que é o pior tipo de intermitência: some sem motivo
-        visível e vira "aquilo às vezes aparece".
+        Silêncio aqui se lê como "o ABS não atuou", que é uma afirmação que
+        ninguém mediu — o bit dele não está identificado na engenharia reversa
+        do pacote. Dizer isso toda vez custa uma linha e evita a pergunta
+        "cadê o ABS?" voltar a cada sessão.
+
+        Quando aparecem bits sem nome, eles são candidatos: freie forte com ABS
+        ligado, depois com ele desligado, e compare as duas voltas. O que
+        aparecer só na primeira é o bit — e vira fato depois de repetir, não no
+        primeiro palpite.
         """
+        if not bits:
+            self._flags_hint.setText(
+                "ABS: não há indicador. O campo de estado do pacote do GT7 tem "
+                "doze bits nomeados pela engenharia reversa e nenhum deles é o "
+                "ABS; nesta volta também não apareceu nenhum bit desconhecido. "
+                "TCS e ASM, esses sim, estão na faixa acima."
+            )
+            return
+
         posicoes = [str(i) for i in range(16) if bits & (1 << i)]
         self._flags_hint.setText(
-            f"Bits de estado sem nome nesta volta: {', '.join(posicoes)}. "
-            "Um deles pode ser o ABS — compare uma volta com ABS ligado e outra "
-            "com ele desligado para isolar qual."
+            f"ABS: candidatos encontrados — bits sem nome nesta volta: "
+            f"{', '.join(posicoes)}. Freie forte com o ABS ligado, depois com "
+            "ele desligado, e compare: o bit que aparecer só na primeira é ele."
         )
 
     def _show_average_temperatures(self, points: list[TelemetryPoint]) -> None:
@@ -775,7 +791,13 @@ class AnalysisPage(Page):
         self._hint_frozen()
 
     def _hint_frozen(self) -> None:
-        self._flags_hint.setText(
+        """Rótulo próprio, e não o dos bits de estado.
+
+        Escrito no rótulo dos bits, este aviso apagava a linha do ABS a cada
+        clique — o mesmo defeito que já tinha acontecido com o rótulo de pneus,
+        agora entre duas mensagens que nada têm a ver uma com a outra.
+        """
+        self._cursor_hint.setText(
             "Cursor travado — clique de novo para soltar." if self._frozen else ""
         )
 

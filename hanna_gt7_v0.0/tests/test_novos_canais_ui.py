@@ -28,6 +28,7 @@ from gt7core.telemetry.protocol import (  # noqa: E402
     FLAG_TCS_ACTIVE,
 )
 from gt7core.telemetry.sources.mock import synthetic_lap  # noqa: E402
+from tests.conftest import dispose_window  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -86,7 +87,7 @@ def montado(app: QApplication, tmp_path):  # noqa: ANN001, ARG001
 
         window = build_gui(core)
         yield window, core
-        window.close()
+        dispose_window(window)
     finally:
         core.close()
 

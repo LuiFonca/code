@@ -29,6 +29,7 @@ from gt7core.analytics.live import RaceEventDetected
 from gt7core.domain.models import Track
 from gt7core.session.manager import LapSaved
 from gt7core.telemetry.engine import TelemetryReceived
+from gt7core.telemetry.sources.base import ConnectionState
 
 from ..application import CoreApplication
 from ..design.theme import OBJ_GHOST_BUTTON, OBJ_STATUS_BAR
@@ -313,6 +314,37 @@ class LivePage(Page):
             self.core.settings.telemetry.source.strip().lower() == "mock"
         )
 
+    def try_autoconnect(self) -> bool:
+        """Tenta conectar sozinho ao que já está configurado.
+
+        O IP do PS5 já fica salvo; esperar um clique em "Conectar" toda vez é
+        pedir de novo uma informação que o programa já tem. Só age quando a
+        fonte é a rede e o IP está preenchido — com a fonte sintética, iniciar
+        sozinho encheria a tela de dados inventados antes de alguém pedir, que é
+        exatamente o mal-entendido que o selo de dados sintéticos existe para
+        desfazer.
+
+        Devolve se chegou a iniciar, para quem chama poder dizer na barra de
+        status o que aconteceu.
+        """
+        telemetry = self.core.settings.telemetry
+        if not self.should_autoconnect():
+            return False
+
+        self._on_start()
+        self._status.setText(f"Conectando sozinho a {telemetry.ps_ip}…")
+        return True
+
+    def should_autoconnect(self) -> bool:
+        """A decisão, separada da ação.
+
+        Existe apartada porque a ação abre um socket, e um teste que precise
+        abrir socket para verificar uma regra de negócio testa a rede, não a
+        regra.
+        """
+        telemetry = self.core.settings.telemetry
+        return telemetry.source == "udp" and bool(telemetry.ps_ip.strip())
+
     def on_enter(self) -> None:
         # Não é `refresh()`: `on_enter` roda toda vez que a página aparece,
         # enquanto `refresh()` depende do estado sujo. Vindo de Configurações,
@@ -455,6 +487,7 @@ class LivePage(Page):
         self.core.stop()
         self._start_button.setEnabled(True)
         self._stop_button.setEnabled(False)
+        self._paint_connection(ConnectionState.DISCONNECTED.value)
         self._status.setText("Parado")
 
     # ---------- reação ----------
@@ -549,6 +582,34 @@ class LivePage(Page):
 
     def _on_connection(self, state: str, message: str) -> None:
         self._status.setText(message or f"Conexão: {state}")
+        self._paint_connection(state)
+
+    def _paint_connection(self, state: str) -> None:
+        """Pinta o botão pelo estado da conexão.
+
+        **Verde só em `RECEIVING`**, isto é, só com pacote do console na mão. O
+        UDP não tem aperto de mão: abrir o socket e mandar o heartbeat sempre
+        "funciona", mesmo com o PS5 desligado ou com o IP errado. Pintar de
+        verde ao clicar em Conectar seria afirmar uma conexão que ninguém
+        verificou — o mesmo tipo de mentira que o selo de dados sintéticos
+        existe para evitar.
+
+        Amarelo é "tentando", vermelho é "estava recebendo e parou", que é o
+        estado que interessa notar no meio de uma sessão.
+        """
+        palette = self.theme.palette
+        cores = {
+            ConnectionState.RECEIVING.value: (palette.green, "CONECTADO"),
+            ConnectionState.CONNECTING.value: (palette.yellow, "conectando…"),
+            ConnectionState.NO_SIGNAL.value: (palette.red, "sem sinal"),
+            ConnectionState.ERROR.value: (palette.red, "erro"),
+        }
+        cor, rotulo = cores.get(state, ("", "Conectar"))
+
+        self._start_button.setText(rotulo)
+        self._start_button.setStyleSheet(
+            f"background-color: {cor}; color: {palette.accent_text};" if cor else ""
+        )
 
     def _on_stale(self) -> None:
         """Sem pacote há um tempo: **congela** os números em vez de apagá-los.

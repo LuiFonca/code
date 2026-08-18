@@ -14,6 +14,13 @@ from gt7core.telemetry.protocol import GT7_KEY, MAGIC_NUMBER
 
 PACKET_SIZE = 296
 
+#: Raio de pneu usado no pacote de teste, em metros. Valor de carro de corrida.
+TIRE_RADIUS_M = 0.35
+
+#: Fração da rotação limpa com que a traseira direita gira no pacote de teste —
+#: um travamento, para o teste ter o que detectar além de "tudo a 100%".
+LOCKED_WHEEL_RATIO = 0.8
+
 
 def _default_to_offscreen() -> None:
     """Sem tela, o Qt aborta o processo — e leva a suíte inteira junto.
@@ -110,8 +117,25 @@ def build_plaintext_packet(
     struct.pack_into("<B", packet, 0x90, (suggested_gear << 4) | gear)
     struct.pack_into("<B", packet, 0x91, throttle_raw)
     struct.pack_into("<B", packet, 0x92, brake_raw)
-    struct.pack_into("<ffff", packet, 0x98, 0.11, 0.12, 0.13, 0.14)  # suspensão
-    struct.pack_into("<ffff", packet, 0xE4, 1.01, 1.02, 1.03, 1.04)  # slip
+    # Rotação das rodas (rad/s) e raio do pneu (m), de onde sai a velocidade de
+    # superfície. Os valores não são arbitrários: com raio 0,35 m, uma roda
+    # limpa a `speed_ms` gira a `speed_ms / 0.35`. As três primeiras rodam
+    # limpas e a quarta gira a 80% — um travamento, que o teste verifica.
+    #
+    # **Este arquivo repetiu aqui o erro que ele mesmo documenta acima.** Ele
+    # escrevia suspensão em 0x98 e escorregamento em 0xE4, exatamente os offsets
+    # que o decodificador lia — e os dois concordavam sobre uma mentira. Contra
+    # um PS5 real as quatro rodas marcavam 0,000 a volta inteira, porque 0xE4
+    # cai no bloco não usado do pacote. De novo: só o dado real revelou.
+    limpa = speed_ms / TIRE_RADIUS_M
+    struct.pack_into(
+        "<ffff", packet, 0xA4, limpa, limpa, limpa, limpa * LOCKED_WHEEL_RATIO
+    )
+    struct.pack_into(
+        "<ffff", packet, 0xB4,
+        TIRE_RADIUS_M, TIRE_RADIUS_M, TIRE_RADIUS_M, TIRE_RADIUS_M,
+    )
+    struct.pack_into("<ffff", packet, 0xC4, 0.11, 0.12, 0.13, 0.14)  # suspensão
     struct.pack_into("<i", packet, 0x124, car_id)
 
     return packet
@@ -138,3 +162,23 @@ def encrypt_packet(plaintext: bytes, key: bytes = GT7_KEY[:32]) -> bytes:
 @pytest.fixture
 def valid_packet() -> bytes:
     return encrypt_packet(build_plaintext_packet())
+
+
+def dispose_window(window, app=None) -> None:  # noqa: ANN001
+    """Fecha **e destrói** uma janela de teste.
+
+    `close()` esconde a janela; o objeto C++ continua vivo, e com ele os filtros
+    de evento que a paleta de comandos instala e as ligações com o
+    `QApplication`. Num processo que monta uma dúzia de janelas — que é o que a
+    suíte faz —, cada `processEvents()` posterior passa por todas elas, e as que
+    já tiveram o núcleo desmontado respondem com "banco já fechado".
+
+    O sintoma era uma cascata de `Error calling Python override of
+    QFrame::eventFilter` num teste de thread que não tem nada a ver com janelas,
+    e só no conjunto: isolado ele passava. Destruir de verdade encerra o assunto.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    window.close()
+    window.deleteLater()
+    (app or QApplication.instance()).processEvents()
