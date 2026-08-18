@@ -73,6 +73,22 @@ class TelemetryPoint:
         return self.elapsed_ms / 1000.0
 
     @property
+    def boost_bar(self) -> float:
+        """Pressão de turbo em bar, com zero na atmosférica.
+
+        O pacote manda `turbo_boost` com **1,0 como pressão atmosférica**, não
+        como zero — é pressão absoluta, e é por isso que um carro aspirado
+        transmite 1,0 parado em vez de 0,0. Subtrair 1 devolve a pressão de
+        sobrealimentação, que é o número que aparece no manômetro do carro e o
+        que o piloto chama de "1,2 bar".
+
+        Valores negativos são reais e não são erro: fora do acelerador o motor
+        aspira contra a borboleta fechada e a pressão cai abaixo da atmosférica.
+        Cortá-los em zero esconderia justamente as trocas de marcha e os alívios.
+        """
+        return self.turbo_boost - 1.0
+
+    @property
     def tire_temp_avg(self) -> float:
         return (
             self.tire_temp_fl + self.tire_temp_fr

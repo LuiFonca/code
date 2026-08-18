@@ -164,6 +164,8 @@ class ComparePage(Page):
     def __init__(self, core: CoreApplication, theme: Theme) -> None:
         self._reference: list[TelemetryPoint] = []
         self._analysed: list[TelemetryPoint] = []
+        #: Cursor travado por clique — ver a nota igual na página de análise.
+        self._frozen = False
         super().__init__(core, theme)
 
     # ---------- construção ----------
@@ -226,14 +228,21 @@ class ComparePage(Page):
         charts.add(self._speed_chart)
         self._delta_chart.hovered.connect(self._on_hover)
         self._speed_chart.hovered.connect(self._on_hover)
+        self._delta_chart.clicked.connect(self._on_click)
+        self._speed_chart.clicked.connect(self._on_click)
         middle.addWidget(charts, stretch=3)
 
         right = QVBoxLayout()
         right.setSpacing(Space.LG.px)
 
+        # Mapa alto de propósito: é aqui que se compara **linha de corrida**,
+        # e duas linhas separadas por meio metro só se distinguem com área. O
+        # widget reamostra proporcional ao próprio tamanho, então dar espaço
+        # aumenta a fidelidade além do tamanho aparente.
         map_card = Card("Traçados sobrepostos")
-        self._map = TrackMap(self.theme, height=300)
+        self._map = TrackMap(self.theme, height=460)
         self._map.hovered.connect(self._on_hover)
+        self._map.clicked.connect(self._on_click)
         map_card.add(self._map)
         right.addWidget(map_card)
 
@@ -339,6 +348,9 @@ class ComparePage(Page):
         self._cursor_distance.setText("—")
         self._cursor_delta.setText("—")
         self._cursor_delta.setStyleSheet("")
+        self._frozen = False
+        for chart in (self._delta_chart, self._speed_chart):
+            chart.set_cursor_locked(False)
         self._hint.setText(hint)
 
     def _populate(self) -> None:
@@ -494,9 +506,27 @@ class ComparePage(Page):
                     QColor(palette.yellow if segment.is_loss else palette.green)
                 )
 
+    def _on_click(self, distance_m: float) -> None:
+        """Trava o cursor no ponto; um segundo clique solta.
+
+        Sem isto, ler os três números do cartão exigia manter a mão parada em
+        cima do gráfico — e tirar o mouse para conferir a tabela de trechos
+        perdia a leitura.
+        """
+        self._frozen = not self._frozen
+        for chart in (self._delta_chart, self._speed_chart):
+            chart.set_cursor_locked(self._frozen)
+        if self._frozen:
+            self._move_cursor(distance_m)
+
     def _on_hover(self, distance_m: float) -> None:
         """Um cursor só, compartilhado pelos dois gráficos, pelo mapa e pelo
         cartão de leitura."""
+        if self._frozen:
+            return
+        self._move_cursor(distance_m)
+
+    def _move_cursor(self, distance_m: float) -> None:
         self._delta_chart.set_cursor(distance_m)
         self._speed_chart.set_cursor(distance_m)
         self._map.set_cursor(distance_m)
@@ -534,7 +564,9 @@ class ComparePage(Page):
             distance = float(item.text().split()[0])
         except (ValueError, IndexError):
             return
-        self._on_hover(distance)
+        # Escolher um trecho na tabela é comando explícito: move o cursor mesmo
+        # travado, senão a tabela pareceria ter parado de funcionar.
+        self._move_cursor(distance)
 
 
 def _point_at(

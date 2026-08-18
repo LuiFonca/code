@@ -21,6 +21,7 @@ from functools import partial
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QCloseEvent, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QHBoxLayout,
     QLabel,
@@ -53,6 +54,7 @@ from .pages.driver import DriverPage
 from .pages.history import HistoryPage
 from .pages.live import LivePage
 from .pages.settings import SettingsPage
+from .power import KeepAwake
 from .viewmodels.live import LiveViewModel
 from .widgets.palette import CommandPalette
 
@@ -92,7 +94,34 @@ class AppShell(QMainWindow):
         # recarregam agora se estiverem visíveis, ou na próxima entrada.
         self._vm.lap_saved.connect(self._on_lap_saved)
 
+        self._keep_awake = KeepAwake()
+        self._wire_keep_awake()
+
         self._activate(0)
+
+    def _wire_keep_awake(self) -> None:
+        """Segura a máquina acordada enquanto o programa está em primeiro plano.
+
+        Pilotando, ninguém toca no teclado do computador — os controles estão no
+        console. Para o sistema isso é ociosidade: o protetor de tela entra no
+        meio da sessão, ou a máquina suspende e leva a captura UDP junto.
+
+        Ligado ao **estado da aplicação**, e não ao da janela: `QWidget` sabe se
+        está ativo, mas alternar entre a janela principal e um diálogo do próprio
+        programa a desativaria por um instante — e o inibidor ficaria piscando
+        junto. O estado de aplicação é a granularidade certa.
+        """
+        app = QApplication.instance()
+        if app is None:  # pragma: no cover - só sem QApplication
+            return
+        app.applicationStateChanged.connect(self._on_app_state)  # type: ignore[attr-defined]
+        self._on_app_state(app.applicationState())  # type: ignore[attr-defined]
+
+    def _on_app_state(self, state: Qt.ApplicationState) -> None:
+        if state == Qt.ApplicationState.ApplicationActive:
+            self._keep_awake.acquire()
+        else:
+            self._keep_awake.release()
 
     # ---------- construção ----------
 
@@ -310,6 +339,7 @@ class AppShell(QMainWindow):
         self._vm.close()
         self._adapter.close()
         self._core.close()
+        self._keep_awake.release()
         _log.info("janela encerrada")
         super().closeEvent(event)
 

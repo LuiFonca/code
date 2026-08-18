@@ -95,6 +95,7 @@ class DistanceChart(QWidget):
 
     hovered = Signal(float)
     hover_left = Signal()
+    clicked = Signal(float)
 
     def __init__(
         self,
@@ -136,6 +137,11 @@ class DistanceChart(QWidget):
         # derrubou o teste que existe justamente para pegar isso.
         self._x_span = 1.0
         self._markers: list[tuple[float, str, str]] = []
+        #: Cursor travado por clique. Só muda a **aparência** do cursor; quem
+        #: decide ignorar o movimento do mouse é a página, porque o cursor é
+        #: compartilhado entre vários gráficos e o mapa, e cada um decidindo por
+        #: si acabaria com metade travada e metade seguindo o ponteiro.
+        self._cursor_locked = False
 
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -386,7 +392,8 @@ class DistanceChart(QWidget):
             return
 
         x = self._x_pixel(self._cursor_m, rect)
-        painter.setPen(QPen(QColor(palette.text_secondary), 1))
+        cor = palette.accent if self._cursor_locked else palette.text_secondary
+        painter.setPen(QPen(QColor(cor), 1.6 if self._cursor_locked else 1.0))
         painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
 
         readings = self.value_at(self._cursor_m)
@@ -418,16 +425,35 @@ class DistanceChart(QWidget):
 
     # ---------- interação ----------
 
+    def set_cursor_locked(self, locked: bool) -> None:
+        """Marca o cursor como travado — linha cheia e mais viva.
+
+        Sem sinal visual, um cursor que parou de seguir o mouse parece a
+        aplicação ter travado. É a diferença entre um recurso e um defeito.
+        """
+        if self._cursor_locked != locked:
+            self._cursor_locked = locked
+            self.update()
+
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802  (API do Qt)
         rect = self._plot_rect()
         if rect.contains(event.position()):
             distance = self._to_distance(event.position().x(), rect)
-            self.set_cursor(distance)
             self.hovered.emit(distance)
         super().mouseMoveEvent(event)
 
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802  (API do Qt)
+        rect = self._plot_rect()
+        if rect.contains(event.position()):
+            self.clicked.emit(self._to_distance(event.position().x(), rect))
+        super().mousePressEvent(event)
+
     def leaveEvent(self, event: object) -> None:  # noqa: N802  (API do Qt)
-        self.set_cursor(None)
+        # Não limpa o cursor aqui: quem manda no cursor é a página, que o
+        # compartilha entre gráficos e mapa. Limpando localmente, mover o mouse
+        # de um gráfico para o vizinho apagava o cursor do primeiro no meio do
+        # gesto — e com o cursor travado ele se perderia ao sair do widget,
+        # que é justamente o contrário do que travar quer dizer.
         self.hover_left.emit()
         super().leaveEvent(event)  # type: ignore[arg-type]
 

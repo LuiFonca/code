@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QCompleter,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -161,6 +162,7 @@ class LivePage(Page):
         editor = self._track_input.lineEdit()
         if editor is not None:
             editor.setPlaceholderText("deixe vazio para detectar sozinho")
+        self._configure_completer()
         self._reload_tracks()
         # **Vazio por padrão.** Um combo carregado com 105 pistas seleciona a
         # primeira em ordem alfabética sozinho, e conectar sem tocar no campo
@@ -316,7 +318,30 @@ class LivePage(Page):
         # enquanto `refresh()` depende do estado sujo. Vindo de Configurações,
         # a fonte pode ter mudado sem nada mais ter mudado junto.
         self._update_synthetic_badge()
+        # A lista de pistas também: ela era montada uma vez, na construção da
+        # página, e nunca mais. Renomear uma pista no Histórico não aparecia
+        # aqui até reiniciar o programa — o campo continuava oferecendo o nome
+        # velho, que já não existia no banco.
+        self._reload_tracks()
         super().on_enter()
+
+    def _configure_completer(self) -> None:
+        """Busca por trecho e sem diferenciar maiúsculas, nas 105 pistas.
+
+        O completador padrão do Qt casa **prefixo** e respeita caixa: com o
+        catálogo carregado, digitar "interlagos" não achava "Interlagos", e
+        "lagos" não achava nada, porque o nome no catálogo é "Autódromo José
+        Carlos Pace". Numa lista de 105 itens isso equivale a não ter busca —
+        sobra rolar até achar, que é o que fazia o campo parecer quebrado.
+        """
+        completer = self._track_input.completer()
+        if completer is None:
+            return
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCompletionMode(
+            QCompleter.CompletionMode.PopupCompletion
+        )
 
     def _reload_tracks(self) -> None:
         """As pistas já usadas primeiro, depois o catálogo do jogo.
@@ -345,6 +370,17 @@ class LivePage(Page):
 
         if current:
             self._track_input.setCurrentText(current)
+        else:
+            # **Campo vazio continua vazio.** `clear()` seguido de `addItem()`
+            # deixa o `currentIndex` em 0, então repopular a lista escrevia
+            # sozinho a primeira pista em ordem alfabética num campo que a
+            # pessoa tinha deixado em branco de propósito. Era o defeito de
+            # "gravou a sessão como 24 Heures du Mans" voltando por outra porta:
+            # antes ele nascia na construção da página, agora nasceria a cada
+            # vez que a aba fosse aberta. Com a pista preenchida sozinha, a
+            # detecção automática também nunca roda — ela só age sem pista.
+            self._track_input.setCurrentIndex(-1)
+            self._track_input.setCurrentText("")
 
     def _resolve_track_name(self) -> str:
         """Lê o texto digitado, não `currentData()`.

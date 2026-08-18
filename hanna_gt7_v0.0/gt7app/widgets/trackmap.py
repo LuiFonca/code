@@ -75,6 +75,15 @@ class TrackPath:
     dashed: bool = False
     values: list[float] = field(default_factory=list)
     distances: list[float] = field(default_factory=list)
+    colors: list[str] = field(default_factory=list)
+    """Cor explícita por ponto, para canais **categóricos**.
+
+    Um gradiente responde "quanto"; há canais em que a pergunta é "qual" —
+    acelerador, freio ou nenhum dos dois. Interpolar entre três estados
+    inventaria um quarto: metade do caminho entre verde e vermelho é laranja, e
+    laranja aqui significaria uma situação que não existe. Por isso a cor vem
+    pronta, e não de uma rampa.
+    """
 
     @property
     def is_empty(self) -> bool:
@@ -83,6 +92,10 @@ class TrackPath:
     @property
     def has_heatmap(self) -> bool:
         return len(self.values) == len(self.points) and len(self.values) > 1
+
+    @property
+    def has_categorical(self) -> bool:
+        return len(self.colors) == len(self.points) and len(self.colors) > 1
 
     @property
     def is_locatable(self) -> bool:
@@ -119,6 +132,7 @@ class TrackMap(QWidget):
 
     hovered = Signal(float)
     hover_left = Signal()
+    clicked = Signal(float)
 
     def __init__(
         self,
@@ -135,10 +149,32 @@ class TrackMap(QWidget):
         self._cursor_m: float | None = None
         self._heatmap_range: tuple[float, float] | None = None
         self._heatmap_label = heatmap_label
+        self._legend: list[tuple[str, str]] = []
 
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
+
+    def _segment_budget(self, *, per_pixel: float = 1.0) -> int:
+        """Quantos segmentos desenhar, proporcional ao tamanho na tela.
+
+        Era um teto fixo de 1.200 pontos, escolhido para não repintar o mesmo
+        pixel dezenas de vezes num widget pequeno. Num mapa grande ele passou a
+        cortar informação de verdade: duas linhas de corrida separadas por meio
+        metro só se distinguem se cada uma tiver amostras suficientes para o
+        desvio aparecer entre dois pixels vizinhos. Reamostrado a 1.200, o
+        desvio caía dentro de um segmento e as duas viravam a mesma linha.
+
+        Amarrando o orçamento ao perímetro do widget, o mapa pequeno continua
+        barato e o grande fica fiel — sem número mágico que sirva mal aos dois.
+        """
+        perimetro = 2.0 * (self.width() + self.height())
+        return max(400, int(perimetro * per_pixel))
+
+    def set_legend(self, entries: list[tuple[str, str]]) -> None:
+        """Legenda discreta: pares (cor, rótulo). Vazia volta à rampa."""
+        self._legend = entries
+        self.update()
 
     # ---------- dados ----------
 
@@ -163,6 +199,7 @@ class TrackMap(QWidget):
         self._bounds = None
         self._cursor_m = None
         self._heatmap_range = None
+        self._legend = []
         self.update()
 
     @property
@@ -231,7 +268,9 @@ class TrackMap(QWidget):
         for path in self._paths:
             if path.is_empty:
                 continue
-            if path.has_heatmap and self._heatmap_range is not None:
+            if path.has_categorical:
+                self._paint_categorical(painter, path, rect)
+            elif path.has_heatmap and self._heatmap_range is not None:
                 self._paint_heatmap(painter, path, rect)
             else:
                 self._paint_plain(painter, path, rect)
@@ -254,9 +293,8 @@ class TrackMap(QWidget):
             pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(pen)
 
-        # Reamostragem: 6000 pontos num widget de 400 px repintam o mesmo pixel
-        # dezenas de vezes.
-        step = max(1, len(path.points) // 1200)
+        # Reamostragem proporcional ao tamanho na tela — ver `_segment_budget`.
+        step = max(1, len(path.points) // self._segment_budget(per_pixel=1.5))
         projected = [self._project(x, z, rect) for x, z in path.points[::step]]
         if len(projected) > 1:
             painter.drawPolyline(projected)
@@ -269,7 +307,7 @@ class TrackMap(QWidget):
         ramp = self._theme.palette.speed_ramp
 
         total = len(path.points)
-        step = max(1, total // HEATMAP_SEGMENTS)
+        step = max(1, total // max(HEATMAP_SEGMENTS, self._segment_budget(per_pixel=0.4)))
 
         pen = QPen()
         pen.setWidthF(path.width + 1.2)
@@ -282,6 +320,36 @@ class TrackMap(QWidget):
             # ponta faria a cor saltar meio passo a cada reamostragem.
             middle = (path.values[start] + path.values[end]) / 2.0
             pen.setColor(QColor(ramp.at((middle - low) / span)))
+            painter.setPen(pen)
+            painter.drawLine(
+                self._project(*path.points[start], rect),
+                self._project(*path.points[end], rect),
+            )
+
+    def _paint_categorical(
+        self, painter: QPainter, path: TrackPath, rect: QRectF
+    ) -> None:
+        """Pinta o traçado com a cor pronta de cada trecho.
+
+        A reamostragem é mais fina que a do mapa de calor de propósito. Numa
+        rampa, perder um trecho curto muda o tom de um segmento e ninguém nota;
+        aqui um toque de freio de 40 m é um **evento**, e se ele cair entre duas
+        amostras some inteiro — o mapa passa a afirmar que o piloto atravessou a
+        curva sem tocar no freio.
+        """
+        total = len(path.points)
+        step = max(1, total // self._segment_budget(per_pixel=1.0))
+
+        pen = QPen()
+        pen.setWidthF(path.width + 1.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+
+        for start in range(0, total - step, step):
+            end = min(start + step, total - 1)
+            # A cor do meio do trecho, e não uma média: são estados, e a média
+            # de "freando" com "acelerando" não é um estado que existiu.
+            pen.setColor(QColor(path.colors[(start + end) // 2]))
             painter.setPen(pen)
             painter.drawLine(
                 self._project(*path.points[start], rect),
@@ -346,6 +414,10 @@ class TrackMap(QWidget):
         painter.setFont(font)
         metrics = QFontMetrics(font)
 
+        if self._legend:
+            self._paint_discrete_legend(painter, rect, metrics)
+            return
+
         if self._heatmap_range is not None:
             self._paint_heatmap_legend(painter, rect, metrics)
             return
@@ -402,6 +474,28 @@ class TrackMap(QWidget):
 
     # ---------- interação ----------
 
+    def _paint_discrete_legend(
+        self, painter: QPainter, rect: QRectF, metrics: QFontMetrics
+    ) -> None:
+        """Amostras de cor com rótulo, para os canais categóricos.
+
+        A barra de gradiente responde "quanto"; aqui a pergunta é "qual", e uma
+        barra contínua sugeriria estados intermediários que não existem.
+        """
+        palette = self._theme.palette
+        x = rect.left()
+        y = rect.bottom() + 6
+
+        for color, label in self._legend:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawRoundedRect(QRectF(x, y, 10.0, float(LEGEND_HEIGHT)), 2.0, 2.0)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            painter.setPen(QPen(QColor(palette.text_muted), 1))
+            painter.drawText(QPointF(x + 14, y + LEGEND_HEIGHT - 1), label)
+            x += 14 + metrics.horizontalAdvance(label) + 14
+
     def _distance_at_pixel(self, position: QPointF) -> float | None:
         """Distância na volta do ponto de traçado mais próximo do ponteiro.
 
@@ -416,7 +510,7 @@ class TrackMap(QWidget):
         for path in self._paths:
             if not path.is_locatable or path.is_empty:
                 continue
-            step = max(1, len(path.points) // 1200)
+            step = max(1, len(path.points) // self._segment_budget())
             best_index: int | None = None
             best_gap = float("inf")
             for index in range(0, len(path.points), step):
@@ -441,6 +535,10 @@ class TrackMap(QWidget):
         distance = self._distance_at_pixel(event.position())
         if distance is not None:
             self.set_cursor(distance)
+            # `clicked` além de `hovered`: quem escuta precisa distinguir
+            # "o ponteiro passou por aqui" de "escolhi este ponto", que é o
+            # que trava o cursor.
+            self.clicked.emit(distance)
             self.hovered.emit(distance)
         super().mousePressEvent(event)
 

@@ -65,7 +65,7 @@ NUM_SECTORS = 3
 #: Índices em `self._charts`. Nomeados porque `self._charts[3]` num arquivo de
 #: 500 linhas não diz qual gráfico é, e trocar dois por engano é um defeito que
 #: só aparece olhando a tela.
-CHART_SPEED, CHART_PEDALS, CHART_YAW, CHART_GRIP = 0, 1, 2, 3
+CHART_SPEED, CHART_PEDALS, CHART_YAW, CHART_GRIP, CHART_BOOST = 0, 1, 2, 3, 4
 
 #: Rótulo de cada roda no gráfico de aderência, na ordem de `WHEELS`.
 WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
@@ -79,6 +79,30 @@ YAW_TOP_MIN_DEG = 60.0
 GRIP_STEP_PCT = 25.0
 GRIP_TOP_MIN_PCT = 125.0
 
+#: Pressão de turbo: degraus de 1 bar, teto mínimo de 2. Um carro que faz 1,4
+#: bar desenha num quadro de 2; um de 2,4 bar sobe para 3, e assim por diante.
+#: Mesmo motivo do diagrama G-G: com degrau fixo, um turbo maior *parece* maior
+#: em vez de ser reescalado para preencher o mesmo quadro.
+BOOST_STEP_BAR = 1.0
+BOOST_TOP_MIN_BAR = 2.0
+
+#: Canais que o mapa sabe colorir: (rótulo, chave).
+MAP_CHANNELS = (
+    ("Cor: velocidade", "speed"),
+    ("Cor: pedais", "pedals"),
+)
+
+#: Pedal considerado acionado, em %. Não é zero: o gatilho analógico do controle
+#: repousa em 1–2% e, exigindo zero exato, o mapa inteiro sairia verde.
+PEDAL_ON_PCT = 5.0
+
+#: Abaixo deste pico, em bar, o carro é tratado como aspirado.
+#:
+#: Não é zero: o `turbo_boost` do pacote oscila alguns centésimos em torno de
+#: 1,0 mesmo sem turbo, e exigir zero exato marcaria todo carro aspirado como
+#: turbinado por causa de ruído.
+BOOST_PRESENT_BAR = 0.05
+
 
 class AnalysisPage(Page):
     page_id = "analysis"
@@ -91,6 +115,11 @@ class AnalysisPage(Page):
         self._corners: list[Corner] = []
         self._x_mode = "distance"
         self._lap_time_ms = 0
+        #: Cursor travado por clique. Mora na página, e não em cada gráfico,
+        #: porque o cursor é um só, compartilhado por cinco gráficos, o mapa e a
+        #: faixa de auxílios — com cada widget decidindo por si, metade ficaria
+        #: travada e metade seguindo o ponteiro.
+        self._frozen = False
         super().__init__(core, theme)
 
     # ---------- construção ----------
@@ -147,17 +176,30 @@ class AnalysisPage(Page):
                 y_step=GRIP_STEP_PCT,
                 y_top_min=GRIP_TOP_MIN_PCT,
             ),
+            DistanceChart(
+                self.theme,
+                "Pressão de turbo",
+                unit="bar",
+                height=110,
+                y_step=BOOST_STEP_BAR,
+                y_top_min=BOOST_TOP_MIN_BAR,
+            ),
         ]
         for chart in self._charts:
             channels.add(chart)
             chart.hovered.connect(self._on_hover)
             chart.hover_left.connect(self._on_hover_left)
+            chart.clicked.connect(self._on_click)
 
         # Aviso do canal de escorregamento, logo abaixo do gráfico que ele
         # qualifica. Ver `_fill_grip_chart`.
         self._grip_hint = QLabel("")
         self._grip_hint.setWordWrap(True)
         channels.add(self._grip_hint)
+
+        self._boost_hint = QLabel("")
+        self._boost_hint.setWordWrap(True)
+        channels.add(self._boost_hint)
 
         # A faixa dos auxílios fecha a coluna de canais, alinhada ao mesmo eixo
         # X: é embaixo de "aderência" que ela se lê, porque TCS atuando e roda
@@ -211,12 +253,19 @@ class AnalysisPage(Page):
         right = QVBoxLayout()
         right.setSpacing(Space.LG.px)
 
-        map_card = Card("Traçado — cor por velocidade")
-        self._map = TrackMap(self.theme, height=240, heatmap_label="km/h")
+        map_card = Card("Traçado")
+        self._map_channel = QComboBox()
+        for rotulo, chave in MAP_CHANNELS:
+            self._map_channel.addItem(rotulo, chave)
+        self._map_channel.currentIndexChanged.connect(self._on_map_channel)
+        map_card.add(self._map_channel)
+
+        self._map = TrackMap(self.theme, height=280, heatmap_label="km/h")
         # A ligação nos dois sentidos é o que faz o mapa e os gráficos serem uma
         # leitura só: os gráficos dizem *o que* aconteceu, o mapa diz *onde*.
         self._map.hovered.connect(self._on_hover)
         self._map.hover_left.connect(self._on_hover_left)
+        self._map.clicked.connect(self._on_click)
         map_card.add(self._map)
         right.addWidget(map_card)
 
@@ -302,6 +351,10 @@ class AnalysisPage(Page):
         self._tyres.setText("")
         self._flags_hint.setText("")
         self._grip_hint.setText("")
+        self._boost_hint.setText("")
+        self._frozen = False
+        for chart in self._charts:
+            chart.set_cursor_locked(False)
         self._aid_band.clear()
         self._tyre_temps.clear()
         self._tyre_caption.setText("")
@@ -370,6 +423,7 @@ class AnalysisPage(Page):
             ]
         )
         self._fill_grip_chart(points, x_at)
+        self._fill_boost_chart(points, x_at)
         self._fill_aid_band(points, x_at)
 
         # A volta inteira vira nuvem no círculo de atrito. G por distância
@@ -397,17 +451,7 @@ class AnalysisPage(Page):
         for chart in self._charts:
             chart.set_markers(apex_marks)
 
-        self._map.set_paths(
-            [
-                TrackPath(
-                    "traçado",
-                    palette.accent,
-                    [(p.position_x, p.position_z) for p in points],
-                    values=[p.speed_kmh for p in points],
-                    distances=[p.distance_m for p in points],
-                )
-            ]
-        )
+        self._fill_map(points)
 
         markers = [
             TrackMarker(
@@ -510,6 +554,103 @@ class AnalysisPage(Page):
             "conferir."
         )
 
+    def _fill_map(self, points: list[TelemetryPoint]) -> None:
+        """Desenha o traçado no canal escolhido.
+
+        Velocidade é gradiente — a pergunta é "quanto". Pedais é categórico — a
+        pergunta é "qual", e ver **onde na pista** o pé estava em cada um
+        responde de olho o que a tabela de curvas responde em números: onde a
+        freada começa, quanto dura o trecho sem pedal nenhum (que é tempo
+        perdido) e onde o acelerador volta.
+        """
+        palette = self.theme.palette
+        canal = self._map_channel.currentData()
+        coordenadas = [(p.position_x, p.position_z) for p in points]
+        distancias = [p.distance_m for p in points]
+
+        if canal == "pedals":
+            self._map.set_paths(
+                [
+                    TrackPath(
+                        "traçado",
+                        palette.accent,
+                        coordenadas,
+                        colors=[self._pedal_color(p) for p in points],
+                        distances=distancias,
+                    )
+                ]
+            )
+            self._map.set_legend(
+                [
+                    (palette.channel_throttle, "acelerador"),
+                    (palette.channel_brake, "freio"),
+                    (palette.yellow, "nenhum"),
+                ]
+            )
+            return
+
+        self._map.set_legend([])
+        self._map.set_paths(
+            [
+                TrackPath(
+                    "traçado",
+                    palette.accent,
+                    coordenadas,
+                    values=[p.speed_kmh for p in points],
+                    distances=distancias,
+                )
+            ]
+        )
+
+    def _pedal_color(self, point: TelemetryPoint) -> str:
+        """Verde acelerando, vermelho freando, amarelo sem pedal nenhum.
+
+        O freio ganha quando os dois estão acionados. Não é desempate
+        arbitrário: pé nos dois é *trail braking*, e o que interessa marcar no
+        mapa é até onde a freada se estendeu — pintar de verde esconderia
+        justamente a sobreposição que se quer enxergar.
+        """
+        palette = self.theme.palette
+        if point.brake > PEDAL_ON_PCT:
+            return palette.channel_brake
+        if point.throttle > PEDAL_ON_PCT:
+            return palette.channel_throttle
+        return palette.yellow
+
+    def _on_map_channel(self, _index: int) -> None:
+        if self._points:
+            self._fill_map(self._points)
+
+    def _fill_boost_chart(
+        self, points: list[TelemetryPoint], x_at: dict[float, float]
+    ) -> None:
+        """Pressão de sobrealimentação ao longo da volta.
+
+        Lida junto com o acelerador, ela mostra o **atraso do turbo**: a
+        distância entre o pedal ir ao fundo e a pressão chegar. É onde se decide
+        se vale trocar o ponto de troca de marcha, e o gráfico de acelerador
+        sozinho não diz nada disso — lá o pedal já está em 100%.
+        """
+        palette = self.theme.palette
+        self._charts[CHART_BOOST].set_series(
+            [
+                Series(
+                    "turbo",
+                    palette.orange,
+                    [(x_at.get(p.distance_m, p.distance_m), p.boost_bar) for p in points],
+                )
+            ]
+        )
+
+        # Carro aspirado desenha uma linha reta no zero, que parece gráfico
+        # quebrado. Dizer que não há turbo é a diferença entre "não mediu" e
+        # "não tem o que medir".
+        pico = max((p.boost_bar for p in points), default=0.0)
+        self._boost_hint.setText(
+            "" if pico >= BOOST_PRESENT_BAR
+            else "Sem turbo nesta volta — o carro é aspirado."
+        )
+
     def _fill_aid_band(
         self, points: list[TelemetryPoint], x_at: dict[float, float]
     ) -> None:
@@ -606,6 +747,31 @@ class AnalysisPage(Page):
         e não sabe nada de tempo. Por isso a conversão acontece aqui, no ponto
         onde as duas leituras se encontram.
         """
+        if self._frozen:
+            return
+        self._move_cursor(x_value)
+
+    def _on_click(self, x_value: float) -> None:
+        """Clique trava o cursor no ponto — e um segundo clique destrava.
+
+        Ler os números do cursor exigia manter a mão parada em cima do gráfico,
+        o que impede olhar a tabela de curvas, o mapa ou a temperatura sem
+        perder a leitura. Travar resolve isso; travar **sem sinal visual** só
+        faria a aplicação parecer congelada, e por isso o cursor muda de cor.
+        """
+        self._frozen = not self._frozen
+        for chart in self._charts:
+            chart.set_cursor_locked(self._frozen)
+        if self._frozen:
+            self._move_cursor(x_value)
+        self._hint_frozen()
+
+    def _hint_frozen(self) -> None:
+        self._flags_hint.setText(
+            "Cursor travado — clique de novo para soltar." if self._frozen else ""
+        )
+
+    def _move_cursor(self, x_value: float) -> None:
         for chart in self._charts:
             chart.set_cursor(x_value)
 
@@ -690,6 +856,8 @@ class AnalysisPage(Page):
         self._gforce.set_scale(self._g_scale.itemData(index))
 
     def _on_hover_left(self) -> None:
+        if self._frozen:
+            return
         for chart in self._charts:
             chart.set_cursor(None)
         self._map.set_cursor(None)
@@ -708,7 +876,10 @@ class AnalysisPage(Page):
         index = rows[0].row()
         if 0 <= index < len(self._corners):
             # A tabela guarda distância; o cursor fala a unidade do eixo.
-            self._on_hover(
+            # `_move_cursor` e não `_on_hover`: escolher uma curva na tabela é um
+            # comando explícito, e com o cursor travado `_on_hover` o ignoraria
+            # — a tabela pareceria ter parado de funcionar.
+            self._move_cursor(
                 self._x_at_distance(self._corners[index].apex_distance_m)
             )
 
