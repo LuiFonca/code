@@ -1,0 +1,1047 @@
+<title>GT7 Platform Architecture Review</title>
+
+<style>
+  /* ─── Tokens: light (default, un-stamped + explicit light) ─────────────
+     Neutrals carry a cool blue bias derived from the project's own accent
+     (#4f7cff in src/presentation/styles.py) rather than a default grey. */
+  :root {
+    --bg:          #f6f7fa;
+    --surface:     #ffffff;
+    --surface-2:   #eceff5;
+    --border:      #dbdfe9;
+    --border-soft: #e8ebf2;
+
+    --text:        #13151b;
+    --text-2:      #474c59;
+    --text-3:      #757b8a;
+
+    --accent:      #3560e8;
+    --accent-soft: #e7ecfd;
+
+    --critical:    #c9291c;
+    --critical-bg: #fdecea;
+    --high:        #b45309;
+    --high-bg:     #fdf1e3;
+    --medium:      #8a6d0b;
+    --medium-bg:   #fbf5e0;
+    --ok:          #07714a;
+    --ok-bg:       #e3f5ec;
+
+    --shadow: 0 1px 2px rgba(19, 21, 27, .05), 0 8px 24px -12px rgba(19, 21, 27, .12);
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  /* System-default dark: only prefers-color-scheme separates it.
+     Guarded so an explicit light choice still wins over a dark OS. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:          #12141a;
+      --surface:     #1a1d25;
+      --surface-2:   #23262f;
+      --border:      #2f3441;
+      --border-soft: #23262f;
+
+      --text:        #e8e8ec;
+      --text-2:      #c0c4cd;
+      --text-3:      #7d8390;
+
+      --accent:      #7c9dff;
+      --accent-soft: #1d2436;
+
+      --critical:    #ff6b6b;
+      --critical-bg: #2a1a1e;
+      --high:        #f5a45c;
+      --high-bg:     #2a2119;
+      --medium:      #f0cd63;
+      --medium-bg:   #29251a;
+      --ok:          #4fe0a0;
+      --ok-bg:       #16281f;
+
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px -16px rgba(0, 0, 0, .6);
+    }
+  }
+
+  /* Explicit dark choice wins over a light OS. */
+  :root[data-theme="dark"] {
+    --bg:          #12141a;
+    --surface:     #1a1d25;
+    --surface-2:   #23262f;
+    --border:      #2f3441;
+    --border-soft: #23262f;
+
+    --text:        #e8e8ec;
+    --text-2:      #c0c4cd;
+    --text-3:      #7d8390;
+
+    --accent:      #7c9dff;
+    --accent-soft: #1d2436;
+
+    --critical:    #ff6b6b;
+    --critical-bg: #2a1a1e;
+    --high:        #f5a45c;
+    --high-bg:     #2a2119;
+    --medium:      #f0cd63;
+    --medium-bg:   #29251a;
+    --ok:          #4fe0a0;
+    --ok-bg:       #16281f;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px -16px rgba(0, 0, 0, .6);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 44px;
+  }
+
+  /* ─── Masthead ─────────────────────────────────────────────────────── */
+  header {
+    padding: 64px 0 32px;
+    border-bottom: 2px solid var(--text);
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  h1 {
+    font-size: clamp(34px, 6vw, 52px);
+    line-height: 1.04;
+    letter-spacing: -.028em;
+    font-weight: 780;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 19px;
+    line-height: 1.5;
+    color: var(--text-2);
+    margin: 0;
+    max-width: 60ch;
+    text-wrap: pretty;
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--text-3);
+    padding-top: 4px;
+  }
+  .meta b { color: var(--text-2); font-weight: 500; }
+
+  /* ─── Sections ─────────────────────────────────────────────────────── */
+  section {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    scroll-margin-top: 24px;
+  }
+
+  h2 {
+    font-size: 13px;
+    font-family: var(--mono);
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-weight: 600;
+    margin: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 23px;
+    letter-spacing: -.018em;
+    line-height: 1.25;
+    font-weight: 660;
+    margin: 12px 0 0;
+    text-wrap: balance;
+  }
+
+  h4 {
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -.008em;
+    margin: 8px 0 0;
+  }
+
+  p { margin: 0; max-width: 68ch; text-wrap: pretty; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: .875em;
+    background: var(--surface-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: .1em .38em;
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  ul { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 7px; max-width: 68ch; }
+  li::marker { color: var(--text-3); }
+
+  /* ─── Verdict strip (executive blockers) ───────────────────────────── */
+  .blockers {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .blocker {
+    background: var(--surface);
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  @media (min-width: 700px) {
+    .blocker { grid-template-columns: 220px minmax(0, 1fr); gap: 24px; align-items: baseline; }
+  }
+  .blocker b { font-size: 15px; font-weight: 650; letter-spacing: -.008em; }
+  .blocker span { color: var(--text-2); font-size: 14.5px; line-height: 1.55; }
+
+  /* ─── Problem cards: severity is real data, so it's encoded in form ── */
+  .problem {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--sev, var(--border));
+    border-radius: 8px;
+    padding: 18px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    box-shadow: var(--shadow);
+  }
+  .problem.crit   { --sev: var(--critical); }
+  .problem.high   { --sev: var(--high); }
+  .problem.med    { --sev: var(--medium); }
+
+  .problem-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .pid {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    color: var(--sev);
+    background: var(--sev-bg, var(--surface-2));
+    border-radius: 4px;
+    padding: 2px 7px;
+  }
+  .problem.crit .pid { --sev-bg: var(--critical-bg); }
+  .problem.high .pid { --sev-bg: var(--high-bg); }
+  .problem.med  .pid { --sev-bg: var(--medium-bg); }
+
+  .problem-head h4 { margin: 0; flex: 1 1 auto; min-width: 0; }
+  .problem p { font-size: 15px; color: var(--text-2); line-height: 1.6; }
+  .problem strong { color: var(--text); font-weight: 650; }
+
+  .sev-group {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .sev-label {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-top: 10px;
+  }
+  .sev-label::before {
+    content: "";
+    width: 9px; height: 9px;
+    border-radius: 2px;
+    background: currentColor;
+  }
+  .sev-label.crit { color: var(--critical); }
+  .sev-label.high { color: var(--high); }
+  .sev-label.med  { color: var(--medium); }
+
+  /* ─── Tables ───────────────────────────────────────────────────────── */
+  .scroll {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 14.5px;
+    min-width: 520px;
+  }
+  th, td {
+    text-align: left;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: top;
+    line-height: 1.5;
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+    font-weight: 600;
+    background: var(--surface-2);
+    white-space: nowrap;
+  }
+  tr:last-child td { border-bottom: none; }
+  td b { font-weight: 640; }
+  .num { font-variant-numeric: tabular-nums; }
+  td code { white-space: normal; }
+
+  /* ─── Status chips: typed states from the roadmap ──────────────────── */
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    font-weight: 600;
+    padding: 2.5px 8px;
+    border-radius: 100px;
+    white-space: nowrap;
+  }
+  .chip.done { color: var(--ok);      background: var(--ok-bg); }
+  .chip.part { color: var(--high);    background: var(--high-bg); }
+  .chip.todo { color: var(--text-3);  background: var(--surface-2); }
+
+  /* ─── Diagram ──────────────────────────────────────────────────────── */
+  pre {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.55;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    margin: 0;
+    color: var(--text-2);
+  }
+
+  /* ─── Callout ──────────────────────────────────────────────────────── */
+  .note {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .note p { font-size: 15.5px; max-width: 64ch; }
+  .note .eyebrow { color: var(--accent); }
+
+  /* ─── Keep / decide lists ──────────────────────────────────────────── */
+  .keep {
+    display: grid;
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .keep-row {
+    background: var(--surface);
+    padding: 14px 18px;
+    display: grid;
+    gap: 3px;
+  }
+  @media (min-width: 720px) {
+    .keep-row { grid-template-columns: 270px minmax(0, 1fr); gap: 22px; align-items: baseline; }
+  }
+  .keep-row code { white-space: normal; background: none; border: none; padding: 0; color: var(--accent); font-size: 13px; }
+  .keep-row span { color: var(--text-2); font-size: 14.5px; line-height: 1.55; }
+
+  ol.decisions {
+    margin: 0; padding: 0; list-style: none;
+    display: flex; flex-direction: column; gap: 14px;
+    counter-reset: d;
+  }
+  ol.decisions li {
+    counter-increment: d;
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+  ol.decisions li::before {
+    content: counter(d);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 6px;
+    width: 30px;
+    height: 26px;
+    display: grid;
+    place-items: center;
+  }
+  ol.decisions p { font-size: 15px; color: var(--text-2); }
+  ol.decisions b { color: var(--text); font-weight: 650; }
+
+  footer {
+    border-top: 2px solid var(--text);
+    padding-top: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  footer p { font-size: 16.5px; }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Fase 0 · Audit</p>
+    <h1>GT7 Professional Telemetry Platform</h1>
+    <p class="standfirst">
+      Análise arquitetural completa do repositório antes de qualquer implementação:
+      inventário, dívida técnica, riscos, arquitetura alvo e roadmap.
+    </p>
+    <div class="meta">
+      <span><b>Data</b> 2026-08-14</span>
+      <span><b>Branch</b> claude/gt7-telemetry-platform-suhmhr</span>
+      <span><b>Commit base</b> 71805e9</span>
+      <span><b>Analisado</b> 12.414 linhas Python</span>
+    </div>
+  </header>
+
+  <!-- ══ SUMÁRIO EXECUTIVO ══ -->
+  <section>
+    <h2>Sumário executivo</h2>
+
+    <p>
+      O repositório está em um estado melhor do que a maioria dos projetos nesta fase.
+      Já existe uma refatoração completa para Clean Architecture + MVVM em <code>src/</code>,
+      com separação de camadas real e verificável — rodei a checagem: <strong>nenhum import
+      aponta para cima e <code>domain/</code> não conhece SQL</strong>. O decodificador do
+      protocolo GT7, o motor de delta alinhado por distância e o schema com migrações
+      incrementais são de qualidade profissional e devem ser preservados.
+    </p>
+
+    <p>
+      O problema não é a arquitetura que existe. É o que <strong>falta</strong> para
+      sustentar o produto descrito no briefing:
+    </p>
+
+    <div class="blockers">
+      <div class="blocker">
+        <b>Zero testes automatizados</b>
+        <span>O README descreve validações extensas ("401 amostras × 27 campos idênticas") que não estão commitadas como teste executável. São verificações manuais irrepetíveis.</span>
+      </div>
+      <div class="blocker">
+        <b><code>domain/</code> importa Qt</b>
+        <span><code>TelemetrySource</code> é um <code>QObject</code>. Isso impede rodar o núcleo headless — ou seja, bloqueia Discord, IA e testes de uma vez só.</span>
+      </div>
+      <div class="blocker">
+        <b>Nenhuma camada de configuração</b>
+        <span>O IP da LAN doméstica do autor está hardcoded e commitado. Não há onde colocar token do Discord ou chave de IA.</span>
+      </div>
+      <div class="blocker">
+        <b>Nenhuma fonte além do UDP real</b>
+        <span>Sem mock e sem replay, não há como desenvolver ou testar sem um PS5 na rede. É a causa raiz da ausência de testes.</span>
+      </div>
+      <div class="blocker">
+        <b>Distância sem correção de deriva</b>
+        <span>Delta, setores e comparação de voltas dependem todos dela. É a fundação de todo o analytics e a parte menos defendida do sistema.</span>
+      </div>
+    </div>
+
+    <div class="note">
+      <p class="eyebrow">Recomendação central</p>
+      <p>
+        <strong>Não recomeçar.</strong> Evoluir <code>src/</code> extraindo um núcleo
+        headless sem Qt. Essa única mudança destrava simultaneamente testes, IA, Discord
+        e voz — e é pré-requisito de tudo o mais no roadmap.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══ INVENTÁRIO ══ -->
+  <section>
+    <h2>1 · Inventário do repositório</h2>
+
+    <p>
+      <strong>Duas árvores paralelas coexistem.</strong> <code>src/</code> (7.077 linhas)
+      é autossuficiente e canônica; <code>hanna_gt7_ai/</code> (5.337 linhas) é o monolito
+      legado, mantido como rede de segurança durante a migração e ainda funcional.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Item</th><th>Situação</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Linguagem</td><td>Python — <code>__pycache__</code> indica <b>3.14</b> em uso local; sintaxe exige ≥3.10</td></tr>
+          <tr><td>UI</td><td>PySide6 (Qt6) + QtCharts</td></tr>
+          <tr><td>Cripto</td><td>pycryptodome — Salsa20, obrigatório: o pacote GT7 é cifrado</td></tr>
+          <tr><td>Banco</td><td>SQLite, schema v5 com migrações incrementais</td></tr>
+          <tr><td>Catálogo</td><td class="num">527 carros · 105 pistas · 72 montadoras (CSV)</td></tr>
+          <tr><td>Testes</td><td><b>nenhum</b></td></tr>
+          <tr><td>Lint / formatter</td><td><b>nenhum</b></td></tr>
+          <tr><td>CI</td><td><b>nenhum</b></td></tr>
+          <tr><td>Packaging</td><td><b>nenhum</b> — sem <code>pyproject.toml</code>; <code>main.py</code> usa hack de <code>sys.path</code></td></tr>
+          <tr><td>Config / secrets</td><td><b>nenhum</b> — sem <code>.env</code>, sem <code>.env.example</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h4>Higiene do repositório</h4>
+    <ul>
+      <li><strong>56 de 148 arquivos versionados são <code>__pycache__/*.pyc</code></strong> — 38% do repositório é lixo de build.</li>
+      <li><code>.DS_Store</code> commitado na raiz.</li>
+      <li>Não existe <code>.gitignore</code> na raiz — só dentro de <code>hanna_gt7_ai/</code>, cobrindo apenas aquela pasta.</li>
+      <li>Dependências sem pin (<code>&gt;=</code> apenas) — build não reprodutível.</li>
+    </ul>
+  </section>
+
+  <!-- ══ ARQUITETURA ATUAL ══ -->
+  <section>
+    <h2>2 · Arquitetura atual</h2>
+
+    <h3>O que está em pé</h3>
+    <p>Verificado nesta auditoria, não apenas documentado:</p>
+    <ul>
+      <li><code>python -m compileall src/</code> — limpo</li>
+      <li>Nenhum import de <code>presentation</code> em <code>domain</code>, <code>application</code> ou <code>infrastructure</code></li>
+      <li>Nenhum <code>sqlite3</code> em <code>domain/</code></li>
+      <li>Composition root único (<code>src/main.py</code>) — único arquivo que instancia classes concretas</li>
+      <li><strong>Exceção:</strong> <code>domain/interfaces/telemetry_source.py:5</code> importa <code>PySide6.QtCore</code> — documentado e justificado, mas é o bloqueador nº 1 do projeto</li>
+    </ul>
+
+    <h3>Fluxo de dados — o achado estrutural</h3>
+<pre>PS5 ─UDP:33740─▶ _ListenerThread (QThread)
+                        │ Signal ← única troca de thread do sistema
+                        ▼
+                 TelemetryService  ┐
+                        │          │
+                 EventBus (Signal) │  TUDO ISTO roda na
+                        │          ├─ thread principal
+                 ViewModels        │  do Qt
+                        │          │
+                 Views (QtCharts)  ┘</pre>
+
+    <p>
+      Só a recepção UDP sai da thread da UI. Conversão DTO→domínio, cálculo de força G,
+      delta, publicação de eventos, persistência SQLite e renderização acontecem
+      <strong>todos na thread principal</strong>. Funciona hoje porque a carga é pequena.
+      Não sobrevive a adicionar chamadas de IA (latência de segundos) ou o bot do Discord.
+    </p>
+  </section>
+
+  <!-- ══ PRESERVAR ══ -->
+  <section>
+    <h2>3 · O que está correto — não reescrever</h2>
+    <p>
+      Estes componentes são de qualidade profissional. Devem ser preservados e migrados
+      como estão, com ajustes cirúrgicos onde indicado.
+    </p>
+
+    <div class="keep">
+      <div class="keep-row">
+        <code>telemetry/gt7_protocol.py</code>
+        <span>Lógica pura: sem rede, sem Qt, sem estado. Offsets corretos, nibbles de marcha, normalização de pedais, 12 flags. Testável com pacote gravado. <b>Reaproveitar integralmente.</b></span>
+      </div>
+      <div class="keep-row">
+        <code>domain/services/lap_comparator.py</code>
+        <span>Alinhamento por <b>distância</b> e não por tempo — decisão de engenharia correta e não óbvia. Busca binária no caminho quente. <b>Reaproveitar integralmente.</b></span>
+      </div>
+      <div class="keep-row">
+        <code>domain/services/lap_analysis.py</code>
+        <span>Consulta interpolada por canal, cache por canal, nomes derivados do dataclass — erro de digitação falha na hora. <b>É a base do analytics.</b></span>
+      </div>
+      <div class="keep-row">
+        <code>repositories/sqlite_database.py</code>
+        <span>Migrações por <code>PRAGMA user_version</code>, caminho injetado (<code>:memory:</code> testável), lock de escrita. A ordem índices-depois-de-migrações está correta. <b>Estender, não reescrever.</b></span>
+      </div>
+      <div class="keep-row">
+        <code>SqliteLapRepository.save</code>
+        <span>Transação única com rollback; lista de colunas derivada do modelo. <b>Preservar o padrão.</b></span>
+      </div>
+      <div class="keep-row">
+        <code>application/events/event_bus.py</code>
+        <span>Isolamento de handler e travessia de thread correta. <b>Preservar o contrato; trocar o transporte.</b></span>
+      </div>
+      <div class="keep-row">
+        <code>TelemetryService._compute_g_forces</code>
+        <span>Projeta a aceleração nos eixos do carro em vez de deixar no referencial do mundo. Matematicamente correto e raro de ver feito certo.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ PROBLEMAS ══ -->
+  <section>
+    <h2>4 · Problemas e dívida técnica</h2>
+    <p>Dezesseis problemas catalogados, ordenados por severidade.</p>
+
+    <div class="sev-group">
+      <p class="sev-label crit">Críticos — bloqueiam o roadmap</p>
+
+      <div class="problem crit">
+        <div class="problem-head"><span class="pid">P1</span><h4>Zero testes automatizados</h4></div>
+        <p>Não existe um único arquivo de teste. O README descreve validações detalhadas — paridade de 401 amostras, migração v3→v5, transação com rollback — mas nada disso é executável hoje. O projeto está prestes a multiplicar de tamanho por 5 sem rede de segurança.</p>
+      </div>
+
+      <div class="problem crit">
+        <div class="problem-head"><span class="pid">P2</span><h4><code>domain/</code> depende do Qt</h4></div>
+        <p><code>domain/interfaces/telemetry_source.py:5</code> importa <code>QObject, Signal</code>. A consequência é estrutural: <strong>o núcleo não roda sem um event loop do Qt</strong>. Um bot do Discord, um worker de IA, um teste unitário ou um servidor headless não podem usar o domínio. Bloqueia as fases 7, 8 e 9 inteiras.</p>
+      </div>
+
+      <div class="problem crit">
+        <div class="problem-head"><span class="pid">P3</span><h4>Nenhuma configuração; segredo real commitado</h4></div>
+        <p><code>presentation/main_window.py:51</code> — <code>DEFAULT_PS_IP = "192.168.15.156"</code>. Um arquivo de UI é dono de uma constante de rede, e é o IP da LAN doméstica do autor, versionado. Repetido em <code>tools/diagnose.py:22</code>. <strong>Sem uma camada de config não há como adicionar token do Discord ou chave de IA com segurança.</strong></p>
+      </div>
+
+      <div class="problem crit">
+        <div class="problem-head"><span class="pid">P4</span><h4>Nenhuma fonte de telemetria além do UDP real</h4></div>
+        <p>A interface <code>TelemetrySource</code> é bem desenhada, mas tem uma única implementação. Não há mock nem replay de arquivo. <strong>Esta é a causa raiz de P1:</strong> sem fonte sintética, testar o pipeline exige um PS5 ligado na mesma rede.</p>
+      </div>
+    </div>
+
+    <div class="sev-group">
+      <p class="sev-label high">Altos — comprometem a qualidade do produto</p>
+
+      <div class="problem high">
+        <div class="problem-head"><span class="pid">P5</span><h4>Deriva na integração de distância</h4></div>
+        <p>O serviço acumula <code>distância += (velocidade/3.6) × dt</code> — regra do retângulo a 60 Hz. O erro é monotônico e acumula ao longo da volta. Como delta, limites de setor e alinhamento de comparação <strong>todos</strong> dependem da distância, esse erro se propaga para todo o analytics. As coordenadas <code>position_x/z</code> estão disponíveis e não são usadas para corrigir.</p>
+      </div>
+
+      <div class="problem high">
+        <div class="problem-head"><span class="pid">P6</span><h4>Setores são aproximação geométrica</h4></div>
+        <p><code>compute_sector_times</code> divide a volta em terços de distância iguais, ancorados na mediana das últimas 10 voltas. Honesto e documentado — mas combinado com P5 significa que "setor 2" cai em um ponto físico diferente a cada volta. Para análise de curvas isso é insuficiente.</p>
+      </div>
+
+      <div class="problem high">
+        <div class="problem-head"><span class="pid">P7</span><h4>Renderização de gráficos sem downsampling</h4></div>
+        <p><code>widgets_chart.py:148</code> — <code>for x, y in points: series.append(x, y)</code>. <code>QLineSeries.append()</code> emite um sinal por ponto. Uma volta de 1:42 a 60 Hz ≈ <b class="num">6.120</b> amostras; a aba de telemetria monta ~18 gráficos → <strong>≈110.000 appends por plotagem</strong>, dobrado em comparação. <code>replace(lista)</code> é cerca de uma ordem de grandeza mais rápido.</p>
+      </div>
+
+      <div class="problem high">
+        <div class="problem-head"><span class="pid">P8</span><h4>Retenção apaga dados do usuário em silêncio</h4></div>
+        <p><code>KEEP_BEST_PER_TRACK = 5</code>, <code>KEEP_RECENT_PER_TRACK = 50</code>. Toda gravação apaga o que ficar fora dessa janela, sem aviso e sem controle do usuário. Para uma plataforma que quer <strong>modelo estatístico do piloto a partir de histórico</strong>, destruir histórico é diretamente contraproducente.</p>
+      </div>
+
+      <div class="problem high">
+        <div class="problem-head"><span class="pid">P9</span><h4><code>Session</code> não é persistida</h4></div>
+        <p>O modelo de domínio existe e é bom, mas não há tabela <code>sessions</code> nem <code>SessionRepository</code>. Sessões vivem só em memória e morrem com o processo. "Recuperar sessão após falha" é impossível hoje.</p>
+      </div>
+    </div>
+
+    <div class="sev-group">
+      <p class="sev-label med">Médios — dívida a pagar antes de escalar</p>
+
+      <div class="problem med">
+        <div class="problem-head"><span class="pid">P10</span><h4>Telemetria de alta frequência em linhas SQL</h4></div>
+        <p><code>lap_frames</code> guarda uma linha por amostra × 27 colunas: ~6k linhas/volta, ~336k linhas por pista com a retenção atual. Funciona agora; não sobrevive a sessões de endurance.</p>
+      </div>
+
+      <div class="problem med">
+        <div class="problem-head"><span class="pid">P11</span><h4>Nenhum logging estruturado</h4></div>
+        <p><code>event_bus.py</code> usa <code>print()</code> como único destino de erro de handler. Sem níveis, sem arquivo, sem correlação. Não há contagem de pacotes, perda, latência ou throughput.</p>
+      </div>
+
+      <div class="problem med">
+        <div class="problem-head"><span class="pid">P12</span><h4>Strings mágicas como estado de conexão</h4></div>
+        <p><code>"conectando"</code>, <code>"recebendo"</code>, <code>"sem_sinal"</code>, <code>"desconectado"</code> são comparadas como literais em quatro arquivos de camadas diferentes. Um erro de digitação falha em silêncio. Deveria ser <code>enum</code>.</p>
+      </div>
+
+      <div class="problem med">
+        <div class="problem-head"><span class="pid">P13</span><h4>Duplicação entre as duas árvores</h4></div>
+        <p>Verificado byte a byte: <code>widgets_chart.py</code> (715 linhas), <code>widgets.py</code>, <code>widgets_tire.py</code> e os três CSVs do catálogo são <strong>idênticos</strong> nas duas árvores. A árvore legada ainda contém o bug de seleção de pista descrito no README.</p>
+      </div>
+
+      <div class="problem med">
+        <div class="problem-head"><span class="pid">P14–P16</span><h4>Higiene, esqueleto morto e packaging</h4></div>
+        <p>56 <code>.pyc</code> versionados e <code>.DS_Store</code> commitado (P14). <code>file_lap_storage.py</code> são 59 linhas que só levantam <code>NotImplementedError</code>, sugerindo que exportação existe (P15). Roda só a partir do fonte, com manipulação de <code>sys.path</code> (P16).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ RISCOS ══ -->
+  <section>
+    <h2>5 · Riscos</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Risco</th><th>Prob.</th><th>Mitigação</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><b>R1</b></td><td>Qt no domínio impede módulos headless</td><td><b>Certa</b></td><td>Extrair núcleo sem Qt — primeira tarefa da Fase 1</td></tr>
+          <tr><td><b>R2</b></td><td>Thread única satura ao adicionar IA/Discord</td><td>Alta</td><td>Fronteira assíncrona + workers</td></tr>
+          <tr><td><b>R3</b></td><td>Deriva de distância invalida analytics comparativo</td><td>Alta</td><td>Trapézio + correção por x/z</td></tr>
+          <tr><td><b>R4</b></td><td>Crescimento 5× sem testes</td><td><b>Certa</b></td><td>Testes antes de expandir</td></tr>
+          <tr><td><b>R5</b></td><td>Vazamento de segredo ao adicionar Discord/IA</td><td>Média</td><td><code>.gitignore</code> + <code>.env</code> antes de qualquer chave</td></tr>
+          <tr><td><b>R6</b></td><td>IA inventa dados que não existem no protocolo</td><td>Alta</td><td><code>ContextBuilder</code> só emite fatos medidos</td></tr>
+          <tr><td><b>R7</b></td><td>Retenção apaga histórico necessário ao modelo do piloto</td><td>Média</td><td>Rever política antes de coletar dados</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══ ARQUITETURA ALVO ══ -->
+  <section>
+    <h2>6 · Arquitetura alvo</h2>
+
+    <div class="note">
+      <p class="eyebrow">Princípio condutor</p>
+      <p>
+        Núcleo headless em Python puro. Qt é uma casca. IA, Discord e voz são plugins
+        que dependem do núcleo — <strong>nunca o contrário.</strong>
+      </p>
+    </div>
+
+<pre>gt7core/          # Python puro — ZERO Qt, ZERO I/O de UI
+  domain/         #   modelos, protocolos (typing.Protocol), exceções
+  telemetry/      #   protocolo GT7, decoder, normalizer, fontes
+  session/        #   session manager, lap manager, sector manager
+  analytics/      #   funções puras sobre LapSeries
+  events/         #   bus agnóstico de transporte
+  storage/        #   repositories (SQLite + Parquet)
+  config/         #   configuração centralizada + segredos
+  observability/  #   logging estruturado, métricas
+
+gt7app/           # PySide6 — casca de UI
+  adapters/       #   QtEventBusAdapter (re-emite no thread da UI)
+  viewmodels/  ·  design/  ·  pages/  ·  widgets/
+
+gt7ai/            # plugin — depende só de gt7core
+gt7discord/       # plugin — depende só de gt7core
+gt7voice/         # plugin — depende de gt7core + gt7ai</pre>
+
+    <p>
+      <strong>Regra de dependência, verificável em CI:</strong> <code>gt7core</code> não
+      importa <code>gt7app</code>, <code>gt7ai</code>, <code>gt7discord</code> nem
+      <code>PySide6</code>. Um teste de arquitetura falha o build se alguém quebrar isso.
+    </p>
+
+    <h3>A mudança que destrava tudo</h3>
+    <p>
+      Hoje o <code>EventBus</code> é <code>QObject</code> e usa <code>Signal</code> para
+      atravessar threads. A solução é manter exatamente esse comportamento na UI, mas
+      tirar o Qt do contrato:
+    </p>
+
+<pre>gt7core/events/bus.py       ← EventBus puro (thread-safe, sem Qt)
+                                publish() / subscribe() / unsubscribe()
+                                  │
+        ┌─────────────────────────┼─────────────────────────┐
+        ▼                         ▼                         ▼
+gt7app/adapters/            gt7discord/               tests/
+QtEventBusAdapter           (asyncio)                 (síncrono, direto)
+ └ reemite via Signal
+   na thread da UI</pre>
+
+    <p>
+      O <code>QtEventBusAdapter</code> é a <strong>única</strong> peça que conhece
+      <code>Signal</code>. A garantia de thread da UI é preservada; o núcleo passa a ser
+      testável sem <code>QApplication</code> e utilizável por um bot.
+    </p>
+
+    <h3>Pipeline de telemetria</h3>
+<pre>GT7 (UDP :33740)
+      │
+ ┌────▼──────────────────┐
+ │ TelemetrySource       │  Protocol — 3 implementações:
+ │  · Gt7UdpSource       │   real
+ │  · ReplaySource       │   arquivo gravado
+ │  · MockSource         │   sintético
+ └────┬──────────────────┘
+      │ thread produtora
+ ┌────▼──────────────────┐
+ │ Ring buffer limitado  │  ← contrapressão; descarta o mais antigo,
+ └────┬──────────────────┘     nunca cresce sem limite
+      │
+ ┌────▼──────────────────┐
+ │ TelemetryEngine       │  validação → decode → parse → normalize
+ │                       │  → distância (trapézio + correção x/z)
+ │                       │  → forças G → TelemetryFrame normalizado
+ └────┬──────────────────┘
+      │
+ ┌────▼──────────────────┐
+ │ EventBus              │
+ └──┬────────┬────────┬──┘
+    │        │        │
+ Analytics  UI      Recording        ← consumidores independentes;
+    │                                   qualquer um pode cair sem
+ RealTimeEventEngine                    derrubar os outros
+    │
+ RaceEngineer</pre>
+
+    <p>
+      <strong>A UI não sabe se a fonte é live ou replay.</strong> Como as três fontes
+      satisfazem o mesmo protocolo, isso sai de graça.
+    </p>
+  </section>
+
+  <!-- ══ ARMAZENAMENTO ══ -->
+  <section>
+    <h2>7 · Armazenamento</h2>
+    <p>Híbrido SQLite + Parquet — e pelas razões certas, não por moda.</p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Camada</th><th>Tecnologia</th><th>Conteúdo</th><th>Por quê</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>Metadados</b></td><td>SQLite</td>
+            <td>sessões, voltas, setores, curvas, resultados de análise, catálogo</td>
+            <td>Consultas relacionais, transações, já implementado e migrado</td>
+          </tr>
+          <tr>
+            <td><b>Alta frequência</b></td><td>Parquet<br>(1 arquivo/volta)</td>
+            <td>27+ canais × ~6k amostras</td>
+            <td>Colunar e comprimido: ler só <code>speed_kmh</code> não carrega os outros 26 canais. ~10× menor que linhas SQL.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      A volta no SQLite guarda um ponteiro para o arquivo Parquet. <code>LapRepository</code>
+      mantém a interface atual — <strong>as camadas acima não percebem a mudança</strong>,
+      que é exatamente o valor do repository pattern já implementado. A migração é um passo
+      de schema (v6) que exporta <code>lap_frames</code> e mantém leitura das duas formas
+      durante uma versão. Nenhum dado do usuário é perdido.
+    </p>
+  </section>
+
+  <!-- ══ IA ══ -->
+  <section>
+    <h2>8 · Arquitetura da IA</h2>
+    <p>
+      Estritamente modular: <strong>o núcleo não conhece a IA</strong>. Provedores
+      (Anthropic, OpenAI, local) atrás de um <code>Protocol</code>, intercambiáveis por
+      configuração. Prompts versionados em arquivo, não embutidos em código.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Nível</th><th>Mecanismo</th><th>Latência</th><th>Custo</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><b>1 — Alertas determinísticos</b></td><td><code>RealTimeEventEngine</code></td><td class="num">&lt; 10 ms</td><td>zero</td></tr>
+          <tr><td><b>2 — Análise estatística</b></td><td>funções de analytics</td><td class="num">&lt; 100 ms</td><td>zero</td></tr>
+          <tr><td><b>3 — Interpretação por IA</b></td><td>LLM sob demanda</td><td>segundos</td><td>por chamada</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Durante a pilotagem só os níveis 1 e 2 rodam. O nível 3 é acionado por pergunta do
+      usuário ou ao fim da sessão. <strong>Telemetria bruta nunca vai para o LLM</strong> —
+      só o <code>EngineeringContext</code> destilado.
+    </p>
+
+    <h4>Regra contra alucinação</h4>
+    <p>
+      O <code>ContextBuilder</code> só emite fatos que foram <strong>medidos</strong>.
+      Campos ausentes entram no contexto marcados como indisponíveis, e o prompt instrui a
+      responder <em>"não tenho dados de telemetria suficientes para determinar isso"</em>.
+      Como o <code>TelemetryFrame</code> já representa ausência com <code>null</code>, essa
+      garantia é estrutural e não depende de o modelo se comportar bem.
+    </p>
+  </section>
+
+  <!-- ══ TESTES ══ -->
+  <section>
+    <h2>9 · Estratégia de testes</h2>
+    <p>
+      O <code>MockTelemetryProvider</code> vem <strong>primeiro</strong>, não por último:
+      é ele que torna todo o resto testável sem PS5.
+    </p>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Camada</th><th>Ferramenta</th><th>Casos que importam</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Protocolo</td><td>pytest</td><td>pacote cifrado com Salsa20 real; <b>corrompido, curto, duplicado, chave errada</b></td></tr>
+          <tr><td>Analytics</td><td>pytest + hypothesis</td><td>volta vazia, volta incompleta, canal ausente, divisão por zero</td></tr>
+          <tr><td>Delta</td><td>pytest</td><td>referência vazia, distância além da referência, comprimentos diferentes</td></tr>
+          <tr><td>Repositories</td><td>pytest + SQLite <code>:memory:</code></td><td>rollback, migração v3→v5, banco indisponível</td></tr>
+          <tr><td>Contexto de IA</td><td>pytest</td><td><b>dados insuficientes → recusa explícita</b></td></tr>
+          <tr><td>Pipeline</td><td>pytest + MockSource</td><td>GT7 desconecta no meio, pausa, sessão vazia</td></tr>
+          <tr><td><b>Arquitetura</b></td><td>pytest custom</td><td><b><code>gt7core</code> não importa Qt</b> — falha o build se alguém regredir</td></tr>
+          <tr><td>UI</td><td>pytest-qt</td><td>fumaça: monta a janela, exercita as páginas, zero exceções</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Meta: <strong>≥85% de cobertura em <code>gt7core</code></strong>. A UI fica com
+      testes de fumaça — o retorno de testar widget a widget não paga o custo.
+      <strong>Portar as validações do README para testes executáveis é tarefa da Fase 1:</strong>
+      o trabalho já foi feito uma vez; falta torná-lo repetível.
+    </p>
+  </section>
+
+  <!-- ══ ROADMAP ══ -->
+  <section>
+    <h2>10 · Roadmap</h2>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Fase</th><th>Escopo</th><th>Estado</th><th>Entrega</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><b>0 — Audit</b></td><td>Este documento</td>
+            <td><span class="chip done">Concluído</span></td><td>—</td>
+          </tr>
+          <tr>
+            <td><b>1 — Fundação</b></td>
+            <td>Tooling e CI; <b>extrair <code>gt7core</code> sem Qt</b>; config + segredos; logging estruturado; testes portados do README</td>
+            <td><span class="chip todo">A fazer</span></td><td>Núcleo headless com testes verdes</td>
+          </tr>
+          <tr>
+            <td><b>2 — Telemetria</b></td>
+            <td>Migrar protocolo/decoder; <b>MockSource + ReplaySource</b>; ring buffer; correção de deriva; estatísticas de pacote</td>
+            <td><span class="chip part">Parcial</span></td><td>Pipeline testável sem PS5</td>
+          </tr>
+          <tr>
+            <td><b>3 — Gravação</b></td>
+            <td><code>SessionRepository</code>; Parquet + migração v6; rever retenção; recuperação após falha</td>
+            <td><span class="chip part">Parcial</span></td><td>Sessões persistidas</td>
+          </tr>
+          <tr>
+            <td><b>4 — Analytics</b></td>
+            <td>Volta, setor, delta (existem); frenagem, throttle, curva, pneu, piloto (novos)</td>
+            <td><span class="chip part">Parcial</span></td><td>Motor de análise completo</td>
+          </tr>
+          <tr>
+            <td><b>5 — UI profissional</b></td>
+            <td>Design system em tokens; navegação por páginas; command palette; notificações; virtualização</td>
+            <td><span class="chip part">Parcial</span></td><td>Interface de produto</td>
+          </tr>
+          <tr>
+            <td><b>6 — Analytics avançado</b></td>
+            <td>Mapa de pista, detecção de curvas, banco de curvas por pista, perda de tempo, modelo do piloto</td>
+            <td><span class="chip todo">A fazer</span></td><td>"Você perdeu 0,231s na curva 4"</td>
+          </tr>
+          <tr>
+            <td><b>7 — IA</b></td>
+            <td>AIProvider, ContextBuilder, RaceEngineer, 3 níveis, relatórios</td>
+            <td><span class="chip todo">A fazer</span></td><td>Engenheiro virtual</td>
+          </tr>
+          <tr>
+            <td><b>8 — Discord</b></td>
+            <td>Bot, comandos, notificações</td>
+            <td><span class="chip todo">A fazer</span></td><td>Consulta remota</td>
+          </tr>
+          <tr>
+            <td><b>9 — Voz</b></td>
+            <td>STT, parser, TTS, voz no Discord</td>
+            <td><span class="chip todo">A fazer</span></td><td>Engenheiro por voz</td>
+          </tr>
+          <tr>
+            <td><b>10 — Hardening</b></td>
+            <td>Performance, stress, memória, recuperação, segurança, UX, arquitetura</td>
+            <td><span class="chip todo">A fazer</span></td><td>Pronto para produção</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p class="eyebrow">Caminho crítico</p>
+      <p>
+        A Fase 1 destrava tudo. Extrair o núcleo sem Qt e criar a fonte mock são
+        pré-requisitos de todas as fases posteriores — não são "preparação",
+        são a fundação.
+      </p>
+    </div>
+  </section>
+
+  <!-- ══ DECISÕES ══ -->
+  <section>
+    <h2>11 · Decisões que peço confirmação</h2>
+    <p>Estas mudam materialmente o trabalho e são suas para decidir.</p>
+
+    <ol class="decisions">
+      <li><p><b>Reestruturação em pacotes</b> (<code>gt7core</code> / <code>gt7app</code> / plugins) — é a mudança estrutural principal. Alternativa conservadora: manter <code>src/</code> e só remover o Qt do domínio. <b>Recomendo a reestruturação:</b> o custo é parecido agora e muito maior depois.</p></li>
+      <li><p><b>Destino da árvore <code>hanna_gt7_ai/</code></b> — arquivar em tag e remover, ou manter? <b>Recomendo arquivar:</b> <code>src/</code> é autossuficiente e superior, e a legada ainda contém o bug de seleção de pista. O histórico do git preserva tudo.</p></li>
+      <li><p><b>Política de retenção (P8)</b> — confirmar a troca da exclusão automática por retenção ilimitada com arquivamento opcional. Afeta dados já gravados.</p></li>
+      <li><p><b>Provedor de IA padrão</b> — Anthropic, OpenAI ou local. A arquitetura suporta os três; a escolha define qual implementar primeiro.</p></li>
+      <li><p><b>Idioma de código e interface</b> — hoje há mistura. <b>Recomendo:</b> código e identificadores em inglês, interface em português, com strings de UI centralizadas para permitir tradução depois.</p></li>
+    </ol>
+  </section>
+
+  <footer>
+    <p class="eyebrow">Veredito</p>
+    <p>
+      A fundação é sólida e foi construída com cuidado real — as decisões difíceis
+      (alinhamento por distância, projeção das forças G nos eixos do carro, transação única,
+      migrações incrementais) estão <strong>corretas</strong>, e o código explica o porquê de
+      cada uma. Isso é raro e é o ativo mais valioso do repositório.
+    </p>
+    <p>
+      O que falta não é qualidade, é <strong>infraestrutura para crescer</strong>: testes,
+      configuração, observabilidade e um núcleo que rode sem interface gráfica.
+      Nenhuma reescrita é necessária. O caminho é extrair, testar e expandir.
+    </p>
+    <p style="color: var(--text-3); font-size: 14.5px;">
+      Aguardando instrução para iniciar a Fase 1.
+    </p>
+  </footer>
+
+</div>
