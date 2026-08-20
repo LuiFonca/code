@@ -93,6 +93,9 @@ class CoreApplication:
     `start()`, e falhar não impede a captura.
     """
 
+    _closed: bool = False
+    """Guarda de desmonte — ver `close`."""
+
     engineer_service: Any | None = None
     """Ponte Qt para o engenheiro. Preenchida por `build_gui`, nunca aqui.
 
@@ -182,6 +185,24 @@ class CoreApplication:
             _log.warning("o bot do Discord não pôde subir", exc_info=True)
 
     def close(self) -> None:
+        """Desmonta tudo. **Idempotente**: fechar duas vezes é um caso normal.
+
+        Não é defensividade genérica; é o desenho real do desmonte. A janela
+        fecha o núcleo no `closeEvent`, e quem montou o núcleo também o fecha
+        num `finally` — que é o certo, porque a janela pode nem ter chegado a
+        existir. As duas coisas acontecerem é o caminho comum, não a exceção.
+
+        Sem esta guarda, a segunda chamada percorre `stop()` até
+        `end_session()`, que grava no banco já fechado e levanta
+        `sqlite3.ProgrammingError: banco já fechado` — no meio de um `finally`,
+        onde a exceção mascara o que quer que estivesse sendo tratado. Já
+        aconteceu duas vezes neste projeto: uma numa fixture de teste, outra na
+        auditoria de casos de uso.
+        """
+        if self._closed:
+            return
+        self._closed = True
+
         self.stop()
         if self.discord_bot is not None:
             self.discord_bot.stop()

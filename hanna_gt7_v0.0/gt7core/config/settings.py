@@ -132,7 +132,17 @@ class AIConfig:
     fast_model: str = "claude-haiku-4-5"   # nível 1, respostas em pilotagem
     api_key: SecretStr = field(default_factory=SecretStr)
 
-    enabled: bool = True
+    enabled: bool = False
+    """**Desligada por padrão.**
+
+    Ligada, ela tenta falar com um servidor local que a maioria das instalações
+    não tem de pé, e o resultado é um aviso no log a cada volta — ruído que
+    parece defeito. A análise da Fase 4, que é determinística e gratuita,
+    responde sem ela; a IA é um acréscimo, e acréscimo se liga por escolha.
+
+    Quem quiser: marque "Usar modelo de linguagem" em Configurações, ou
+    `GT7_AI_ENABLED=true` no `.env`.
+    """
 
     @property
     def is_local(self) -> bool:
@@ -307,10 +317,10 @@ class Settings:
             model=get("AI_MODEL") or "claude-opus-5",
             fast_model=get("AI_FAST_MODEL") or "claude-haiku-4-5",
             api_key=SecretStr(ai_key),
-            # O local pode ligar sozinho: é gratuito, offline, e se o servidor
-            # não estiver de pé a resposta cai na análise da Fase 4 sem alarde.
-            # A nuvem exige chave — sem ela, "ligada" não significaria nada.
-            enabled=get_bool("AI_ENABLED", True)
+            # Desligada por padrão: sem servidor de pé, ligada só produz um
+            # aviso por volta no log. A nuvem, além disso, exige chave — sem
+            # ela, "ligada" não significaria nada.
+            enabled=get_bool("AI_ENABLED", False)
             and (ai_provider != "anthropic" or bool(ai_key)),
         )
 

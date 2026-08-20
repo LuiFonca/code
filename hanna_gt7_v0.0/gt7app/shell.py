@@ -82,6 +82,7 @@ class AppShell(QMainWindow):
         self._theme = theme or get_theme(core.settings.ui.theme)
         self._commands = CommandRegistry()
         self._pages: list[Page] = []
+        self._shutdown_done = False
 
         self.setWindowTitle("HANNA GT7")
         self.resize(1360, 860)
@@ -373,7 +374,19 @@ class AppShell(QMainWindow):
         que toca objetos Qt na volta, e fechar a janela antes de ela terminar é
         o modo de falha que o adaptador de barramento existe para evitar — só
         que no sentido contrário.
+
+        **Idempotente**, como o `close()` do núcleo e pelo mesmo motivo: fechar
+        duas vezes é caminho normal — a pessoa fecha a janela e o programa
+        encerra, ou o teste fecha e a fixture fecha de novo. Sem a guarda, o
+        segundo desmonte tenta desligar um sinal já desligado e o Qt reclama
+        ("Failed to disconnect... applicationStateChanged"), que é ruído
+        anunciando um desmonte que já tinha dado certo.
         """
+        if self._shutdown_done:
+            super().closeEvent(event)
+            return
+        self._shutdown_done = True
+
         service = getattr(self._core, "engineer_service", None)
         if service is not None:
             service.shutdown()

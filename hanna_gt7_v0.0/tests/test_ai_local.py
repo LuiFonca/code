@@ -415,7 +415,12 @@ class TestConfiguracao:
             monkeypatch.delenv(name, raising=False)
         settings = Settings.load(env_file=tmp_path / "inexistente.env")
         assert settings.ai.is_local
-        assert settings.ai.enabled, "o local é gratuito: não há motivo para vir desligado"
+        # **Desligada por padrão**, mesmo sendo local e gratuita: ligada sem o
+        # servidor de pé, ela só produz um aviso no log a cada volta, e ruído
+        # que parece defeito é pior que um recurso que a pessoa liga quando
+        # quiser. O que este teste prende é a *escolha do provedor*, que
+        # continua sendo local quando não há chave.
+        assert settings.ai.enabled is False
 
     def test_com_chave_o_carregador_escolhe_a_nuvem(
         self, monkeypatch, tmp_path  # noqa: ANN001
@@ -425,7 +430,7 @@ class TestConfiguracao:
         monkeypatch.delenv("GT7_AI_ENABLED", raising=False)
         settings = Settings.load(env_file=tmp_path / "inexistente.env")
         assert not settings.ai.is_local
-        assert settings.ai.enabled
+        assert settings.ai.enabled is False, "desligada por padrão, com chave ou sem"
 
     def test_provedor_explicito_ganha_da_chave(self, monkeypatch, tmp_path) -> None:  # noqa: ANN001
         """Ter chave não obriga a gastá-la."""
@@ -452,6 +457,9 @@ class TestConfiguracao:
     def test_o_engenheiro_monta_o_cliente_local_sem_tocar_a_rede(self) -> None:
         settings = Settings()
         settings.ai.provider = "local"
+        # Ligada **explicitamente**: o padrão passou a ser desligada, e o que
+        # este teste verifica é a montagem do cliente, não a política de padrão.
+        settings.ai.enabled = True
         engineer = RaceEngineer.from_settings(settings)
         assert engineer.is_online, "o cliente local deve ser montado sem checar o servidor"
 

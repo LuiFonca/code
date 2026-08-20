@@ -108,13 +108,44 @@ class TestPrecedencia:
 
 
 class TestAtivacaoDeModulos:
-    def test_ia_liga_quando_ha_chave(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_a_chave_sozinha_nao_liga_a_ia(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ter chave **não** é pedir para ligar.
+
+        A IA passou a vir desligada: ligada sem servidor de pé ela só produz um
+        aviso por volta no log, e ruído que parece defeito é pior que um recurso
+        que a pessoa liga quando quiser. A chave continua sendo lida e guardada
+        — ela é pré-requisito da nuvem, não o gatilho.
+        """
+        monkeypatch.setenv("GT7_AI_API_KEY", "sk-ant-exemplo")
+
+        settings = Settings.load(env_file=Path("/nao/existe"))
+
+        assert settings.ai.enabled is False
+        assert settings.ai.api_key.reveal() == "sk-ant-exemplo"
+
+    def test_ligada_no_ambiente_e_com_chave_a_nuvem_sobe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """As duas condições juntas: pedido explícito **e** chave."""
+        monkeypatch.setenv("GT7_AI_ENABLED", "true")
         monkeypatch.setenv("GT7_AI_API_KEY", "sk-ant-exemplo")
 
         settings = Settings.load(env_file=Path("/nao/existe"))
 
         assert settings.ai.enabled is True
-        assert settings.ai.api_key.reveal() == "sk-ant-exemplo"
+
+    def test_ligada_no_ambiente_sem_chave_nao_sobe_a_nuvem(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """"Ligada" sem chave não significaria nada no provedor de nuvem."""
+        monkeypatch.setenv("GT7_AI_ENABLED", "true")
+        monkeypatch.setenv("GT7_AI_PROVIDER", "anthropic")
+
+        settings = Settings.load(env_file=Path("/nao/existe"))
+
+        assert settings.ai.enabled is False
 
     def test_sem_chave_a_ia_e_local_e_nao_a_nuvem(
         self, monkeypatch: pytest.MonkeyPatch
