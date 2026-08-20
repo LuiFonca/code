@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hanna-gt7"
+version = "1.0.0"
+description = "GT7 Professional Telemetry Platform — telemetria, analytics e race engineer"
+requires-python = ">=3.11"
+
+# O núcleo depende SÓ de pycryptodome (Salsa20 do protocolo GT7).
+# Nada de Qt aqui: é isso que permite rodar gt7core headless.
+dependencies = [
+    "pycryptodome>=3.19,<4",
+]
+
+[project.optional-dependencies]
+app = ["PySide6>=6.6,<7"]
+storage = ["pyarrow>=15"]
+# `output_config` (esforço e saída estruturada) só existe a partir da 0.120.
+# Um piso mais baixo instalaria uma SDK que rejeita o parâmetro em TypeError.
+ai = ["anthropic>=0.120"]
+discord = ["discord.py>=2.3"]
+
+[tool.setuptools.packages.find]
+include = ["gt7core*", "gt7app*", "gt7ai*", "gt7discord*", "gt7voice*"]
+
+# Sem isto, um `pip install .` monta o pacote **sem** os CSVs: setuptools só
+# empacota `.py` por padrão. O catálogo sumiria em silêncio — o programa subiria
+# normalmente e todo carro apareceria como "Carro 2001", porque o catálogo
+# ausente é modo de operação e não erro.
+[tool.setuptools.package-data]
+gt7core = ["catalog/data/*.csv"]
