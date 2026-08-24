@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from gt7app.application import build_core, build_gui  # noqa: E402
 from gt7app.pages.analysis import CHART_BOOST, CHART_GRIP, CHART_YAW  # noqa: E402
 from gt7core.config.settings import Settings  # noqa: E402
-from gt7core.domain.models import Lap  # noqa: E402
+from gt7core.domain.models import Lap, TelemetryPoint  # noqa: E402
 from gt7core.telemetry.protocol import (  # noqa: E402
     FLAG_CAR_ON_TRACK,
     FLAG_TCS_ACTIVE,
@@ -68,6 +68,21 @@ def _gravar(
             points=pontos,
         )
     )
+
+
+def _pontos(*, slip: float, speed: float = 120.0) -> list[TelemetryPoint]:
+    """Pontos mínimos para exercitar o diagnóstico do canal de aderência.
+
+    Só velocidade e escorregamento importam aqui: é o par que separa "volta
+    gravada com o offset errado" de "roda legitimamente parada".
+    """
+    campos = dict.fromkeys(TelemetryPoint.__slots__, 0.0)
+    campos.update(
+        elapsed_ms=0, gear=0, flags=None, speed_kmh=speed,
+        tire_slip_fl=slip, tire_slip_fr=slip,
+        tire_slip_rl=slip, tire_slip_rr=slip,
+    )
+    return [TelemetryPoint(**campos) for _ in range(10)]
 
 
 @pytest.fixture
@@ -234,7 +249,8 @@ class TestAvisoDeCanalImplausivel:
         pagina.refresh()
 
         pagina._warn_if_slip_implausible(  # noqa: SLF001
-            [Series("DE", "#fff", [(0.0, 2.0), (10.0, 3.0)])]
+            [Series("DE", "#fff", [(0.0, 2.0), (10.0, 3.0)])],
+            _pontos(slip=1.0),
         )
 
         assert "implausível" in pagina._grip_hint.text()  # noqa: SLF001
@@ -243,9 +259,53 @@ class TestAvisoDeCanalImplausivel:
     def test_serie_vazia_nao_avisa(self, montado) -> None:  # noqa: ANN001
         window, _ = montado
         pagina = window._pages[1]  # noqa: SLF001
-        pagina._warn_if_slip_implausible([])  # noqa: SLF001
+        pagina._warn_if_slip_implausible([], [])  # noqa: SLF001
 
         assert pagina._grip_hint.text() == ""  # noqa: SLF001
+
+    def test_volta_antiga_diz_que_e_volta_antiga(self, montado) -> None:  # noqa: ANN001
+        """Volta gravada antes da correção de offset pede coisa oposta.
+
+        O aviso genérico manda procurar um defeito; aqui o defeito já foi
+        corrigido e o dado é que está congelado no banco — o pacote bruto não é
+        guardado. Mandar investigar o código seria mandar procurar o que não
+        existe mais.
+        """
+        from gt7app.widgets.charts import Series
+
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        pagina._warn_if_slip_implausible(  # noqa: SLF001
+            [Series("DE", "#fff", [(0.0, 0.0), (10.0, 0.0)])],
+            _pontos(slip=0.0),
+        )
+
+        texto = pagina._grip_hint.text()  # noqa: SLF001
+        assert "antes da correção" in texto
+        assert "Grave uma volta nova" in texto
+        assert "implausível" not in texto
+
+    def test_carro_parado_nao_conta_como_volta_antiga(self, montado) -> None:  # noqa: ANN001
+        """Roda parada dá escorregamento zero **legitimamente**.
+
+        Sem o piso de velocidade, o box e a largada — zero honesto — seriam lidos
+        como o defeito de offset, e o aviso mandaria regravar uma volta que está
+        inteira.
+        """
+        from gt7app.widgets.charts import Series
+
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        pagina._warn_if_slip_implausible(  # noqa: SLF001
+            [Series("DE", "#fff", [(0.0, 0.0), (10.0, 0.0)])],
+            _pontos(slip=0.0, speed=0.0),
+        )
+
+        assert "implausível" in pagina._grip_hint.text()  # noqa: SLF001
 
 
 class TestCanaisDaComparacao:

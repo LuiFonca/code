@@ -33,6 +33,7 @@ from gt7core.analytics.series import sector_boundaries_m
 from gt7core.analytics.steering import yaw_rate_series
 from gt7core.analytics.throttle import ThrottleApplication, analyse_throttle
 from gt7core.analytics.tyres import (
+    MIN_SPEED_FOR_SLIP_KMH,
     WHEELS,
     detect_tyre_events,
     infer_slip_convention,
@@ -524,9 +525,11 @@ class AnalysisPage(Page):
             ]
             series.append(Series(WHEEL_LABELS[roda], cores[roda], valores))
         self._charts[CHART_GRIP].set_series(series)
-        self._warn_if_slip_implausible(series)
+        self._warn_if_slip_implausible(series, points)
 
-    def _warn_if_slip_implausible(self, series: list[Series]) -> None:
+    def _warn_if_slip_implausible(
+        self, series: list[Series], points: list[TelemetryPoint]
+    ) -> None:
         """Avisa quando o canal de escorregamento não parece ser o que se supõe.
 
         Numa volta inteira, as quatro rodas passam a esmagadora maioria do tempo
@@ -548,6 +551,16 @@ class AnalysisPage(Page):
         media = sum(valores) / len(valores)
         if 60.0 <= media <= 160.0:
             self._grip_hint.setText("")
+            return
+
+        if _gravada_antes_da_correcao(points):
+            self._grip_hint.setText(
+                "Esta volta foi gravada antes da correção do canal de "
+                "aderência: o valor guardado é zero e não há como recuperá-lo, "
+                "porque o pacote bruto não é armazenado — só o ponto já "
+                "derivado dele. Grave uma volta nova e o gráfico funciona. As "
+                "voltas antigas continuam válidas em todo o resto."
+            )
             return
 
         self._grip_hint.setText(
@@ -712,7 +725,11 @@ class AnalysisPage(Page):
                 "ABS: não há indicador. O campo de estado do pacote do GT7 tem "
                 "doze bits nomeados pela engenharia reversa e nenhum deles é o "
                 "ABS; nesta volta também não apareceu nenhum bit desconhecido. "
-                "TCS e ASM, esses sim, estão na faixa acima."
+                "A faixa acima mostra os dois auxílios que o pacote nomeia: TCS "
+                "(controle de tração, segura a roda que patina na aceleração) e "
+                "ASM — Active Stability Management, o controle de estabilidade, "
+                "que corta motor e freia rodas para conter a derrapagem. Nenhum "
+                "dos dois é o ABS."
             )
             return
 
@@ -912,6 +929,29 @@ class AnalysisPage(Page):
             self._move_cursor(
                 self._x_at_distance(self._corners[index].apex_distance_m)
             )
+
+
+def _gravada_antes_da_correcao(points: list[TelemetryPoint]) -> bool:
+    """A volta foi gravada com o offset errado do canal de escorregamento?
+
+    A assinatura é inequívoca: as quatro rodas **exatamente** 0,0 com o carro
+    andando. O offset antigo (0xE4) caía no bloco não usado do pacote, que vem
+    zerado; o atual lê rotação e raio, e roda que gira não dá zero exato.
+
+    A distinção importa porque as duas situações pedem coisas opostas. Volta
+    antiga: o dado não existe mais e nunca vai existir — o pacote bruto não é
+    guardado, só o ponto derivado dele —, então a saída é gravar uma volta nova.
+    Canal genuinamente errado: é defeito a investigar. Um aviso só, dizendo
+    "provavelmente não está chegando", manda procurar um defeito já corrigido.
+    """
+    andando = [p for p in points if p.speed_kmh >= MIN_SPEED_FOR_SLIP_KMH]
+    if not andando:
+        return False
+    return all(
+        getattr(p, f"tire_slip_{roda}") == 0.0
+        for p in andando
+        for roda in WHEELS
+    )
 
 
 def _point_at(
