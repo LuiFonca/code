@@ -150,6 +150,7 @@ class TrackMap(QWidget):
         self._heatmap_range: tuple[float, float] | None = None
         self._heatmap_label = heatmap_label
         self._legend: list[tuple[str, str]] = []
+        self._marker_legend: list[tuple[str, str]] = []
 
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -176,6 +177,19 @@ class TrackMap(QWidget):
         self._legend = entries
         self.update()
 
+    def set_marker_legend(self, entries: list[tuple[str, str]]) -> None:
+        """O que cada bolinha significa: pares (cor, rótulo).
+
+        Faixa própria, e não misturada com `set_legend`, porque as duas
+        respondem perguntas diferentes sobre o mesmo desenho: aquela diz o que a
+        **cor da linha** significa, esta o que os **pontos sobre ela** marcam.
+        Fundidas, "amarelo" apareceria duas vezes querendo dizer coisas
+        distintas — e o desenho é redondo aqui e retangular lá justamente para
+        que se leia à distância qual é qual.
+        """
+        self._marker_legend = entries
+        self.update()
+
     # ---------- dados ----------
 
     def set_paths(self, paths: list[TrackPath]) -> None:
@@ -200,6 +214,7 @@ class TrackMap(QWidget):
         self._cursor_m = None
         self._heatmap_range = None
         self._legend = []
+        self._marker_legend = []
         self.update()
 
     @property
@@ -221,8 +236,18 @@ class TrackMap(QWidget):
 
     # ---------- geometria ----------
 
+    def _legend_rows(self) -> int:
+        """Quantas faixas de legenda serão pintadas abaixo do traçado.
+
+        O espaço precisa ser **reservado antes** de projetar o traçado, senão a
+        legenda é desenhada por cima da parte de baixo da pista. Era o que
+        acontecia com a legenda das marcas: ela aparecia sobre a reta final.
+        """
+        rows = 1 if (self._legend or self._heatmap_range is not None) else 0
+        return rows + (1 if self._marker_legend else 0)
+
     def _plot_rect(self) -> QRectF:
-        bottom = PADDING + (LEGEND_HEIGHT + 14 if self._heatmap_range else 0)
+        bottom = PADDING + self._legend_rows() * (LEGEND_HEIGHT + 14)
         return QRectF(
             PADDING,
             PADDING,
@@ -414,27 +439,30 @@ class TrackMap(QWidget):
         painter.setFont(font)
         metrics = QFontMetrics(font)
 
+        linha_ocupada = True
         if self._legend:
             self._paint_discrete_legend(painter, rect, metrics)
-            return
-
-        if self._heatmap_range is not None:
+        elif self._heatmap_range is not None:
             self._paint_heatmap_legend(painter, rect, metrics)
-            return
+        else:
+            linha_ocupada = False
+            # Legenda de identidade, para traçados sobrepostos. Dentro do
+            # quadro, e não abaixo: ela acompanha as linhas que nomeia.
+            legend_y = rect.bottom() - 4
+            for path in reversed(self._paths):
+                if path.is_empty:
+                    continue
+                painter.setPen(QPen(QColor(path.color), 2))
+                painter.drawLine(
+                    QPointF(rect.left(), legend_y - 4),
+                    QPointF(rect.left() + 14, legend_y - 4),
+                )
+                painter.setPen(QPen(QColor(palette.text_secondary), 1))
+                painter.drawText(QPointF(rect.left() + 20, legend_y), path.label)
+                legend_y -= 14
 
-        # Legenda de identidade, para traçados sobrepostos.
-        legend_y = rect.bottom() - 4
-        for path in reversed(self._paths):
-            if path.is_empty:
-                continue
-            painter.setPen(QPen(QColor(path.color), 2))
-            painter.drawLine(
-                QPointF(rect.left(), legend_y - 4),
-                QPointF(rect.left() + 14, legend_y - 4),
-            )
-            painter.setPen(QPen(QColor(palette.text_secondary), 1))
-            painter.drawText(QPointF(rect.left() + 20, legend_y), path.label)
-            legend_y -= 14
+        if self._marker_legend:
+            self._paint_marker_legend(painter, rect, metrics, row=int(linha_ocupada))
 
     def _paint_heatmap_legend(
         self, painter: QPainter, rect: QRectF, metrics: QFontMetrics
@@ -491,6 +519,29 @@ class TrackMap(QWidget):
             painter.setBrush(QColor(color))
             painter.drawRoundedRect(QRectF(x, y, 10.0, float(LEGEND_HEIGHT)), 2.0, 2.0)
             painter.setBrush(Qt.BrushStyle.NoBrush)
+
+            painter.setPen(QPen(QColor(palette.text_muted), 1))
+            painter.drawText(QPointF(x + 14, y + LEGEND_HEIGHT - 1), label)
+            x += 14 + metrics.horizontalAdvance(label) + 14
+
+    def _paint_marker_legend(
+        self, painter: QPainter, rect: QRectF, metrics: QFontMetrics, *, row: int
+    ) -> None:
+        """O que cada bolinha sobre o traçado significa.
+
+        Desenhada **redonda**, igual à marca que descreve, e não como o
+        retângulo da legenda de canal: as duas convivem uma embaixo da outra, e
+        a forma é o que diz de relance qual legenda explica o quê.
+        """
+        palette = self._theme.palette
+        x = rect.left()
+        y = rect.bottom() + 6 + row * (LEGEND_HEIGHT + 14)
+        centro_y = y + LEGEND_HEIGHT / 2.0
+
+        for color, label in self._marker_legend:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(color), 1.6))
+            painter.drawEllipse(QPointF(x + 5.0, centro_y), 4.0, 4.0)
 
             painter.setPen(QPen(QColor(palette.text_muted), 1))
             painter.drawText(QPointF(x + 14, y + LEGEND_HEIGHT - 1), label)

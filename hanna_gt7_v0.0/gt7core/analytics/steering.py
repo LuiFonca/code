@@ -53,6 +53,16 @@ MIN_SPEED_KMH = 12.0
 #: caso pelo outro lado — carro andando devagar em cima do próprio rastro.
 MIN_SPAN_M = 0.5
 
+#: Entre-eixos suposto, em metros, para estimar o esterço. **Não vem do
+#: pacote** — o GT7 não transmite dimensão de carro, e o catálogo do jogo traz
+#: nome e fabricante, mais nada.
+#:
+#: 2,6 m é a faixa central do que se corre no GT7: um Miata tem ~2,31 m, um GT3
+#: ~2,55 m, um Gr.1 de Le Mans ~2,9 m. O erro que sobra é de **escala**, não de
+#: forma: mudar este número estica o eixo por um fator constante e não move onde
+#: o esterço entra nem quanto ele dura, que é o que se lê no gráfico.
+DEFAULT_WHEELBASE_M = 2.6
+
 
 def _wrap(angle: float) -> float:
     """Traz a diferença de ângulos para (−π, π].
@@ -64,21 +74,21 @@ def _wrap(angle: float) -> float:
     return math.remainder(angle, math.tau)
 
 
-def yaw_rate_series(
-    points: list[TelemetryPoint], *, window: int = WINDOW
-) -> list[tuple[float, float]]:
-    """Taxa de guinada ao longo da volta: pares (distância em m, °/s).
+def _yaw_samples(
+    points: list[TelemetryPoint], window: int
+) -> list[tuple[int, float, float]]:
+    """Ternos (índice, distância em m, °/s) — o cru que os dois canais usam.
 
-    Positivo é curva à direita. Amostras sem direção definida — carro parado, ou
-    janela curta demais — são **omitidas** em vez de virarem zero: um zero ali
-    afirmaria "seguiu reto", que é uma informação que não foi medida.
+    Existe para que guinada e esterço saiam **da mesma conta**. Duplicar o laço
+    seria duplicar a convenção de sinal e a regra de omissão, e é assim que dois
+    gráficos vizinhos passam a discordar sem que nada na tela denuncie.
     """
     if window < 1 or len(points) < 2 * window + 1:
         return []
 
     headings = _headings(points, window)
 
-    series: list[tuple[float, float]] = []
+    samples: list[tuple[int, float, float]] = []
     for index in range(window, len(points) - window):
         before, after = headings[index - window], headings[index + window]
         if before is None or after is None:
@@ -89,7 +99,61 @@ def yaw_rate_series(
             continue
 
         degrees_per_s = math.degrees(_wrap(after - before)) / dt_s
-        series.append((points[index].distance_m, degrees_per_s))
+        samples.append((index, points[index].distance_m, degrees_per_s))
+
+    return samples
+
+
+def yaw_rate_series(
+    points: list[TelemetryPoint], *, window: int = WINDOW
+) -> list[tuple[float, float]]:
+    """Taxa de guinada ao longo da volta: pares (distância em m, °/s).
+
+    Positivo é curva à direita. Amostras sem direção definida — carro parado, ou
+    janela curta demais — são **omitidas** em vez de virarem zero: um zero ali
+    afirmaria "seguiu reto", que é uma informação que não foi medida.
+    """
+    return [
+        (distance_m, degrees_per_s)
+        for _, distance_m, degrees_per_s in _yaw_samples(points, window)
+    ]
+
+
+def steer_angle_series(
+    points: list[TelemetryPoint],
+    *,
+    wheelbase_m: float = DEFAULT_WHEELBASE_M,
+    window: int = WINDOW,
+) -> list[tuple[float, float]]:
+    """Esterço **estimado** das rodas dianteiras: pares (distância em m, graus).
+
+    O GT7 não transmite ângulo de volante — ver o cabeçalho deste módulo. O que
+    esta função faz é geometria de Ackermann: um carro que percorre uma curva de
+    raio `R` tem as rodas dianteiras esterçadas em `δ = atan(L / R)`, e o raio
+    sai da própria trajetória, porque `1/R = ω / v` (guinada sobre velocidade).
+
+    **`wheelbase_m` é suposto, não medido**, e é a única grandeza aqui que não
+    vem do pacote. Ele escala o eixo inteiro por um fator constante: um carro de
+    entre-eixos 2,3 m desenharia o mesmo traço 12% mais baixo. A *forma* — onde
+    o esterço entra, quanto dura, se a mão é limpa ou cheia de correção — não
+    depende dele, e é para isso que se olha um canal de volante.
+
+    São as rodas, não o volante. Converter para volante exigiria a relação de
+    direção do carro (tipicamente 12:1 a 16:1), que o pacote também não traz;
+    multiplicar por um palpite daria um número de aparência precisa e origem
+    inventada. Quem quiser o volante multiplica pela relação do seu carro.
+
+    Sinal segue a guinada: positivo é esterço à direita.
+    """
+    series: list[tuple[float, float]] = []
+    for index, distance_m, degrees_per_s in _yaw_samples(points, window):
+        speed_ms = points[index].speed_kmh / 3.6
+        if speed_ms <= 0.0:
+            continue
+        # `atan` e não a aproximação linear: em curva lenta de rua o ângulo passa
+        # de 20°, onde `tan δ ≈ δ` já erra o suficiente para o pico mentir.
+        curvatura = math.radians(degrees_per_s) / speed_ms
+        series.append((distance_m, math.degrees(math.atan(wheelbase_m * curvatura))))
 
     return series
 

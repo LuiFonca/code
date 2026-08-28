@@ -32,7 +32,7 @@ from gt7core.telemetry.engine import TelemetryReceived
 from gt7core.telemetry.sources.base import ConnectionState
 
 from ..application import CoreApplication
-from ..design.theme import OBJ_GHOST_BUTTON, OBJ_STATUS_BAR
+from ..design.theme import OBJ_GHOST_BUTTON, OBJ_SELECTOR_NOTE, OBJ_STATUS_BAR
 from ..design.tokens import Space, Theme
 from ..viewmodels.live import LiveViewModel
 from ..widgets.cards import Badge, Card, MetricCard, MetricGrid
@@ -61,6 +61,10 @@ TRAIL_WINDOW_M = 800.0
 TRAIL_WINDOW_S = 30.0
 
 REPAINT_INTERVAL_MS = 66  # ~15 Hz
+
+#: Largura mínima do botão de conexão, em px. Cabe "conectando…", que é o
+#: mais longo dos cinco rótulos que ele assume.
+CONNECT_BUTTON_MIN_W = 130
 
 
 def _parece_endereco_ip(texto: str) -> bool:
@@ -184,7 +188,20 @@ class LivePage(Page):
         self._x_selector.addItems(["Eixo: distância", "Eixo: tempo"])
         self._x_selector.currentIndexChanged.connect(self._on_x_mode)
 
+        # O IP fica **à esquerda do botão**, colado nele: o botão diz o estado
+        # da conexão pela cor, e o endereço diz com quem. Separados, "conectado"
+        # não responde "a quê" — que é exatamente a pergunta de quem tem mais de
+        # um console, ou trocou de rede e não lembra se o IP mudou.
+        self._ps_ip_label = QLabel("")
+        self._ps_ip_label.setObjectName(OBJ_SELECTOR_NOTE)
+        self._refresh_ps_ip()
+
         self._start_button = QPushButton("Conectar")
+        # O botão troca de texto conforme o estado, e o mais largo — "conectando…"
+        # — é 60% maior que "Conectar". Sem um piso, o botão nasce do tamanho do
+        # texto inicial e o Qt corta o resto: "CONECTADO" aparecia como
+        # "ONECTAD", que é pior que não ter rótulo nenhum.
+        self._start_button.setMinimumWidth(CONNECT_BUTTON_MIN_W)
         self._stop_button = QPushButton("Parar")
         self._stop_button.setObjectName(OBJ_GHOST_BUTTON)
         self._stop_button.setEnabled(False)
@@ -192,9 +209,25 @@ class LivePage(Page):
         layout.addWidget(QLabel("Pista:"))
         layout.addWidget(self._track_input)
         layout.addWidget(self._x_selector)
+        layout.addWidget(self._ps_ip_label)
         layout.addWidget(self._start_button)
         layout.addWidget(self._stop_button)
         return bar
+
+    def _refresh_ps_ip(self) -> None:
+        """Lê o IP da configuração a cada chamada, nunca de um valor guardado.
+
+        A fonte e o IP podem mudar com o programa aberto, pela página de
+        Configurações. Um rótulo decidido só na construção continuaria exibindo
+        o endereço antigo depois de o novo já estar em uso — e um IP errado na
+        tela é pior que nenhum, porque manda procurar defeito no console certo.
+        """
+        telemetry = self.core.settings.telemetry
+        if telemetry.source.strip().lower() != "udp":
+            self._ps_ip_label.setText("")
+            return
+        ip = telemetry.ps_ip.strip()
+        self._ps_ip_label.setText(f"PS5: {ip}" if ip else "PS5: sem IP configurado")
 
     def _x_of(self, row: tuple[float, float, float, float, float]) -> float:
         """Qual coluna do rastro vira o eixo X."""
@@ -350,6 +383,7 @@ class LivePage(Page):
         # enquanto `refresh()` depende do estado sujo. Vindo de Configurações,
         # a fonte pode ter mudado sem nada mais ter mudado junto.
         self._update_synthetic_badge()
+        self._refresh_ps_ip()
         # A lista de pistas também: ela era montada uma vez, na construção da
         # página, e nunca mais. Renomear uma pista no Histórico não aparecia
         # aqui até reiniciar o programa — o campo continuava oferecendo o nome

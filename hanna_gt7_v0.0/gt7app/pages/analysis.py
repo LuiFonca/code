@@ -30,8 +30,11 @@ from gt7core.analytics.aids import AIDS, aid_spans, unknown_bits, was_recorded
 from gt7core.analytics.braking import BrakingZone, detect_braking_zones
 from gt7core.analytics.corners import Corner, corner_at, detect_corners
 from gt7core.analytics.series import sector_boundaries_m
-from gt7core.analytics.steering import yaw_rate_series
-from gt7core.analytics.throttle import ThrottleApplication, analyse_throttle
+from gt7core.analytics.steering import (
+    DEFAULT_WHEELBASE_M,
+    steer_angle_series,
+    yaw_rate_series,
+)
 from gt7core.analytics.tyres import (
     MIN_SPEED_FOR_SLIP_KMH,
     WHEELS,
@@ -58,7 +61,7 @@ from ..widgets.trackmap import TrackMap, TrackMarker, TrackPath
 from ..widgets.tyres import TyreTemperatures
 from .base import Page
 
-CORNER_COLUMNS = ("Curva", "Ápice", "Vel. mín.", "Raio", "Freada", "Saída")
+CORNER_COLUMNS = ("Curva", "Ápice", "Vel. mín.", "Freada")
 
 # Os mesmos setores do histórico — o corte precisa ser o mesmo entre telas.
 NUM_SECTORS = 3
@@ -66,7 +69,8 @@ NUM_SECTORS = 3
 #: Índices em `self._charts`. Nomeados porque `self._charts[3]` num arquivo de
 #: 500 linhas não diz qual gráfico é, e trocar dois por engano é um defeito que
 #: só aparece olhando a tela.
-CHART_SPEED, CHART_PEDALS, CHART_YAW, CHART_GRIP, CHART_BOOST = 0, 1, 2, 3, 4
+CHART_SPEED, CHART_PEDALS, CHART_YAW = 0, 1, 2
+CHART_STEER, CHART_GRIP, CHART_BOOST = 3, 4, 5
 
 #: Rótulo de cada roda no gráfico de aderência, na ordem de `WHEELS`.
 WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
@@ -75,6 +79,11 @@ WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
 #: escala colada no pico faz duas voltas parecidas parecerem diferentes.
 YAW_STEP_DEG = 30.0
 YAW_TOP_MIN_DEG = 60.0
+
+#: Degraus do eixo de esterço, em graus **das rodas** — não do volante. Um
+#: circuito rápido raramente passa de 10°; uma horquilha de rua chega a 30.
+STEER_STEP_DEG = 10.0
+STEER_TOP_MIN_DEG = 20.0
 
 #: Aderência em %, onde 100 é a roda girando na velocidade do carro.
 GRIP_STEP_PCT = 25.0
@@ -169,6 +178,17 @@ class AnalysisPage(Page):
                 y_step=YAW_STEP_DEG,
                 y_top_min=YAW_TOP_MIN_DEG,
             ),
+            # Esterço logo abaixo da guinada porque o par se lê junto: guinada é
+            # o quanto o carro girou, esterço é o quanto se pediu que girasse.
+            # Onde os dois divergem está o subesterço.
+            DistanceChart(
+                self.theme,
+                "Esterço estimado — rodas dianteiras  (+ direita)",
+                unit="°",
+                height=110,
+                y_step=STEER_STEP_DEG,
+                y_top_min=STEER_TOP_MIN_DEG,
+            ),
             DistanceChart(
                 self.theme,
                 "Aderência por roda  (100% = rodando limpo)",
@@ -186,11 +206,16 @@ class AnalysisPage(Page):
                 y_top_min=BOOST_TOP_MIN_BAR,
             ),
         ]
-        for chart in self._charts:
+        for indice, chart in enumerate(self._charts):
             channels.add(chart)
             chart.hovered.connect(self._on_hover)
             chart.hover_left.connect(self._on_hover_left)
             chart.clicked.connect(self._on_click)
+            if indice == CHART_STEER:
+                # A ressalva mora colada no gráfico que ela qualifica. No rodapé
+                # da página ela seria lida depois de já se ter tirado conclusão
+                # do traço — que é o mesmo que não estar escrita.
+                channels.add(self._build_steer_hint())
 
         # Aviso do canal de escorregamento, logo abaixo do gráfico que ele
         # qualifica. Ver `_fill_grip_chart`.
@@ -227,11 +252,13 @@ class AnalysisPage(Page):
         grip_card.add(self._g_scale)
         grip_card.add(self._gforce)
 
-        # Temperatura ao lado da força G, e não noutra parte da página: as duas
-        # respondem à mesma pergunta por caminhos diferentes. O envelope diz
-        # quanta aderência o pneu entregou; a temperatura diz se ele estava na
-        # janela para entregar. Lado a lado, um envelope pequeno com pneu azul
-        # se explica sozinho.
+        # Pneus e força G descem os dois para a coluna estreita, sob o mapa e o
+        # cartão do cursor. Aquela coluna terminava num vazio de meia tela; a
+        # larga, com seis canais empilhados, é a que precisava de altura.
+        #
+        # O envelope de aderência ganha com isso: ele é **quadrado** — o
+        # conteúdo é a forma da nuvem —, e numa faixa larga e baixa sobrava
+        # vazio dos dois lados sem o círculo crescer um pixel.
         tyre_card = Card("Temperatura dos pneus")
         self._tyre_temps = TyreTemperatures(self.theme, height=210)
         self._tyre_caption = QLabel("")
@@ -239,15 +266,31 @@ class AnalysisPage(Page):
         tyre_card.add(self._tyre_temps)
         tyre_card.add(self._tyre_caption)
 
-        grip_row = QHBoxLayout()
-        grip_row.setSpacing(Space.LG.px)
-        grip_row.addWidget(grip_card, stretch=3)
-        grip_row.addWidget(tyre_card, stretch=2)
+        # A tabela de curvas fecha a coluna larga, e não a página inteira.
+        # Com quatro colunas ela não precisa da largura toda, e embaixo dos
+        # canais ela fica **ao lado** do mapa — que é como se lê: a linha da
+        # curva 3 e o ponto C3 no traçado, no mesmo campo de visão. No rodapé
+        # de página inteira, escolher uma linha rolava o mapa para fora.
+        table_card = Card("Curvas")
+        self._table = QTableWidget(0, len(CORNER_COLUMNS))
+        self._table.setHorizontalHeaderLabels(CORNER_COLUMNS)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self._table.setMinimumHeight(180)
+        self._table.itemSelectionChanged.connect(self._on_row_selected)
+        table_card.add(self._table)
 
         left = QVBoxLayout()
         left.setSpacing(Space.LG.px)
         left.addWidget(channels)
-        left.addLayout(grip_row)
+        left.addWidget(table_card)
         left.addStretch(1)
         middle.addLayout(left, stretch=3)
 
@@ -285,27 +328,12 @@ class AnalysisPage(Page):
         for row in self._detail_rows.values():
             self._detail.add(row)
         right.addWidget(self._detail)
+        right.addWidget(tyre_card)
+        right.addWidget(grip_card)
         right.addStretch(1)
 
         middle.addLayout(right, stretch=2)
         self.content.addLayout(middle)
-
-        table_card = Card("Curvas")
-        self._table = QTableWidget(0, len(CORNER_COLUMNS))
-        self._table.setHorizontalHeaderLabels(CORNER_COLUMNS)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setAlternatingRowColors(True)
-        self._table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._table.setMinimumHeight(180)
-        self._table.itemSelectionChanged.connect(self._on_row_selected)
-        table_card.add(self._table)
-        self.content.addWidget(table_card)
 
         self._tyres = QLabel("")
         self._tyres.setWordWrap(True)
@@ -318,6 +346,24 @@ class AnalysisPage(Page):
         self._cursor_hint = QLabel("")
         self._cursor_hint.setWordWrap(True)
         self.content.addWidget(self._cursor_hint)
+
+    def _build_steer_hint(self) -> QLabel:
+        """A ressalva do canal de esterço, escrita uma vez e nunca alterada.
+
+        Fixa e não condicional de propósito: a estimativa vale para toda volta,
+        então um aviso que aparecesse só às vezes ensinaria que, quando ele não
+        está lá, o número foi medido — e nenhum número deste gráfico é medido.
+        """
+        hint = QLabel(
+            "O GT7 não transmite ângulo de volante. Este traço é estimado pela "
+            f"geometria da curva descrita — entre-eixos suposto de "
+            f"{DEFAULT_WHEELBASE_M:.1f} m —, então a escala é aproximada, mas "
+            "onde o esterço entra, quanto dura e se a mão foi limpa ou cheia de "
+            "correção é real. São graus das rodas: multiplique pela relação de "
+            "direção do carro (12:1 a 16:1) para ter o giro do volante."
+        )
+        hint.setWordWrap(True)
+        return hint
 
     # ---------- dados ----------
 
@@ -343,6 +389,7 @@ class AnalysisPage(Page):
             return
 
         self._corners = detect_corners(self._points)
+        self._selector.set_car(self.car_name(lap.car_id))
         self._populate(lap.lap_time_ms)
 
     def _clear(self) -> None:
@@ -364,6 +411,7 @@ class AnalysisPage(Page):
         self._aid_band.clear()
         self._tyre_temps.clear()
         self._tyre_caption.setText("")
+        self._selector.set_car("")
 
     def _populate(self, lap_time_ms: int) -> None:
         self._lap_time_ms = lap_time_ms
@@ -371,7 +419,6 @@ class AnalysisPage(Page):
         points = self._points
 
         zones = detect_braking_zones(points)
-        applications = analyse_throttle(points, self._corners)
         events = detect_tyre_events(points)
 
         cards = self._summary.cards
@@ -424,6 +471,18 @@ class AnalysisPage(Page):
                     [
                         (x_at.get(distancia, distancia), graus)
                         for distancia, graus in yaw_rate_series(points)
+                    ],
+                )
+            ]
+        )
+        self._charts[CHART_STEER].set_series(
+            [
+                Series(
+                    "esterço",
+                    palette.channel_steering,
+                    [
+                        (x_at.get(distancia, distancia), graus)
+                        for distancia, graus in steer_angle_series(points)
                     ],
                 )
             ]
@@ -487,8 +546,13 @@ class AnalysisPage(Page):
                     )
                 )
         self._map.set_markers(markers)
+        # Sem esta linha, "C3" e "S1" sobre o traçado são duas bolinhas de cores
+        # diferentes e nada diz que uma é curva e a outra é divisa de setor.
+        self._map.set_marker_legend(
+            [(palette.purple, "curva (ápice)"), (palette.text_muted, "setor")]
+        )
 
-        self._fill_table(zones, applications)
+        self._fill_table(zones)
 
         balance = temperature_balance(points)
         self._tyres.setText(f"Pneus: {balance.describe()}" if balance else "")
@@ -750,10 +814,7 @@ class AnalysisPage(Page):
         )
         self._tyre_caption.setText("média da volta")
 
-    def _fill_table(
-        self, zones: list[BrakingZone], applications: list[ThrottleApplication]
-    ) -> None:
-        by_corner = {a.corner_index: a for a in applications}
+    def _fill_table(self, zones: list[BrakingZone]) -> None:
         self._table.setRowCount(len(self._corners))
 
         for row, corner in enumerate(self._corners):
@@ -762,15 +823,11 @@ class AnalysisPage(Page):
                 key=lambda z: corner.apex_distance_m - z.start_distance_m,
                 default=None,
             )
-            application = by_corner.get(corner.index)
-
             values = [
                 f"{corner.index}  ({corner.severity})",
                 f"{corner.apex_distance_m:.0f} m",
                 f"{corner.minimum_speed_kmh:.1f} km/h",
-                f"{corner.radius_m:.0f} m" if corner.radius_m else "—",
                 f"{zone.average_deceleration_g:.2f} g" if zone else "—",
-                application.describe() if application else "—",
             ]
             for column, text in enumerate(values):
                 item = QTableWidgetItem(text)

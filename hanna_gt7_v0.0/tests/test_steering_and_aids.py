@@ -25,7 +25,11 @@ from gt7core.analytics.aids import (
     unknown_bits,
     was_recorded,
 )
-from gt7core.analytics.steering import peak_yaw_rate, yaw_rate_series
+from gt7core.analytics.steering import (
+    peak_yaw_rate,
+    steer_angle_series,
+    yaw_rate_series,
+)
 from gt7core.domain.models import TelemetryPoint
 from gt7core.telemetry.protocol import (
     FLAG_ASM_ACTIVE,
@@ -313,3 +317,70 @@ class TestCacaAoABS:
     def test_volta_sem_flags_nao_reporta_nada(self) -> None:
         pontos = [make_point(elapsed_ms=0, distance_m=0.0)]
         assert unknown_bits(pontos) == 0
+
+
+class TestEstercoEstimado:
+    """O canal de volante que o GT7 não transmite, derivado da geometria.
+
+    O círculo é o único caso com resposta fechada: num raio `R`, a geometria de
+    Ackermann dá `δ = atan(L/R)` **independente da velocidade**. Um teste que
+    passasse só numa velocidade estaria medindo a guinada disfarçada de esterço.
+    """
+
+    def test_circulo_da_o_angulo_de_ackermann(self) -> None:
+        pontos = circular_lap(radius_m=50.0, speed_ms=25.0)
+
+        serie = steer_angle_series(pontos, wheelbase_m=2.6)
+        esperado = math.degrees(math.atan(2.6 / 50.0))
+
+        assert serie
+        assert all(abs(v - esperado) < 0.05 for _, v in serie)
+
+    def test_nao_depende_da_velocidade(self) -> None:
+        """Mesmo raio, o dobro da velocidade, mesmo esterço.
+
+        É o que separa esterço de guinada: no mesmo círculo mais rápido o carro
+        gira o dobro por segundo, mas as rodas apontam para o mesmo lugar. Se
+        este teste reprovar, o gráfico está desenhando guinada com outro rótulo.
+        """
+        devagar = steer_angle_series(circular_lap(radius_m=50.0, speed_ms=15.0))
+        rapido = steer_angle_series(circular_lap(radius_m=50.0, speed_ms=30.0))
+
+        media_devagar = sum(v for _, v in devagar) / len(devagar)
+        media_rapido = sum(v for _, v in rapido) / len(rapido)
+
+        assert abs(media_devagar - media_rapido) < 0.05
+
+    def test_entre_eixos_escala_sem_deformar(self) -> None:
+        """O único palpite da conta muda a escala, não a forma.
+
+        É o que autoriza mostrar o gráfico apesar de o entre-eixos ser suposto:
+        onde o esterço entra e quanto dura continua verdadeiro.
+        """
+        curto = steer_angle_series(circular_lap(radius_m=80.0, speed_ms=30.0),
+                                   wheelbase_m=2.3)
+        longo = steer_angle_series(circular_lap(radius_m=80.0, speed_ms=30.0),
+                                   wheelbase_m=2.9)
+
+        assert len(curto) == len(longo)
+        assert all(
+            abs(baixo) < abs(alto)
+            for (_, baixo), (_, alto) in zip(curto, longo, strict=True)
+        )
+
+    def test_sinal_acompanha_a_guinada(self) -> None:
+        """Positivo é direita nos dois canais, ou um deles está espelhado."""
+        horario = circular_lap(radius_m=60.0, speed_ms=25.0, clockwise=True)
+
+        guinada = yaw_rate_series(horario)
+        esterco = steer_angle_series(horario)
+
+        assert all(w * d > 0 for (_, w), (_, d) in zip(guinada, esterco, strict=True))
+
+    def test_reta_nao_esterca(self) -> None:
+        pontos = [
+            make_point(elapsed_ms=i * 16, distance_m=i * 1.0, position_x=i * 1.0)
+            for i in range(60)
+        ]
+
+        assert all(abs(v) < 0.2 for _, v in steer_angle_series(pontos))

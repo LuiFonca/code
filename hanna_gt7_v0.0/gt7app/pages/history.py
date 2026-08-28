@@ -65,7 +65,6 @@ class HistoryPage(Page):
 
     def __init__(self, core: CoreApplication, theme: Theme) -> None:
         self._laps: list[Lap] = []
-        self._car_names: dict[int, str] = {}
         super().__init__(core, theme)
 
     def build(self) -> None:
@@ -149,21 +148,6 @@ class HistoryPage(Page):
         layout.addWidget(self._delete_all)
         layout.addStretch(1)
         return bar
-
-    def _car_name(self, car_id: int | None) -> str:
-        """Nome do carro da volta, com cache.
-
-        Sem o cache seria uma consulta por linha da tabela; com vinte voltas de
-        um mesmo carro, dezenove delas perguntariam de novo a mesma coisa. O
-        cache é por página e não invalida: nome de carro não muda, e o `car_id`
-        vem do catálogo do jogo.
-        """
-        if car_id is None:
-            return "—"
-        if car_id not in self._car_names:
-            car = self.core.cars.get_by_id(car_id)
-            self._car_names[car_id] = car.name if car else "—"
-        return self._car_names[car_id]
 
     # ---------- renomear ----------
 
@@ -343,7 +327,7 @@ class HistoryPage(Page):
             lap_sectors = sectors.get(lap.id, [None] * NUM_SECTORS)
             cells = [
                 f"#{lap.id}",
-                self._car_name(lap.car_id),
+                self.car_name(lap.car_id),
                 format_lap_time(lap.lap_time_ms),
                 (
                     "★"

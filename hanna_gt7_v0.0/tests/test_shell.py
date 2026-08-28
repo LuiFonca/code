@@ -363,14 +363,36 @@ class TestMapaDePista:
         # Três setores produzem dois limites internos.
         assert {"S1", "S2"} <= labels, "limites de setor faltando"
 
-    def test_comparacao_marca_os_piores_trechos_no_mapa(self, shell) -> None:  # noqa: ANN001
+    def test_comparacao_marca_as_mesmas_curvas_e_setores_da_analise(
+        self, shell  # noqa: ANN001
+    ) -> None:
+        """As marcas do mapa são referência de pista, não resultado do par.
+
+        Antes daqui eram os três piores trechos, rotulados com o nome da curva
+        mais próxima e plotados no *início* do trecho: a bolinha caía longe do
+        ápice que o rótulo nomeava, e o conjunto mudava a cada par escolhido.
+        Como referência de pista, eram pontos arbitrários com nome de curva.
+        """
         window, _core, app = shell
         window._activate(2)  # noqa: SLF001
         app.processEvents()
 
         page = window._pages[2]  # noqa: SLF001
-        assert page._map._markers, "os piores trechos não foram marcados"  # noqa: SLF001
-        assert len(page._map._markers) <= 3  # noqa: SLF001
+        labels = {m.label for m in page._map._markers}  # noqa: SLF001
+        assert {"C1", "C2", "C3", "C4"} <= labels, "ápices faltando no mapa"
+        assert {"S1", "S2"} <= labels, "limites de setor faltando"
+
+    def test_comparacao_diz_o_que_as_bolinhas_significam(self, shell) -> None:  # noqa: ANN001
+        """Duas cores de bolinha sem legenda é um enigma, não uma informação."""
+        window, _core, app = shell
+        window._activate(2)  # noqa: SLF001
+        app.processEvents()
+
+        rotulos = {
+            rotulo
+            for _, rotulo in window._pages[2]._map._marker_legend  # noqa: SLF001
+        }
+        assert rotulos == {"curva (ápice)", "setor"}
 
     def test_cursor_unico_na_comparacao(self, shell) -> None:  # noqa: ANN001
         window, _core, app = shell

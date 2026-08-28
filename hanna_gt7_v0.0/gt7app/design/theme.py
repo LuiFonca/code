@@ -38,6 +38,7 @@ OBJ_PALETTE_LIST = "commandPaletteList"
 OBJ_BADGE = "badge"
 OBJ_GHOST_BUTTON = "ghostButton"
 OBJ_MONO = "mono"
+OBJ_SELECTOR_NOTE = "selectorNote"
 
 
 def build_stylesheet(theme: Theme) -> str:
@@ -110,6 +111,14 @@ QLabel#{OBJ_CARD_UNIT} {{
     background: transparent;
 }}
 
+/* Anotação ao lado de um seletor — o carro da volta, por exemplo. Discreta
+   de propósito: é contexto do que está escolhido, não uma escolha. */
+QLabel#{OBJ_SELECTOR_NOTE} {{
+    color: {p.text_secondary};
+    background: transparent;
+    padding: 0px {Space.SM.px}px;
+}}
+
 /* ---------- navegação lateral ---------- */
 QWidget#{OBJ_SIDEBAR} {{
     background-color: {p.surface};
@@ -173,7 +182,28 @@ QComboBox, QLineEdit, QSpinBox {{
 QComboBox:focus, QLineEdit:focus, QSpinBox:focus {{
     border: 1px solid {p.accent};
 }}
-QComboBox::drop-down {{ border: none; width: 20px; }}
+/* A seta é desenhada à mão porque a nativa não sobrevive ao tema: estilizar o
+   QComboBox tira o desenho nativo do macOS, e sem `image` não entra nada no
+   lugar — o combo fica indistinguível de um campo de texto. O campo de pista
+   parecia então exigir que se soubesse o nome de cor, havendo 105 numa lista
+   logo ali. O triângulo sai de bordas transparentes num elemento de tamanho
+   zero: sem arquivo de imagem, que exigiria empacotar um recurso binário só
+   para isto e desenhá-lo numa cor fixa que brigaria com o tema. */
+QComboBox::drop-down {{
+    border: none;
+    width: 22px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+}}
+QComboBox::down-arrow {{
+    width: 0px;
+    height: 0px;
+    margin-right: 8px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {p.text_muted};
+}}
+QComboBox::down-arrow:on {{ border-top-color: {p.accent}; }}
 QComboBox QAbstractItemView {{
     background-color: {p.surface_overlay};
     color: {p.text_primary};

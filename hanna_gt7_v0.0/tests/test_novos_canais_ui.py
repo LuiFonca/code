@@ -37,7 +37,13 @@ def app() -> QApplication:
 
 
 def _gravar(
-    core, track_id: int, lap_time_ms: int, *, com_tcs: bool = False, flags: bool = True
+    core,
+    track_id: int,
+    lap_time_ms: int,
+    *,
+    com_tcs: bool = False,
+    flags: bool = True,
+    car: str | None = None,
 ) -> int:
     """Grava uma volta sintética.
 
@@ -63,6 +69,7 @@ def _gravar(
     return core.laps.save(
         Lap(
             track_id=track_id,
+            car_id=core.cars.get_or_create(car) if car else None,
             lap_time_ms=lap_time_ms,
             start_time=datetime.now(),
             points=pontos,
@@ -452,3 +459,146 @@ class TestTurboSomeQuandoNaoExiste:
         pagina._fill_boost()  # noqa: SLF001
 
         assert not pagina._boost_chart.isHidden(), "a comparada ainda tem turbo"  # noqa: SLF001
+
+
+class TestAjustesDeLeitura:
+    """As mudanças pedidas para a tela ler melhor.
+
+    O que se prende aqui é o que some sem alarde: uma coluna a mais na tabela,
+    um rótulo que para de ser atualizado, uma legenda que ninguém nota faltar.
+    Nada disso quebra teste algum ao sumir — só a tela fica pior.
+    """
+
+    def test_esterco_sai_preenchido_e_separado_da_guinada(self, montado) -> None:  # noqa: ANN001
+        """Dois canais, duas contas. Se o esterço copiasse a guinada, o gráfico
+        novo seria o antigo com outro rótulo — e ninguém veria."""
+        from gt7app.pages.analysis import CHART_STEER, CHART_YAW
+
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        esterco = pagina._charts[CHART_STEER]._series[0].points  # noqa: SLF001
+        guinada = pagina._charts[CHART_YAW]._series[0].points  # noqa: SLF001
+
+        assert esterco
+        assert [v for _, v in esterco] != [v for _, v in guinada]
+
+    def test_tabela_de_curvas_sem_raio_e_sem_saida(self, montado) -> None:  # noqa: ANN001
+        from gt7app.pages.analysis import CORNER_COLUMNS
+
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        assert "Raio" not in CORNER_COLUMNS
+        assert "Saída" not in CORNER_COLUMNS
+        assert pagina._table.columnCount() == len(CORNER_COLUMNS)  # noqa: SLF001
+
+    def test_mapa_da_analise_explica_as_bolinhas(self, montado) -> None:  # noqa: ANN001
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        rotulos = {r for _, r in pagina._map._marker_legend}  # noqa: SLF001
+        assert rotulos == {"curva (ápice)", "setor"}
+
+    def test_analise_mostra_o_carro_da_volta(self, montado) -> None:  # noqa: ANN001
+        """Sem isto, duas voltas de carros diferentes na mesma pista são
+        indistinguíveis no cabeçalho — e o delta entre elas parece pilotagem."""
+        window, core = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        assert pagina._selector._car_label.isVisibleTo(pagina._selector)  # noqa: SLF001
+        assert pagina._selector._car_label.text()  # noqa: SLF001
+        del core
+
+    def test_ip_do_ps5_aparece_ao_vivo(self, montado) -> None:  # noqa: ANN001
+        """O IP **configurado**, não um exemplo: o rótulo lê as Configurações."""
+        window, core = montado
+        pagina = window._pages[0]  # noqa: SLF001
+
+        core.settings.telemetry.source = "udp"
+        core.settings.telemetry.ps_ip = "192.168.15.156"
+        pagina._refresh_ps_ip()  # noqa: SLF001
+
+        assert "192.168.15.156" in pagina._ps_ip_label.text()  # noqa: SLF001
+
+    def test_sem_ip_o_rotulo_diz_que_falta(self, montado) -> None:  # noqa: ANN001
+        """Rótulo vazio se leria como "está tudo certo", que é o oposto."""
+        window, core = montado
+        pagina = window._pages[0]  # noqa: SLF001
+
+        core.settings.telemetry.source = "udp"
+        core.settings.telemetry.ps_ip = ""
+        pagina._refresh_ps_ip()  # noqa: SLF001
+
+        assert "sem IP" in pagina._ps_ip_label.text()  # noqa: SLF001
+
+    def test_com_fonte_sintetica_nao_ha_ip_para_mostrar(self, montado) -> None:  # noqa: ANN001
+        window, core = montado
+        pagina = window._pages[0]  # noqa: SLF001
+
+        core.settings.telemetry.source = "mock"
+        pagina._refresh_ps_ip()  # noqa: SLF001
+
+        assert pagina._ps_ip_label.text() == ""  # noqa: SLF001
+
+
+class TestComparacaoEntrePistas:
+    """Comparar voltas de pistas diferentes não significa nada.
+
+    O alinhamento é por distância no mesmo traçado: 1.200 m em Interlagos e
+    1.200 m em Suzuka são pedaços de asfalto sem relação, e o delta entre eles
+    seria um número bem formatado sobre uma pergunta sem sentido.
+    """
+
+    def test_segunda_volta_so_oferece_voltas_da_pista_escolhida(self, montado) -> None:  # noqa: ANN001
+        window, core = montado
+        pagina = window._pages[2]  # noqa: SLF001
+
+        outra = core.tracks.get_or_create("Suzuka")
+        core.engine.reset()
+        de_suzuka = _gravar(core, outra, 95_000)
+
+        pagina.refresh()
+        ofertadas = {
+            pagina._analysed_selector._lap_combo.itemData(i)  # noqa: SLF001
+            for i in range(pagina._analysed_selector._lap_combo.count())  # noqa: SLF001
+        }
+
+        assert de_suzuka not in ofertadas, "volta de outra pista entrou na lista"
+
+    def test_carros_diferentes_avisam(self, montado) -> None:  # noqa: ANN001
+        """Metade do delta pode ser do carro, e nada na tela dizia isso."""
+        window, core = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        pista = core.tracks.get_or_create("Interlagos")
+
+        core.engine.reset()
+        gt3 = _gravar(core, pista, 91_000, car="Porsche 911 GT3")
+        core.engine.reset()
+        civic = _gravar(core, pista, 96_000, car="Honda Civic Type R")
+
+        pagina._show_cars(gt3, civic)  # noqa: SLF001
+
+        assert "Carros diferentes" in pagina._car_hint.text()  # noqa: SLF001
+        assert "Porsche 911 GT3" in pagina._car_hint.text()  # noqa: SLF001
+        assert "Honda Civic Type R" in pagina._car_hint.text()  # noqa: SLF001
+
+    def test_mesmo_carro_nao_avisa(self, montado) -> None:  # noqa: ANN001
+        """Aviso que aparece sempre deixa de ser lido."""
+        window, core = montado
+        pagina = window._pages[2]  # noqa: SLF001
+        pista = core.tracks.get_or_create("Interlagos")
+
+        core.engine.reset()
+        uma = _gravar(core, pista, 91_000, car="Porsche 911 GT3")
+        core.engine.reset()
+        outra = _gravar(core, pista, 92_500, car="Porsche 911 GT3")
+
+        pagina._show_cars(uma, outra)  # noqa: SLF001
+
+        assert pagina._car_hint.text() == ""  # noqa: SLF001
+        assert "Porsche" in pagina._reference_selector._car_label.text()  # noqa: SLF001

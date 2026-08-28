@@ -28,13 +28,22 @@ from PySide6.QtWidgets import (
 
 from gt7core.analytics.aids import aid_spans, was_recorded
 from gt7core.analytics.corners import detect_corners
-from gt7core.analytics.series import LapSeries, compute_delta_series
+from gt7core.analytics.series import (
+    LapSeries,
+    compute_delta_series,
+    sector_boundaries_m,
+)
 from gt7core.analytics.timeloss import TimeLossReport, analyse_time_loss
 from gt7core.domain.models import TelemetryPoint
 
 from ..application import CoreApplication
 from ..design.tokens import Space, Theme
-from ..pages.analysis import BOOST_PRESENT_BAR, BOOST_STEP_BAR, BOOST_TOP_MIN_BAR
+from ..pages.analysis import (
+    BOOST_PRESENT_BAR,
+    BOOST_STEP_BAR,
+    BOOST_TOP_MIN_BAR,
+    NUM_SECTORS,
+)
 from ..widgets.advice import AdviceCard
 from ..widgets.aidband import AidBand
 from ..widgets.cards import Card, MetricCard, MetricGrid
@@ -254,6 +263,10 @@ class ComparePage(Page):
         selectors.addWidget(self._reference_selector)
         selectors.addWidget(self._analysed_selector)
 
+        self._car_hint = QLabel("")
+        self._car_hint.setWordWrap(True)
+        selectors.addWidget(self._car_hint)
+
         holder = QVBoxLayout()
         holder.addLayout(selectors)
         wrapper = Card()
@@ -437,7 +450,35 @@ class ComparePage(Page):
             self._clear("uma das voltas não tem amostras gravadas")
             return
 
+        self._show_cars(reference_id, analysed_id)
         self._populate()
+
+    def _show_cars(self, reference_id: int, analysed_id: int) -> None:
+        """Qual carro fez cada volta — e o aviso quando não são o mesmo.
+
+        Duas voltas da mesma pista com carros diferentes comparam bem em linha
+        de corrida e em ponto de freada, e comparam mal em tudo que depende de
+        potência e peso. Nada na tela dizia isso: o delta acumulado de um carro
+        30 cv mais forte parece erro de pilotagem, e é do carro.
+        """
+        referencia = self.core.laps.get_by_id(reference_id)
+        comparada = self.core.laps.get_by_id(analysed_id)
+        nome_ref = self.car_name(referencia.car_id if referencia else None)
+        nome_comp = self.car_name(comparada.car_id if comparada else None)
+
+        self._reference_selector.set_car(nome_ref)
+        self._analysed_selector.set_car(nome_comp)
+
+        self._car_hint.setText(
+            ""
+            if nome_ref == nome_comp
+            else (
+                f"Carros diferentes: {nome_ref} (referência) contra {nome_comp} "
+                "(comparada). Linha de corrida e ponto de freada continuam "
+                "comparáveis; ritmo em reta e delta acumulado, não — parte da "
+                "diferença é do carro, não da pilotagem."
+            )
+        )
 
     def _clear(self, hint: str) -> None:
         self._summary.clear_values(self.theme)
@@ -454,6 +495,9 @@ class ComparePage(Page):
         self._cursor_delta.setStyleSheet("")
         self._frozen = False
         self._hint.setText(hint)
+        self._car_hint.setText("")
+        self._reference_selector.set_car("")
+        self._analysed_selector.set_car("")
 
     def _populate(self) -> None:
         palette = self.theme.palette
@@ -510,22 +554,7 @@ class ComparePage(Page):
                 ),
             ]
         )
-        # Marca no mapa os três piores trechos: ver *onde* na pista se perdeu
-        # tempo é a informação que a tabela sozinha não dá.
-        self._map.set_markers(
-            [
-                TrackMarker(
-                    x=spot.position_x,
-                    z=spot.position_z,
-                    color=palette.yellow,
-                    label=segment.label,
-                    hollow=True,
-                )
-                for segment in report.worst(3)
-                if (spot := _point_at(self._reference, segment.start_distance_m))
-                is not None
-            ]
-        )
+        self._fill_map_markers()
 
         self._fill_table(report)
         self._request_debrief(report)
@@ -533,6 +562,54 @@ class ComparePage(Page):
             "O tempo de cada trecho é a variação do delta dentro dele — "
             "não o delta acumulado. Por isso um trecho ruim não contamina os "
             "seguintes."
+        )
+
+    def _fill_map_markers(self) -> None:
+        """Curvas e setores, os mesmos da Análise e no mesmo lugar da pista.
+
+        Antes daqui o mapa marcava os **três piores trechos**, rotulados com o
+        nome da curva mais próxima e plotados no *início* do trecho. Duas coisas
+        davam errado: a bolinha caía longe do ápice que o rótulo nomeava, e o
+        conjunto mudava a cada par de voltas escolhido. Ler "Curva 4" num ponto
+        que não é a curva 4, e ver as marcas dançarem entre comparações, é o que
+        fazia os pontos parecerem aleatórios — porque, como referência de pista,
+        eles eram.
+
+        Onde se perdeu tempo continua respondido, e melhor, por quem já
+        respondia: a tabela de trechos e as marcas do gráfico de delta.
+        """
+        palette = self.theme.palette
+        pontos = self._reference
+
+        marcas = [
+            TrackMarker(
+                x=apex.position_x,
+                z=apex.position_z,
+                color=palette.purple,
+                label=f"C{corner.index}",
+                hollow=True,
+            )
+            for corner in detect_corners(pontos)
+            if (apex := _point_at(pontos, corner.apex_distance_m)) is not None
+        ]
+        for numero, divisa in enumerate(
+            sector_boundaries_m(pontos[-1].distance_m, NUM_SECTORS)[:-1], start=1
+        ):
+            borda = _point_at(pontos, divisa)
+            if borda is not None:
+                marcas.append(
+                    TrackMarker(
+                        x=borda.position_x,
+                        z=borda.position_z,
+                        color=palette.text_muted,
+                        label=f"S{numero}",
+                        radius=3.0,
+                    )
+                )
+
+        self._map.set_markers(marcas)
+        self._map.set_marker_legend(
+            [(palette.purple, "curva (ápice)"), (palette.text_muted, "setor")]
         )
 
     def _pair(self, attribute: str) -> list[Series]:

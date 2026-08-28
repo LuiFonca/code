@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 from gt7core.domain.models import Lap
 from gt7core.storage.repositories import SqliteLapRepository, SqliteTrackRepository
 
+from ..design.theme import OBJ_SELECTOR_NOTE
 from ..design.tokens import Space
 
 #: Larguras mínimas, em pixels. O catálogo tem nomes como "24 Heures du Mans
@@ -120,13 +121,38 @@ class TrackLapSelector(QWidget):
         self._track_label.setVisible(show_track)
         self._track_combo.setVisible(show_track)
 
+        self._car_label = QLabel("")
+        self._car_label.setObjectName(OBJ_SELECTOR_NOTE)
+        self._car_label.setVisible(False)
+
         layout.addWidget(self._track_label)
         layout.addWidget(self._track_combo)
+        # Com a pista à mostra, o carro entra entre ela e a volta: é a ordem em
+        # que a pergunta se forma — onde, com o quê, qual volta.
+        #
+        # Com a pista oculta (a segunda volta da comparação), essa posição fica
+        # **antes do rótulo** "Comparar:", e o carro passa a parecer legenda de
+        # um campo que não está na tela. Aí ele vai para o fim, onde se lê como
+        # o que é: o carro daquela volta.
+        if show_track:
+            layout.addWidget(self._car_label)
         layout.addWidget(QLabel(lap_label))
         layout.addWidget(self._lap_combo)
+        if not show_track:
+            layout.addWidget(self._car_label)
 
         self._track_combo.currentIndexChanged.connect(self._on_track_changed)
         self._lap_combo.currentIndexChanged.connect(self._on_lap_changed)
+
+    def set_car(self, name: str) -> None:
+        """Mostra qual carro fez a volta escolhida. Vazio esconde o rótulo.
+
+        Esconder, e não escrever "—": um travessão ocuparia largura na barra
+        para não dizer nada, e a barra já disputa espaço com dois combos de nome
+        comprido.
+        """
+        self._car_label.setText(f"🚗 {name}" if name else "")
+        self._car_label.setVisible(bool(name))
 
     # ---------- carga ----------
 

@@ -177,8 +177,8 @@ class TestCarroNoHistorico:
             window = build_gui(core)
             pagina = window._pages[3]  # noqa: SLF001
 
-            assert pagina._car_name(None) == "—"  # noqa: SLF001
-            assert pagina._car_name(9999) == "—"  # noqa: SLF001
+            assert pagina.car_name(None) == "—"
+            assert pagina.car_name(9999) == "—"
             dispose_window(window)
         finally:
             core.close()
