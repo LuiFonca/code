@@ -21,6 +21,8 @@ import os
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 
+from ..analytics.steering import DEFAULT_STEERING_RATIO, DEFAULT_WHEELBASE_M
+
 ENV_PREFIX = "GT7_"
 
 
@@ -272,6 +274,31 @@ class UIConfig:
 
 
 @dataclass(slots=True)
+class VehicleConfig:
+    """As grandezas do carro que o GT7 **não transmite**.
+
+    Nem o pacote nem o catálogo do jogo trazem dimensão de carro — o catálogo é
+    nome, fabricante e nada mais. Estes dois números são o que falta para
+    converter a curvatura da trajetória, que é medida, em ângulo de volante, que
+    não é.
+
+    São configuração, e não constante no código, exatamente porque são
+    suposição: deixá-los editáveis é a diferença entre um número que o programa
+    inventou e um número que você declarou. Quem corre sempre de GT3 acerta uma
+    vez (2,55 m e 12:1) e o eixo passa a valer para o carro dele.
+
+    Só escalam o gráfico de volante. Nada mais no programa os lê.
+
+    Os padrões vêm de `analytics.steering`, e não repetidos aqui: é lá que mora
+    o porquê de cada número, e um 2,6 escrito nos dois lugares é como os dois
+    lados passam a discordar depois de alguém ajustar um deles.
+    """
+
+    wheelbase_m: float = DEFAULT_WHEELBASE_M
+    steering_ratio: float = DEFAULT_STEERING_RATIO
+
+
+@dataclass(slots=True)
 class Settings:
     """Configuração da aplicação inteira, montada num lugar só."""
 
@@ -282,6 +309,7 @@ class Settings:
     voice: VoiceConfig = field(default_factory=VoiceConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    vehicle: VehicleConfig = field(default_factory=VehicleConfig)
 
     env_path: Path = field(default_factory=lambda: user_dir() / ".env")
     """De onde esta configuração veio — e para onde a tela grava de volta.
@@ -403,6 +431,14 @@ class Settings:
             start_page=(get("UI_START_PAGE") or "live").strip().lower(),
         )
 
+        vehicle_defaults = VehicleConfig()
+        vehicle = VehicleConfig(
+            wheelbase_m=get_float("WHEELBASE_M", vehicle_defaults.wheelbase_m),
+            steering_ratio=get_float(
+                "STEERING_RATIO", vehicle_defaults.steering_ratio
+            ),
+        )
+
         return cls(
             telemetry=telemetry,
             storage=storage,
@@ -411,6 +447,7 @@ class Settings:
             voice=voice,
             logging=logging_config,
             ui=ui,
+            vehicle=vehicle,
             env_path=env_path,
         )
 

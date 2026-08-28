@@ -63,6 +63,15 @@ MIN_SPAN_M = 0.5
 #: o esterço entra nem quanto ele dura, que é o que se lê no gráfico.
 DEFAULT_WHEELBASE_M = 2.6
 
+#: Relação de direção suposta: quantos graus o volante gira para cada grau das
+#: rodas. **Também não vem do pacote.**
+#:
+#: 15:1 é o meio da faixa comum. Um carro de rua fica entre 14:1 e 18:1; um GT3
+#: de corrida, entre 10:1 e 13:1, e por isso ele precisa de menos giro para a
+#: mesma curva. Trocar este número aqui ou em Configurações reescala o eixo do
+#: gráfico de volante e nada mais.
+DEFAULT_STEERING_RATIO = 15.0
+
 
 def _wrap(angle: float) -> float:
     """Traz a diferença de ângulos para (−π, π].
@@ -156,6 +165,49 @@ def steer_angle_series(
         series.append((distance_m, math.degrees(math.atan(wheelbase_m * curvatura))))
 
     return series
+
+
+def steering_wheel_series(
+    points: list[TelemetryPoint],
+    *,
+    wheelbase_m: float = DEFAULT_WHEELBASE_M,
+    steering_ratio: float = DEFAULT_STEERING_RATIO,
+    window: int = WINDOW,
+) -> list[tuple[float, float]]:
+    """Rotação **do volante**, em graus: pares (distância em m, graus).
+
+    É o ângulo das rodas multiplicado pela relação de direção — 360° aqui
+    significa uma volta inteira de volante. Positivo é giro à direita.
+
+    Duas suposições empilhadas
+    --------------------------
+    Entre-eixos e relação de direção; nenhum dos dois vem do pacote, e ambos são
+    editáveis em Configurações. Juntos eles são um **fator de escala**: dobrar a
+    relação dobra todo o eixo e não move nada horizontalmente. Por isso a leitura
+    que o canal entrega de graça é a de forma — onde a mão entra, quanto tempo
+    fica, quantas correções teve — e a de amplitude só vale depois de você
+    acertar os dois números para o seu carro.
+
+    O que este canal **não** captura
+    --------------------------------
+    Ele é a direção *geométrica*: quanto de volante bastaria para descrever
+    aquela curva com os pneus rodando alinhados. O volante de verdade gira mais,
+    porque o pneu dianteiro trabalha com ângulo de deriva, e a diferença cresce
+    justamente quando o carro está no limite. Na prática: em curva lenta os dois
+    quase coincidem; em curva rápida, e em qualquer subesterço, o traço aqui é
+    um piso do que a mão fez de fato.
+
+    Correção de traseira é o caso em que o canal engana mais: contra-esterçar é
+    girar o volante para o lado **oposto** ao da curva, e como aqui o sinal vem
+    da trajetória, o traço continua marcando o lado da curva. É a mesma razão
+    pela qual a guinada segue valendo a pena ao lado deste gráfico.
+    """
+    return [
+        (distance_m, graus * steering_ratio)
+        for distance_m, graus in steer_angle_series(
+            points, wheelbase_m=wheelbase_m, window=window
+        )
+    ]
 
 
 def _headings(

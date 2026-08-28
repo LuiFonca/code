@@ -154,3 +154,49 @@ class TestUnidadeDoEixoX:
 
         assert _format_x(3.25, "s") == "3.2 s"
         assert _format_x(1234.0, "m") == "1234 m"
+
+
+class TestEixoEspelhado:
+    """Canal com sinal precisa do mesmo espaço para os dois lados.
+
+    O degrau sozinho produz eixo assimétrico — o teto mínimo só se aplica em
+    cima —, e aí uma curva à direita de 30° desenha o dobro da altura de uma
+    curva à esquerda de 30°. O gráfico passaria a afirmar uma assimetria de
+    pilotagem que não existe, e nada denunciaria: os números do eixo estão
+    certos; é a leitura de relance que mente. Apareceu no gráfico de volante,
+    onde o eixo saiu de −90 a 180 com o traço quase todo em torno do zero.
+    """
+
+    def test_eixo_com_sinal_fica_simetrico(self, app: QApplication) -> None:
+        c = chart(app, y_step=90.0, y_top_min=180.0, y_symmetric=True)
+        c.set_series(serie([(0.0, 5.0), (10.0, -3.0)]))
+
+        low, high = c._bounds  # noqa: SLF001
+        assert low == -high
+
+    def test_o_lado_maior_manda_nos_dois(self, app: QApplication) -> None:
+        """Espelhar é pelo extremo, não pelo positivo.
+
+        Uma volta anti-horária vive quase toda no negativo; ancorar no maior
+        positivo achataria a volta inteira contra a borda de baixo.
+        """
+        c = chart(app, y_step=30.0, y_top_min=60.0, y_symmetric=True)
+        c.set_series(serie([(0.0, 4.0), (10.0, -95.0)]))
+
+        assert c._bounds == (-120.0, 120.0)  # noqa: SLF001
+
+    def test_canal_que_so_sobe_nao_espelha(self, app: QApplication) -> None:
+        """Velocidade espelhada desperdiçaria metade da altura desenhando um
+        território negativo onde nenhuma amostra pode cair."""
+        c = chart(app, y_step=100.0)
+        c.set_series(serie([(0.0, 0.0), (10.0, 250.0)]))
+
+        assert c._bounds[0] == 0.0  # noqa: SLF001
+
+    def test_serie_toda_zero_nao_colapsa_o_eixo(self, app: QApplication) -> None:
+        """Altura zero faria a divisão da projeção estourar."""
+        c = chart(app, y_symmetric=True)
+        c.set_series(serie([(0.0, 0.0), (10.0, 0.0)]))
+
+        low, high = c._bounds  # noqa: SLF001
+        assert high > low

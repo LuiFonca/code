@@ -37,6 +37,7 @@ from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -136,6 +137,7 @@ class SettingsPage(Page):
         column.setSpacing(Space.LG.px)
 
         column.addWidget(self._build_telemetry_card())
+        column.addWidget(self._build_vehicle_card())
         column.addWidget(self._build_discord_card())
         column.addWidget(self._build_ai_card())
         column.addWidget(self._build_voice_card())
@@ -201,6 +203,49 @@ class SettingsPage(Page):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         card.add(self._test_result)
+        return card
+
+    def _build_vehicle_card(self) -> Card:
+        """As duas grandezas que o GT7 não transmite, editáveis por quem sabe.
+
+        O gráfico de volante da Análise é a curvatura da trajetória convertida
+        por estes dois números. Eles não vêm do pacote nem do catálogo do jogo,
+        e por isso estão aqui em vez de fixos no código: um valor que o programa
+        supôs sozinho é um palpite; um valor que você declarou é um dado seu.
+
+        `QDoubleSpinBox`, e não campo de texto, porque a faixa aceitável é
+        conhecida e estreita — um entre-eixos de 26 m viria de um dedo errado no
+        teclado, e o gráfico sairia dez vezes maior sem nada explicar por quê.
+        """
+        card = Card("Carro — para o gráfico de volante")
+        form = QWidget()
+        layout = QFormLayout(form)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Space.SM.px)
+
+        self._wheelbase = QDoubleSpinBox()
+        self._wheelbase.setRange(1.5, 4.0)
+        self._wheelbase.setSingleStep(0.05)
+        self._wheelbase.setDecimals(2)
+        self._wheelbase.setSuffix(" m")
+
+        self._steering_ratio = QDoubleSpinBox()
+        self._steering_ratio.setRange(5.0, 30.0)
+        self._steering_ratio.setSingleStep(0.5)
+        self._steering_ratio.setDecimals(1)
+        self._steering_ratio.setSuffix(" :1")
+
+        layout.addRow("Entre-eixos:", self._wheelbase)
+        layout.addRow("Relação de direção:", self._steering_ratio)
+        card.add(form)
+
+        nota = QLabel(
+            "Referências: Miata ~2,31 m e 15:1; GT3 de corrida ~2,55 m e 12:1; "
+            "protótipo de Le Mans ~2,90 m e 11:1. Os dois só escalam o eixo do "
+            "gráfico de volante — a forma do traço não muda."
+        )
+        nota.setWordWrap(True)
+        card.add(nota)
         return card
 
     def _build_discord_card(self) -> Card:
@@ -303,6 +348,9 @@ class SettingsPage(Page):
         self._receive_port.setValue(telemetry.receive_port)
         self._mock_speed.setValue(int(telemetry.mock_speed_multiplier))
 
+        self._wheelbase.setValue(settings.vehicle.wheelbase_m)
+        self._steering_ratio.setValue(settings.vehicle.steering_ratio)
+
         self._discord_enabled.setChecked(settings.discord.enabled)
         self._discord_guild.setText(getattr(settings.discord, "guild", ""))
         self._discord_channel.setText(getattr(settings.discord, "channel", ""))
@@ -399,6 +447,8 @@ class SettingsPage(Page):
             "GT7_SEND_PORT": str(self._send_port.value()),
             "GT7_RECEIVE_PORT": str(self._receive_port.value()),
             "GT7_MOCK_SPEED": str(self._mock_speed.value()),
+            "GT7_WHEELBASE_M": f"{self._wheelbase.value():.2f}",
+            "GT7_STEERING_RATIO": f"{self._steering_ratio.value():.1f}",
             "GT7_DISCORD_ENABLED": _boolean(self._discord_enabled.isChecked()),
             "GT7_DISCORD_GUILD": self._discord_guild.text().strip(),
             "GT7_DISCORD_CHANNEL": self._discord_channel.text().strip(),
@@ -429,6 +479,9 @@ class SettingsPage(Page):
         telemetry.send_port = self._send_port.value()
         telemetry.receive_port = self._receive_port.value()
         telemetry.mock_speed_multiplier = float(self._mock_speed.value())
+
+        settings.vehicle.wheelbase_m = self._wheelbase.value()
+        settings.vehicle.steering_ratio = self._steering_ratio.value()
 
         settings.ai.enabled = self._ai_enabled.isChecked()
         settings.ai.local_url = self._ai_url.text().strip()

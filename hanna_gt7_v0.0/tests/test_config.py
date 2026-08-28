@@ -313,3 +313,43 @@ class TestOndeAConfiguracaoMora:
         save_env(settings.env_path, {"GT7_PS_IP": "192.168.15.156"})
 
         assert Settings.load().telemetry.ps_ip == "192.168.15.156"
+
+
+class TestCarroSuposto:
+    """Entre-eixos e relação de direção: configuração, não constante escondida.
+
+    Os dois convertem a curvatura medida em ângulo de volante, e nenhum deles
+    vem do GT7. Serem editáveis é a diferença entre um número que o programa
+    inventou e um número que o piloto declarou para o carro dele.
+    """
+
+    def test_padroes_sao_os_da_analise(self) -> None:
+        """Um 2,6 escrito nos dois lugares é como os dois passam a discordar."""
+        from gt7core.analytics.steering import (
+            DEFAULT_STEERING_RATIO,
+            DEFAULT_WHEELBASE_M,
+        )
+
+        settings = Settings.load(env_file=Path("/nao/existe"))
+
+        assert settings.vehicle.wheelbase_m == DEFAULT_WHEELBASE_M
+        assert settings.vehicle.steering_ratio == DEFAULT_STEERING_RATIO
+
+    def test_vem_do_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GT7_WHEELBASE_M", "2.55")
+        monkeypatch.setenv("GT7_STEERING_RATIO", "12.0")
+
+        settings = Settings.load(env_file=Path("/nao/existe"))
+
+        assert settings.vehicle.wheelbase_m == 2.55
+        assert settings.vehicle.steering_ratio == 12.0
+
+    def test_valor_ilegivel_cai_no_padrao(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configuração inválida não pode derrubar o programa na abertura."""
+        monkeypatch.setenv("GT7_STEERING_RATIO", "quinze")
+
+        settings = Settings.load(env_file=Path("/nao/existe"))
+
+        assert settings.vehicle.steering_ratio == 15.0

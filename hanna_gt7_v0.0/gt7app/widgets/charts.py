@@ -107,6 +107,7 @@ class DistanceChart(QWidget):
         y_range: tuple[float, float] | None = None,
         y_step: float | None = None,
         y_top_min: float | None = None,
+        y_symmetric: bool = False,
         x_unit: str = "m",
     ) -> None:
         super().__init__()
@@ -124,6 +125,17 @@ class DistanceChart(QWidget):
         #: impossível. Degrau fixo mantém o traço legível **e** comparável.
         self._y_step = y_step
         self._y_top_min = y_top_min
+        #: Eixo espelhado em torno do zero, para canais **com sinal**.
+        #:
+        #: Guinada e volante têm lado: positivo é direita, negativo é
+        #: esquerda. Com o eixo assimétrico — que é o que o degrau produz
+        #: sozinho, porque o teto mínimo só se aplica em cima — uma curva à
+        #: direita de 30° desenha o dobro da altura de uma curva à esquerda
+        #: de 30°, e o gráfico passa a afirmar uma assimetria de pilotagem
+        #: que não existe. Num canal que só sobe (velocidade, pedais,
+        #: aderência) espelhar seria desperdiçar metade da altura, e por
+        #: isso isto é opção e não regra.
+        self._y_symmetric = y_symmetric
         self._series: list[Series] = []
         # Faixa vertical memorizada. Recalculada só quando as séries mudam —
         # ver a nota em `_y_bounds`.
@@ -246,6 +258,14 @@ class DistanceChart(QWidget):
         # parecidas parecerem diferentes. Ancorar em zero devolve a proporção.
         low = min(0.0, low)
         high = max(0.0, high)
+
+        if self._y_symmetric:
+            extremo = max(abs(low), abs(high))
+            if self._y_step:
+                extremo = _step_up(extremo, self._y_step, self._y_top_min)
+            elif extremo < 1e-9:
+                extremo = 1.0
+            return -extremo, extremo
 
         if self._y_step:
             high = _step_up(high, self._y_step, self._y_top_min)

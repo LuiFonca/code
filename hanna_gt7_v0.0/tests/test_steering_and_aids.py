@@ -28,6 +28,7 @@ from gt7core.analytics.aids import (
 from gt7core.analytics.steering import (
     peak_yaw_rate,
     steer_angle_series,
+    steering_wheel_series,
     yaw_rate_series,
 )
 from gt7core.domain.models import TelemetryPoint
@@ -384,3 +385,61 @@ class TestEstercoEstimado:
         ]
 
         assert all(abs(v) < 0.2 for _, v in steer_angle_series(pontos))
+
+
+class TestRotacaoDoVolante:
+    """O canal que o piloto pediu: quanto a mão girou, em graus de volante.
+
+    É o ângulo das rodas vezes a relação de direção. As duas suposições —
+    entre-eixos e relação — se multiplicam num fator de escala só, e o que este
+    grupo prende é justamente que elas **só** escalam.
+    """
+
+    def test_e_o_angulo_das_rodas_vezes_a_relacao(self) -> None:
+        pontos = circular_lap(radius_m=60.0, speed_ms=25.0)
+
+        rodas = steer_angle_series(pontos, wheelbase_m=2.6)
+        volante = steering_wheel_series(pontos, wheelbase_m=2.6, steering_ratio=15.0)
+
+        assert len(rodas) == len(volante)
+        assert all(
+            abs(v - r * 15.0) < 1e-9
+            for (_, r), (_, v) in zip(rodas, volante, strict=True)
+        )
+
+    def test_relacao_de_corrida_gira_menos_que_a_de_rua(self) -> None:
+        """12:1 num GT3 contra 16:1 num carro de rua: mesma curva, menos mão.
+
+        Se este teste reprovar, a relação está sendo aplicada ao contrário — e o
+        gráfico diria que o carro de corrida exige mais volante, que é o oposto
+        do que qualquer piloto sente.
+        """
+        pontos = circular_lap(radius_m=40.0, speed_ms=20.0)
+
+        corrida = steering_wheel_series(pontos, steering_ratio=12.0)
+        rua = steering_wheel_series(pontos, steering_ratio=16.0)
+
+        assert max(abs(v) for _, v in corrida) < max(abs(v) for _, v in rua)
+
+    def test_uma_horquilha_pede_perto_de_meia_volta(self) -> None:
+        """Ordem de grandeza plausível — o teste que pega erro de unidade.
+
+        Curva de 25 m de raio, entre-eixos 2,6 m e relação 15:1 dão ~90° nas
+        rodas... não: dão ~6° nas rodas e ~89° de volante. Um erro de radiano
+        para grau, ou a relação esquecida, sai três ordens de grandeza fora e
+        nenhuma asserção de sinal perceberia.
+        """
+        pontos = circular_lap(radius_m=25.0, speed_ms=12.0)
+
+        graus = [abs(v) for _, v in steering_wheel_series(pontos)]
+        media = sum(graus) / len(graus)
+
+        assert 60.0 < media < 120.0, f"volante em {media:.0f}° — fora do plausível"
+
+    def test_reta_nao_gira_o_volante(self) -> None:
+        pontos = [
+            make_point(elapsed_ms=i * 16, distance_m=i * 1.0, position_x=i * 1.0)
+            for i in range(60)
+        ]
+
+        assert all(abs(v) < 3.0 for _, v in steering_wheel_series(pontos))
