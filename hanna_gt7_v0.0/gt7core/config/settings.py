@@ -85,14 +85,65 @@ class TelemetryConfig:
     mock_speed_multiplier: float = 1.0
 
 
+def user_dir() -> Path:
+    """Pasta do usuário onde o programa guarda o que é dele.
+
+    O banco e a telemetria já moravam aqui; a configuração não, e essa
+    assimetria custou uma conexão. Ela ficava em `./.env` — **relativo ao
+    diretório de trabalho** —, então descompactar uma versão nova numa pasta
+    nova começava do zero: fonte de volta em `mock`, IP vazio, e o programa
+    subindo o gerador sintético sem nunca falar com o console.
+
+    Função e não constante de módulo porque `Path.home()` precisa ser lido na
+    chamada: os testes trocam `HOME` para não escrever na casa de quem roda a
+    suíte, e uma constante avaliada no import congelaria o valor antigo.
+    """
+    return Path.home() / ".hanna_gt7"
+
+
+#: Configuração ao lado do código, do jeito que sempre esteve. Continua valendo
+#: quando existe — é o `.env` de uma cópia de desenvolvimento, e ignorá-lo
+#: mandaria alguém editar um arquivo que o programa deixou de ler.
+LOCAL_ENV = Path(".env")
+
+
+def resolve_env_path() -> Path:
+    """Qual `.env` mandar — e o resgate do que estava na pasta do programa.
+
+    Regra: o `.env` local vence quando existe; senão, o do usuário. O local é
+    uma declaração explícita ("esta pasta tem a sua própria configuração") e
+    quem trabalha no código conta com ela.
+
+    A semeadura é o que faz a troca não doer. Na primeira vez que se encontra um
+    `.env` local sem contraparte na pasta do usuário, ele é **copiado** para lá.
+    Copiado e não movido: mover mudaria o comportamento da pasta de onde o
+    arquivo saiu, e é regra desta função não estragar o que já funciona. A cópia
+    é semente, não espelho — ela deixa a próxima versão, descompactada numa
+    pasta nova e portanto sem `.env` local, já nascer configurada.
+    """
+    do_usuario = user_dir() / ".env"
+    if not LOCAL_ENV.is_file():
+        return do_usuario
+
+    if not do_usuario.exists():
+        try:
+            do_usuario.parent.mkdir(parents=True, exist_ok=True)
+            do_usuario.write_text(
+                LOCAL_ENV.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        except OSError:
+            # Disco cheio, permissão, home somente-leitura. Semear é conveniência
+            # e nenhuma conveniência justifica impedir o programa de subir: o
+            # `.env` local, que é o que vale agora, foi lido do mesmo jeito.
+            pass
+
+    return LOCAL_ENV
+
+
 @dataclass(slots=True)
 class StorageConfig:
-    database_path: Path = field(
-        default_factory=lambda: Path.home() / ".hanna_gt7" / "hanna.db"
-    )
-    telemetry_path: Path = field(
-        default_factory=lambda: Path.home() / ".hanna_gt7" / "telemetry"
-    )
+    database_path: Path = field(default_factory=lambda: user_dir() / "hanna.db")
+    telemetry_path: Path = field(default_factory=lambda: user_dir() / "telemetry")
     # Retenção por pista — decisão do usuário: histórico limitado, não ilimitado.
     # 0 desliga a exclusão automática. Agora é configuração, não constante
     # enterrada no módulo de banco (era P8 na auditoria).
@@ -232,14 +283,14 @@ class Settings:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     ui: UIConfig = field(default_factory=UIConfig)
 
-    env_path: Path = field(default_factory=lambda: Path(".env"))
+    env_path: Path = field(default_factory=lambda: user_dir() / ".env")
     """De onde esta configuração veio — e para onde a tela grava de volta.
 
     Guardado no objeto porque quem salva (a página de configuração) não é quem
-    carrega, e reconstruir o caminho do outro lado significaria repetir o
-    `Path(".env")` e o `or` do carregador. Repetir uma decisão é como as duas
-    cópias divergem: bastaria alguém passar `env_file` num teste para a tela
-    gravar num arquivo diferente do que o programa lê.
+    carrega, e reconstruir o caminho do outro lado significaria repetir a
+    escolha do carregador. Repetir uma decisão é como as duas cópias divergem:
+    bastaria alguém passar `env_file` num teste para a tela gravar num arquivo
+    diferente do que o programa lê.
     """
 
     @classmethod
@@ -249,7 +300,7 @@ class Settings:
         Precedência: `os.environ` > arquivo `.env` > padrão do dataclass.
         Todas as variáveis usam o prefixo `GT7_` para não colidir com nada.
         """
-        env_path = env_file or Path(".env")
+        env_path = env_file or resolve_env_path()
         file_values = _load_dotenv(env_path)
 
         def get(name: str) -> str | None:

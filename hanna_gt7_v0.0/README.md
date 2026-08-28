@@ -46,8 +46,14 @@ A IA local não é um extra do Python — é um servidor de modelo na sua máqui
 ollama pull qwen3:4b && ollama serve
 ```
 
-Copie `.env.example` para `.env` e ajuste. **Nada é obrigatório:** o programa
-sobe sem nenhuma variável definida.
+Copie `.env.example` para `~/.hanna_gt7/.env` e ajuste. **Nada é obrigatório:**
+o programa sobe sem nenhuma variável definida — e a página **Configurações**
+escreve nesse arquivo por você, sem precisar editá-lo na mão.
+
+A configuração mora em `~/.hanna_gt7/`, junto do banco, e não na pasta do
+programa: é o que a faz sobreviver quando você descompacta uma versão nova. Um
+`.env` na pasta de onde o programa é lançado ainda vence, para quem trabalha no
+código.
 
 ---
 

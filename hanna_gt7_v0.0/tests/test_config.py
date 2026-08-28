@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from gt7core.config.persistence import save_env
 from gt7core.config.settings import SecretStr, Settings
 
 
@@ -208,3 +209,107 @@ class TestRetencao:
 
         assert settings.storage.keep_recent_per_track == 20
         assert settings.storage.keep_best_per_track == 5
+
+
+class TestOndeAConfiguracaoMora:
+    """A configuração precisa sobreviver à troca de versão.
+
+    Ela morava em `./.env` — relativo ao **diretório de trabalho** —, enquanto o
+    banco sempre morou em `~/.hanna_gt7/`. Essa assimetria custou uma conexão:
+    descompactar uma versão nova numa pasta nova começava do zero, com a fonte
+    de volta em `mock` e o IP vazio, e o programa subia o gerador sintético sem
+    nunca falar com o console. O sintoma que chegou foi "não conecta mais".
+    """
+
+    def test_sem_env_local_usa_o_do_usuario(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """O caso da versão recém-descompactada: pasta limpa, sem `.env`."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "lar")
+        monkeypatch.chdir(tmp_path)
+
+        casa = tmp_path / "lar" / ".hanna_gt7"
+        casa.mkdir(parents=True)
+        (casa / ".env").write_text(
+            "GT7_TELEMETRY_SOURCE=udp\nGT7_PS_IP=192.168.15.156\n", encoding="utf-8"
+        )
+
+        settings = Settings.load()
+
+        assert settings.telemetry.source == "udp"
+        assert settings.telemetry.ps_ip == "192.168.15.156"
+        assert settings.env_path == casa / ".env"
+
+    def test_env_local_continua_vencendo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Uma cópia de desenvolvimento declara a própria configuração.
+
+        Ignorar o `.env` local mandaria alguém editar um arquivo que o programa
+        deixou de ler — a pior forma de "não funciona".
+        """
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "lar")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("GT7_PS_IP=10.0.0.7\n", encoding="utf-8")
+
+        casa = tmp_path / "lar" / ".hanna_gt7"
+        casa.mkdir(parents=True)
+        (casa / ".env").write_text("GT7_PS_IP=192.168.15.156\n", encoding="utf-8")
+
+        settings = Settings.load()
+
+        assert settings.telemetry.ps_ip == "10.0.0.7"
+
+    def test_env_local_e_semeado_para_a_proxima_versao(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Quem já tinha `.env` na pasta do programa não recomeça do zero."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "lar")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("GT7_PS_IP=10.0.0.7\n", encoding="utf-8")
+
+        Settings.load()
+
+        semeado = tmp_path / "lar" / ".hanna_gt7" / ".env"
+        assert semeado.is_file()
+        assert "10.0.0.7" in semeado.read_text(encoding="utf-8")
+        # Copiado, não movido: a pasta de origem continua funcionando como antes.
+        assert (tmp_path / ".env").is_file()
+
+    def test_semeadura_nao_sobrescreve_o_que_ja_existe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Semente é para pasta vazia. Por cima de configuração real seria perda.
+
+        Sem esta regra, abrir uma cópia de desenvolvimento uma vez apagaria a
+        configuração de verdade do usuário — e o `.env` local costuma ser o de
+        teste, apontando para lugar nenhum.
+        """
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "lar")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("GT7_PS_IP=10.0.0.7\n", encoding="utf-8")
+
+        casa = tmp_path / "lar" / ".hanna_gt7"
+        casa.mkdir(parents=True)
+        (casa / ".env").write_text("GT7_PS_IP=192.168.15.156\n", encoding="utf-8")
+
+        Settings.load()
+
+        assert "192.168.15.156" in (casa / ".env").read_text(encoding="utf-8")
+
+    def test_a_tela_grava_onde_o_programa_le(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`env_path` é o contrato entre quem carrega e quem salva.
+
+        Se ele apontasse para outro arquivo, a tela de Configurações gravaria o
+        IP com sucesso e o programa continuaria lendo o valor antigo — salvar
+        sem efeito, que foi como este defeito se apresentou.
+        """
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "lar")
+        monkeypatch.chdir(tmp_path)
+
+        settings = Settings.load()
+        save_env(settings.env_path, {"GT7_PS_IP": "192.168.15.156"})
+
+        assert Settings.load().telemetry.ps_ip == "192.168.15.156"
