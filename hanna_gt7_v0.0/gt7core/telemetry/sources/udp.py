@@ -17,6 +17,7 @@ Duas adições: contadores de pacote (§35, que não existiam) e estado tipado
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import socket
 import struct
@@ -50,6 +51,17 @@ HEARTBEAT_INTERVAL_INITIAL_S = 1.0
 # tráfego — mais grosseiro que o watchdog da interface, que vigia quadros
 # válidos numa janela de ~1 s.
 SOCKET_TIMEOUT_S = 3.0
+
+# Quanto o `recvfrom` espera antes de devolver o controle ao laço.
+#
+# Era o próprio SOCKET_TIMEOUT_S, e isso amarrava duas coisas que não têm
+# relação: de quanto em quanto tempo a thread **acorda** e depois de quanto
+# silêncio se declara NO_SIGNAL. Com 3 s de espera, parar a captura levava
+# até 3 s — a thread só via o pedido de parada ao expirar —, e fechar o
+# socket de fora não resolve: no Linux isso não desbloqueia um `recvfrom`
+# em curso. Sondando a cada 250 ms a parada é quase imediata, e o silêncio
+# passa a ser medido pelo relógio, que é como devia ter sido desde o início.
+POLL_TIMEOUT_S = 0.25
 
 RECV_BUFFER_BYTES = 4096
 
@@ -105,6 +117,17 @@ class Gt7UdpTelemetrySource(TelemetrySource):
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        #: O socket em uso, para que `stop()` possa fechá-lo de fora.
+        #:
+        #: Sem esta referência, parar era **pedir** para a thread parar e
+        #: torcer: ela só percebia o evento ao sair do `recvfrom`, e se não
+        #: saísse dentro do prazo do `join`, `stop()` voltava assim mesmo
+        #: com a thread viva e a porta 33740 ainda ocupada. A captura
+        #: seguinte então binda um segundo socket na mesma porta — o
+        #: `SO_REUSEADDR` permite — e o sistema entrega cada pacote a **um**
+        #: dos dois. Trocar o IP em Configurações passa por aqui, e cada
+        #: troca podia deixar mais um ouvinte fantasma para trás.
+        self._socket: socket.socket | None = None
 
     # ---------- configuração ----------
 
@@ -134,13 +157,43 @@ class Gt7UdpTelemetrySource(TelemetrySource):
         self._thread.start()
 
     def stop(self) -> None:
+        """Para a captura e **garante** que a porta foi liberada.
+
+        Fecha o socket antes de esperar pela thread, em vez de só sinalizar.
+        Um `recvfrom` bloqueado num socket fechado levanta na hora, então a
+        thread sai imediatamente em vez de até 3 s depois — e, o que mais
+        importa, a porta fica livre mesmo se a thread demorar.
+
+        Sinalizar e esperar era o contrato antigo, e ele tinha uma brecha
+        silenciosa: com o `join` estourando, `stop()` voltava com a thread
+        viva e a porta ocupada. A captura seguinte bindava um segundo
+        socket na mesma porta (o `SO_REUSEADDR` deixa), o sistema passava a
+        entregar cada pacote a um dos dois, e o resultado era telemetria
+        chegando na máquina sem chegar na tela. Trocar o IP em
+        Configurações passa por aqui.
+        """
         self._stop_event.set()
+
+        # Fechar de fora é o que desbloqueia o `recvfrom`. A thread trata o
+        # `OSError` resultante como parada — ver `_run`.
+        sock = self._socket
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.close()
+
         thread = self._thread
         if thread is not None and thread.is_alive():
-            # Espera um pouco mais que o timeout do socket: a thread pode estar
-            # bloqueada em recvfrom e só perceber a parada ao expirar.
             thread.join(timeout=SOCKET_TIMEOUT_S + 0.5)
+            if thread.is_alive():
+                # Não deveria acontecer com o socket fechado. Se acontecer,
+                # é melhor deixar registrado do que seguir fingindo que a
+                # captura parou.
+                _log.error(
+                    "a thread de captura não encerrou",
+                    extra={"port": self._receive_port},
+                )
         self._thread = None
+        self._socket = None
         self._emit_status(ConnectionState.DISCONNECTED)
 
     # ---------- laço de captura ----------
@@ -154,10 +207,15 @@ class Gt7UdpTelemetrySource(TelemetrySource):
             self._emit_status(ConnectionState.ERROR, message)
             return
 
+        self._socket = sock
         self._emit_status(ConnectionState.CONNECTING)
         last_heartbeat = 0.0
         got_first_packet = False
         last_heartbeat_error: str | None = None
+        # Silêncio medido pelo relógio, e não pelo timeout do socket: os dois
+        # eram a mesma coisa e não deviam ser. Ver `POLL_TIMEOUT_S`.
+        last_packet_at = time.time()
+        reported_no_signal = False
 
         try:
             while not self._stop_event.is_set():
@@ -174,13 +232,23 @@ class Gt7UdpTelemetrySource(TelemetrySource):
                 try:
                     data, _addr = sock.recvfrom(RECV_BUFFER_BYTES)
                 except TimeoutError:
-                    self._emit_status(ConnectionState.NO_SIGNAL)
+                    if (
+                        not reported_no_signal
+                        and now - last_packet_at > SOCKET_TIMEOUT_S
+                    ):
+                        # Uma vez por episódio de silêncio, não a cada 250 ms:
+                        # repetir o mesmo estado quatro vezes por segundo é
+                        # ruído que a interface teria de filtrar.
+                        self._emit_status(ConnectionState.NO_SIGNAL)
+                        reported_no_signal = True
                     continue
                 except OSError:
                     if self._stop_event.is_set():
                         break
                     raise
 
+                last_packet_at = time.time()
+                reported_no_signal = False
                 self.metrics.record_packet(len(data))
 
                 decoded = salsa20_decode(data)
@@ -205,14 +273,16 @@ class Gt7UdpTelemetrySource(TelemetrySource):
         finally:
             # `finally` garante o fechamento mesmo se algo inesperado subir —
             # senão a porta ficaria presa até o processo morrer e a reconexão
-            # falharia com "endereço em uso".
+            # falharia com "endereço em uso". Fechar duas vezes (aqui e no
+            # `stop()`) é inofensivo.
+            self._socket = None
             sock.close()
 
     def _open_socket(self) -> socket.socket:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("0.0.0.0", self._receive_port))
-        sock.settimeout(SOCKET_TIMEOUT_S)
+        sock.settimeout(POLL_TIMEOUT_S)
         return sock
 
     def _send_heartbeat(self, sock: socket.socket, last_error: str | None) -> str | None:

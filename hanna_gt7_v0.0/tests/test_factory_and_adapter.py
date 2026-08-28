@@ -12,6 +12,9 @@ testes deste projeto rodam num ambiente sem interface gráfica nenhuma.
 from __future__ import annotations
 
 import importlib.util
+import socket
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -25,6 +28,18 @@ from gt7core.telemetry.sources.factory import (
 )
 from gt7core.telemetry.sources.mock import MockTelemetrySource, synthetic_lap
 from gt7core.telemetry.sources.udp import Gt7UdpTelemetrySource
+
+
+def _porta_livre() -> int:
+    """Uma porta alta que o sistema garante livre agora.
+
+    Não a 33740 de propósito: rodar a suíte com o HANNA GT7 aberto na mesma
+    máquina faria estes testes reprovarem por disputa de porta, o que é uma
+    reprovação sobre o ambiente e não sobre o código.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
 
 
 def settings_with(**telemetry: object) -> Settings:
@@ -154,3 +169,97 @@ class TestAdaptadorQt:
         # Sem isto, o barramento seguiria emitindo para um QObject destruído —
         # que em Qt é acesso a ponteiro morto, não exceção Python.
         assert bus.handler_count(TelemetryReceived) == 0
+
+
+class TestAPortaFicaLivreDepoisDeParar:
+    """`stop()` tem de **garantir** a porta liberada, não pedir educadamente.
+
+    O contrato antigo era sinalizar e esperar: a thread só percebia a parada ao
+    sair do `recvfrom`, e se não saísse dentro do prazo do `join`, `stop()`
+    voltava com a thread viva e a porta ocupada. A captura seguinte bindava um
+    segundo socket na mesma porta — o `SO_REUSEADDR` permite — e o sistema
+    passava a entregar cada pacote a **um** dos dois.
+
+    O sintoma disso é telemetria que chega na máquina e não chega na tela, com o
+    teste de conexão dizendo que está tudo certo — porque o teste abre o socket
+    dele e recebe normalmente. Trocar o IP em Configurações passa por este
+    caminho, e cada troca podia deixar mais um ouvinte fantasma.
+    """
+
+    @staticmethod
+    def _porta_esta_livre(porta: int) -> bool:
+        """Binda **sem** `SO_REUSEADDR`: é o que denuncia ocupação de verdade.
+
+        Com a opção ligada o bind passa mesmo com outro socket na porta, que é
+        justamente como o defeito escapava — o teste diria "livre" sobre uma
+        porta disputada.
+        """
+        sonda = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sonda.bind(("0.0.0.0", porta))
+        except OSError:
+            return False
+        else:
+            return True
+        finally:
+            sonda.close()
+
+    def test_parar_devolve_a_porta(self) -> None:
+        porta = _porta_livre()
+        fonte = Gt7UdpTelemetrySource("127.0.0.1", receive_port=porta)
+
+        fonte.start()
+        for _ in range(200):
+            if fonte._socket is not None:  # noqa: SLF001
+                break
+            time.sleep(0.01)
+        assert fonte._socket is not None, "a captura não chegou a abrir a porta"  # noqa: SLF001
+
+        fonte.stop()
+
+        assert not fonte.is_running, "a thread continuou viva"
+        assert self._porta_esta_livre(porta), "a porta ficou presa"
+
+    def test_parar_e_comecar_de_novo_funciona(self) -> None:
+        """É o que a troca de IP faz: parar e subir de novo, várias vezes.
+
+        Cada ciclo que deixasse uma thread para trás somaria um ouvinte
+        disputando os mesmos pacotes.
+        """
+        porta = _porta_livre()
+        fonte = Gt7UdpTelemetrySource("127.0.0.1", receive_port=porta)
+
+        for _ in range(3):
+            fonte.start()
+            for _ in range(200):
+                if fonte._socket is not None:  # noqa: SLF001
+                    break
+                time.sleep(0.01)
+            fonte.stop()
+            assert not fonte.is_running
+
+        vivas = [
+            t for t in threading.enumerate()
+            if t.name == "Gt7UdpTelemetrySource" and t.is_alive()
+        ]
+        assert vivas == [], f"{len(vivas)} threads de captura ficaram vivas"
+        assert self._porta_esta_livre(porta)
+
+    def test_parar_e_rapido(self) -> None:
+        """Fechar o socket desbloqueia o `recvfrom` na hora.
+
+        Sinalizar e esperar levava até 3 s — tempo em que a janela fica parada
+        com o botão ainda verde, e o clique parece não ter pego.
+        """
+        porta = _porta_livre()
+        fonte = Gt7UdpTelemetrySource("127.0.0.1", receive_port=porta)
+        fonte.start()
+        for _ in range(200):
+            if fonte._socket is not None:  # noqa: SLF001
+                break
+            time.sleep(0.01)
+
+        inicio = time.monotonic()
+        fonte.stop()
+
+        assert time.monotonic() - inicio < 1.0, "parar demorou como antes"

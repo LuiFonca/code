@@ -407,9 +407,26 @@ class SettingsPage(Page):
     # ---------- ações ----------
 
     def _on_test(self) -> None:
+        """Testa a conexão — ou explica por que testar agora mentiria.
+
+        A sonda abre a **mesma porta 33740** que a captura. Com a captura
+        rodando, os dois sockets ficam ligados na porta (o `SO_REUSEADDR`
+        deixa) e o sistema entrega cada pacote a um deles. O resultado é o
+        pior possível: a sonda recebe, anuncia FUNCIONANDO, e a aba Ao vivo
+        fica vazia — porque os pacotes que ela precisava foram para a sonda.
+        Pior ainda, o veredito verde manda procurar o defeito em qualquer
+        lugar menos onde ele está.
+
+        Com a captura de pé não há o que sondar: ela **é** a resposta, e os
+        contadores dela dizem a verdade sem disputar nada.
+        """
         ip = self._ps_ip.text().strip()
         if not ip:
             self._test_result.setText("Digite o IP do PlayStation primeiro.")
+            return
+
+        if self.core.source.is_running:
+            self._report_running_capture()
             return
 
         self._test_button.setEnabled(False)
@@ -418,6 +435,47 @@ class SettingsPage(Page):
             "numa corrida ou track day, com o carro em pista."
         )
         self._pool.start(_ProbeTask(ip, self._probe_signals))
+
+    def _report_running_capture(self) -> None:
+        """O veredito vindo da captura que já está de pé."""
+        stats = self.core.metrics.snapshot()
+        palette = self.theme.palette
+
+        if stats.packets_received == 0:
+            self._test_result.setText(
+                "A captura está ligada e não recebeu nenhum pacote.\n\n"
+                "Não testo por fora agora porque a sonda usaria a mesma "
+                "porta 33740 e roubaria os pacotes da captura — ela "
+                "anunciaria sucesso enquanto a tela continua vazia.\n\n"
+                "Confira: o GT7 está numa sessão com o carro em pista "
+                "(menu e replay não transmitem)? O IP é o do console "
+                "agora? Há outra ferramenta de telemetria aberta?"
+            )
+            self._test_result.setStyleSheet(f"color: {palette.red};")
+            return
+
+        idade = stats.last_packet_age_s
+        recente = idade is not None and idade < 3.0
+        self._test_result.setText(
+            f"A captura já está recebendo: {stats.packets_received} "
+            f"pacotes, {stats.packets_per_second:.0f}/s, "
+            f"{stats.frames_emitted} quadros válidos"
+            + (
+                "."
+                if recente
+                else f" — mas o último chegou há {idade:.0f}s, então parou."
+            )
+            + (
+                f"\n\n{stats.callback_errors} quadros foram perdidos por "
+                "erro de quem os consome — a captura está boa e a tela "
+                "não. Mande esta mensagem."
+                if stats.callback_errors
+                else ""
+            )
+        )
+        saudavel = recente and not stats.callback_errors
+        cor = palette.green if saudavel else palette.yellow
+        self._test_result.setStyleSheet(f"color: {cor};")
 
     def _on_probe_done(self, diagnosis: Diagnosis) -> None:
         self._test_button.setEnabled(True)

@@ -272,3 +272,75 @@ class TestEstadoDoABS:
             dispose_window(window)
         finally:
             core.close()
+
+
+class TestOTesteNaoDisputaAPortaComACaptura:
+    """O "FUNCIONANDO" que aparecia com a tela vazia.
+
+    A sonda de conexão abre a **mesma porta 33740** que a captura. Com a
+    captura de pé, os dois sockets ficam ligados na porta — o `SO_REUSEADDR`
+    permite — e o sistema entrega cada pacote a um deles. A sonda recebe,
+    anuncia sucesso, e a aba Ao vivo fica vazia porque os pacotes que ela
+    precisava foram para a sonda.
+
+    O veredito verde é a pior parte: ele manda procurar o defeito em qualquer
+    lugar menos onde ele está.
+    """
+
+    def test_com_captura_rodando_nao_abre_segundo_socket(
+        self, app: QApplication, tmp_path, monkeypatch  # noqa: ANN001, ARG002
+    ) -> None:
+        core = build_core(_settings(tmp_path))
+        try:
+            window = build_gui(core)
+            pagina = window._pages[5]  # noqa: SLF001
+
+            sondou = False
+
+            def nunca(*args: object, **kwargs: object) -> None:
+                nonlocal sondou
+                sondou = True
+
+            monkeypatch.setattr(pagina._pool, "start", nunca)  # noqa: SLF001
+            monkeypatch.setattr(
+                type(core.source), "is_running", property(lambda self: True)
+            )
+
+            pagina._ps_ip.setText("192.168.15.156")  # noqa: SLF001
+            pagina._on_test()  # noqa: SLF001
+
+            assert not sondou, "abriu um segundo socket na porta da captura"
+            assert "captura" in pagina._test_result.text().lower()  # noqa: SLF001
+
+            dispose_window(window)
+        finally:
+            core.close()
+
+    def test_captura_parada_sonda_normalmente(
+        self, app: QApplication, tmp_path, monkeypatch  # noqa: ANN001, ARG002
+    ) -> None:
+        """Sem captura de pé não há disputa — a sonda é a única resposta."""
+        core = build_core(_settings(tmp_path))
+        try:
+            window = build_gui(core)
+            pagina = window._pages[5]  # noqa: SLF001
+
+            sondou = False
+
+            def marca(*args: object, **kwargs: object) -> None:
+                nonlocal sondou
+                sondou = True
+
+            monkeypatch.setattr(pagina._pool, "start", marca)  # noqa: SLF001
+            monkeypatch.setattr(
+                type(core.source), "is_running", property(lambda self: False)
+            )
+
+            pagina._ps_ip.setText("192.168.15.156")  # noqa: SLF001
+            pagina._on_test()  # noqa: SLF001
+
+            assert sondou, "a sonda devia ter rodado"
+
+            dispose_window(window)
+        finally:
+            core.close()
