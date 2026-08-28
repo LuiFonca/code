@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QCompleter,
     QHBoxLayout,
@@ -515,12 +516,32 @@ class LivePage(Page):
         )
 
     def _on_stop(self) -> None:
+        """Desconecta mostrando que está desconectando.
+
+        `core.stop()` **bloqueia** — a thread de captura pode estar parada em
+        `recvfrom` e só percebe a parada quando o socket expira, o que leva até
+        3,5 s. Sem aviso, a janela congela com o botão ainda verde escrito
+        CONECTADO: quem clicou conclui que o clique não pegou e clica de novo.
+        Pintar antes é o que transforma travamento aparente em espera com
+        explicação.
+
+        `processEvents` é o que faz a pintura acontecer **agora**: sem ele o Qt
+        só redesenharia ao voltar ao laço de eventos, que é depois do `stop()`
+        — exatamente tarde demais para servir de aviso.
+        """
+        self._paint_connection(ConnectionState.DISCONNECTING.value)
+        self._stop_button.setEnabled(False)
+        self._status.setText("Desconectando…")
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
         self._update_synthetic_badge()
         if self._voice is not None:
             self._voice.silence()
         self.core.stop()
+
         self._start_button.setEnabled(True)
-        self._stop_button.setEnabled(False)
         self._paint_connection(ConnectionState.DISCONNECTED.value)
         self._status.setText("Parado")
 
@@ -635,6 +656,10 @@ class LivePage(Page):
         cores = {
             ConnectionState.RECEIVING.value: (palette.green, "CONECTADO"),
             ConnectionState.CONNECTING.value: (palette.yellow, "conectando…"),
+            ConnectionState.DISCONNECTING.value: (
+                palette.text_muted,
+                "desconectando…",
+            ),
             ConnectionState.NO_SIGNAL.value: (palette.red, "sem sinal"),
             ConnectionState.ERROR.value: (palette.red, "erro"),
         }

@@ -244,3 +244,107 @@ class TestRodasESuspensao:
 
         for roda in ("fl", "fr", "rl", "rr"):
             assert getattr(frame, f"tire_slip_{roda}") > 0.0
+
+
+class TestOsBytesQueFaltavam:
+    """Os 97 bytes que o leitor pulava, e a trava que os torna seguros.
+
+    Ler byte novo com base em palpite foi como este projeto gravou distância
+    0,0 m em toda volta de PS5 real (0x70 lido como melhor volta) e aderência
+    0% (0xE4, bloco zerado). A diferença agora é `orientation_is_valid`: o
+    quaternion de rotação tem norma 1 **por definição**, então o próprio dado
+    diz se a interpretação está certa — e nada no programa usa o bloco sem
+    consultar isso antes.
+    """
+
+    def test_le_o_quaternion_e_a_velocidade_angular(self) -> None:
+        pacote = bytearray(build_plaintext_packet())
+        struct.pack_into("<fff", pacote, 0x1C, 0.0, 0.3826834, 0.0)
+        struct.pack_into("<f", pacote, 0x28, 0.9238795)
+        struct.pack_into("<fff", pacote, 0x2C, 0.1, 0.5, -0.2)
+
+        frame = TelemetryFrame.from_bytes(bytes(pacote))
+
+        assert frame.rotation_j == pytest.approx(0.3826834, abs=1e-6)
+        assert frame.rotation_w == pytest.approx(0.9238795, abs=1e-6)
+        assert frame.angular_velocity_y == pytest.approx(0.5, abs=1e-6)
+
+    def test_quaternion_normalizado_valida(self) -> None:
+        pacote = bytearray(build_plaintext_packet())
+        struct.pack_into("<fff", pacote, 0x1C, 0.0, 0.3826834, 0.0)
+        struct.pack_into("<f", pacote, 0x28, 0.9238795)
+        struct.pack_into("<fff", pacote, 0x2C, 0.0, 0.5, 0.0)
+
+        frame = TelemetryFrame.from_bytes(bytes(pacote))
+
+        assert frame.orientation_is_valid
+        assert frame.yaw_rate_deg_s == pytest.approx(28.6479, abs=1e-3)
+
+    def test_norma_errada_derruba_o_canal_inteiro(self) -> None:
+        """Offset errado não pode virar gráfico.
+
+        A velocidade angular cai junto porque os dois blocos são vizinhos e vêm
+        da mesma hipótese de layout: quaternion fora do lugar significa bloco
+        seguinte fora do lugar também.
+        """
+        pacote = bytearray(build_plaintext_packet())
+        struct.pack_into("<ffff", pacote, 0x1C, 7.0, 3.0, -2.0, 11.0)
+        struct.pack_into("<fff", pacote, 0x2C, 0.0, 0.5, 0.0)
+
+        frame = TelemetryFrame.from_bytes(bytes(pacote))
+
+        assert not frame.orientation_is_valid
+        assert frame.yaw_rate_deg_s is None
+
+    def test_guinada_absurda_e_recusada(self) -> None:
+        """Segunda trava, caso a norma passe por acaso: 3 rad/s são 172°/s."""
+        pacote = bytearray(build_plaintext_packet())
+        struct.pack_into("<ffff", pacote, 0x1C, 0.0, 0.0, 0.0, 1.0)
+        struct.pack_into("<fff", pacote, 0x2C, 0.0, 40.0, 0.0)
+
+        frame = TelemetryFrame.from_bytes(bytes(pacote))
+
+        assert frame.orientation_is_valid
+        assert frame.yaw_rate_deg_s is None
+
+    def test_le_embreagem_transmissao_e_plano_da_pista(self) -> None:
+        pacote = bytearray(build_plaintext_packet())
+        struct.pack_into("<fff", pacote, 0x94, 0.0, 1.0, 0.0)
+        struct.pack_into("<f", pacote, 0xA0, 1.75)
+        struct.pack_into("<ffff", pacote, 0xF4, 0.8, 0.9, 5200.0, 82.5)
+
+        frame = TelemetryFrame.from_bytes(bytes(pacote))
+
+        assert frame.road_plane_y == pytest.approx(1.0)
+        assert frame.road_plane_distance == pytest.approx(1.75)
+        assert frame.clutch_pedal == pytest.approx(0.8)
+        assert frame.gearbox_rpm == pytest.approx(5200.0)
+
+    def test_o_bloco_sem_nome_e_lido_sem_ser_batizado(self) -> None:
+        """0xD4–0xF4 é onde um campo novo do GT7 apareceria primeiro.
+
+        Guardado com nome que não afirma nada — e guardado, porque o gravador de
+        sessão inclui todo campo do quadro, e é isso que permite investigar
+        depois sem precisar de outra captura.
+        """
+        pacote = bytearray(build_plaintext_packet())
+        struct.pack_into("<ffffffff", pacote, 0xD4, *[float(i) for i in range(8)])
+
+        frame = TelemetryFrame.from_bytes(bytes(pacote))
+
+        assert [getattr(frame, f"unknown_{i}") for i in range(8)] == [
+            float(i) for i in range(8)
+        ]
+
+    def test_fonte_sem_orientacao_reprova_em_vez_de_alegar(self) -> None:
+        """A sintética não preenche estes campos, e não pode fingir que sim.
+
+        Zero em todos dá norma zero, que não é rotação nenhuma — a validação
+        recusa sozinha, sem o gerador precisar saber que a trava existe.
+        """
+        from gt7core.telemetry.sources.mock import synthetic_lap
+
+        quadro = next(iter(synthetic_lap(lap_time_ms=90_000)))
+
+        assert not quadro.orientation_is_valid
+        assert quadro.yaw_rate_deg_s is None

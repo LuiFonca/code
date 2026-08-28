@@ -469,20 +469,19 @@ class TestAjustesDeLeitura:
     Nada disso quebra teste algum ao sumir — só a tela fica pior.
     """
 
-    def test_esterco_sai_preenchido_e_separado_da_guinada(self, montado) -> None:  # noqa: ANN001
-        """Dois canais, duas contas. Se o esterço copiasse a guinada, o gráfico
-        novo seria o antigo com outro rótulo — e ninguém veria."""
-        from gt7app.pages.analysis import CHART_STEER, CHART_YAW
+    def test_nao_ha_canal_de_volante(self) -> None:
+        """O gráfico de volante saiu, e não pode voltar por descuido.
 
-        window, _ = montado
-        pagina = window._pages[1]  # noqa: SLF001
-        pagina.refresh()
+        Ele era uma estimativa geométrica, e estimativa desenhada como canal
+        acaba lida como medição. A leitura dos 296 bytes inteiros fechou a
+        questão: **não há entrada de direção no pacote**, em offset nenhum.
+        Guinada — que é medida — continua no lugar dele.
+        """
+        from gt7app.pages import analysis
 
-        esterco = pagina._charts[CHART_STEER]._series[0].points  # noqa: SLF001
-        guinada = pagina._charts[CHART_YAW]._series[0].points  # noqa: SLF001
-
-        assert esterco
-        assert [v for _, v in esterco] != [v for _, v in guinada]
+        assert not hasattr(analysis, "CHART_STEER")
+        assert analysis.CHART_GRIP == 3
+        assert analysis.CHART_BOOST == 4
 
     def test_tabela_de_curvas_sem_raio_e_sem_saida(self, montado) -> None:  # noqa: ANN001
         from gt7app.pages.analysis import CORNER_COLUMNS

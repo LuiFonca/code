@@ -39,10 +39,13 @@ PROFILE_LAP_LIMIT = 20
 
 
 class DriverPage(Page):
+    # `page_id` continua "driver": ele é chave de navegação e de comando, e
+    # renomeá-lo quebraria atalho salvo sem ganhar nada — o que a pessoa lê é
+    # `nav_title`.
     page_id = "driver"
-    nav_title = "Piloto"
-    title = "Perfil do piloto"
-    subtitle = "O que se repete volta após volta"
+    nav_title = "Análise de stint"
+    title = "Análise de stint"
+    subtitle = "O que se repete volta após volta — consistência, evolução e desgaste"
 
     def __init__(self, core: CoreApplication, theme: Theme) -> None:
         super().__init__(core, theme)

@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import StrEnum
 
+from ...observability.metrics import TelemetryMetrics
 from ..protocol import TelemetryFrame
 
 _log = logging.getLogger(__name__)
@@ -38,6 +39,11 @@ class ConnectionState(StrEnum):
 
     DISCONNECTED = "disconnected"
     CONNECTING = "connecting"
+    DISCONNECTING = "disconnecting"
+    """Parada em curso. Estado próprio porque `stop()` bloqueia até a
+    thread de captura sair do `recvfrom` — até 3,5 s em que a janela fica
+    parada. Sem um estado para pintar, esse intervalo é indistinguível de
+    um programa travado."""
     RECEIVING = "receiving"
     NO_SIGNAL = "no_signal"
     ERROR = "error"
@@ -64,6 +70,10 @@ class TelemetrySource(ABC):
         self._frame_callbacks: list[FrameCallback] = []
         self._status_callbacks: list[StatusCallback] = []
         self._callback_lock = threading.RLock()
+        #: Contadores. A base ganha um próprio para que o contrato valha em
+        #: **toda** fonte: a UDP recebe o do núcleo, e mock e replay teriam
+        #: falha de consumidor invisível se o contador morasse só na UDP.
+        self.metrics = TelemetryMetrics()
 
     # ---------- registro ----------
 
@@ -111,6 +121,13 @@ class TelemetrySource(ABC):
             except Exception:
                 # Mesma regra do EventBus: um consumidor quebrado não derruba a
                 # captura. Sem isto, um bug na UI mataria a gravação da volta.
+                #
+                # Mas engolir em silêncio produz o pior sintoma que este
+                # programa sabe produzir: captura saudável — pacotes
+                # chegando, botão verde — e tela vazia, sem nada em lugar
+                # nenhum dizendo por quê. O contador é o que a barra de
+                # status usa para dizer.
+                self.metrics.record_callback_error()
                 _log.exception("callback de frame falhou")
 
     def _emit_status(self, state: ConnectionState, message: str = "") -> None:

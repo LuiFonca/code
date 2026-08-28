@@ -97,7 +97,11 @@ class Gt7UdpTelemetrySource(TelemetrySource):
         self._ps_ip = ps_ip
         self._send_port = send_port
         self._receive_port = receive_port
-        self.metrics = metrics or TelemetryMetrics()
+        # Sobrepõe o contador da base quando o núcleo passa o dele: os dois
+        # precisam ser **o mesmo objeto**, senão a barra de status lê um e a
+        # captura escreve no outro.
+        if metrics is not None:
+            self.metrics = metrics
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()

@@ -15,6 +15,7 @@ sugerida, farol alto). Não confundir com o `TelemetryPoint` do domínio: a
 conversão de um para o outro é trabalho da camada de aplicação.
 """
 
+import math
 import struct
 from dataclasses import dataclass
 
@@ -42,6 +43,14 @@ FLAG_HIGH_BEAM = 1 << 8
 FLAG_LOW_BEAM = 1 << 9
 FLAG_ASM_ACTIVE = 1 << 10
 FLAG_TCS_ACTIVE = 1 << 11
+
+#: Tolerância da norma do quaternion de orientação. Ver
+#: `TelemetryFrame.orientation_is_valid`.
+QUATERNION_TOLERANCE = 0.02
+
+#: Guinada acima disto, em rad/s, é ruído e não carro: 3 rad/s são 172°/s,
+#: mais que um rodopio. Serve de segunda trava caso a norma passe por acaso.
+MAX_PLAUSIBLE_YAW_RAD_S = 3.0
 
 
 def salsa20_decode(data: bytes) -> bytes | None:
@@ -137,6 +146,108 @@ class TelemetryFrame:
     flags: int
     car_id: int
 
+    # ---------- 0x1C–0x38: os 28 bytes que ninguém lia ----------
+    # Padrão 0,0 em todos: é o que faz uma fonte que não tem estes campos —
+    # a sintética, o replay de um arquivo antigo — **reprovar** na validação
+    # em vez de alegar orientação. Quaternion de norma zero não é rotação
+    # nenhuma, e `orientation_is_valid` diz isso sozinho.
+    rotation_i: float = 0.0
+    rotation_j: float = 0.0
+    rotation_k: float = 0.0
+    rotation_w: float = 0.0
+    """Quaternion de orientação do carro (0x1C–0x2C).
+
+    **Auto-validável**, e é por isso que este bloco pôde ser lido sem um
+    PS5 na mesa: um quaternion de rotação tem norma 1 por definição, então
+    o próprio dado diz se a interpretação está certa. Ver
+    `orientation_is_valid` — nada no programa usa estes campos sem
+    consultá-lo antes. Foi a falta desse tipo de trava que deixou 0x70 ser
+    lido como melhor volta e 0xE4 como escorregamento."""
+
+    angular_velocity_x: float = 0.0
+    angular_velocity_y: float = 0.0
+    angular_velocity_z: float = 0.0
+    """Velocidade angular em rad/s (0x2C–0x38). Y é a guinada — o giro em
+    torno do eixo vertical —, **medida na fonte** em vez de derivada da
+    trajetória. Continua hipótese até a sonda confirmar contra um console;
+    ver `tools/descobre_orientacao.py`."""
+
+    # ---------- 0x94–0xA4: plano da pista ----------
+    road_plane_x: float = 0.0
+    road_plane_y: float = 0.0
+    road_plane_z: float = 0.0
+    road_plane_distance: float = 0.0
+    """Normal do plano do asfalto sob o carro, e a distância até ele.
+
+    A normal dá inclinação e sobrelevação da pista no ponto — o que separa
+    "freou mal" de "freou numa descida"."""
+
+    # ---------- 0xF4–0x104: embreagem e transmissão ----------
+    clutch_pedal: float = 0.0
+    clutch_engagement: float = 0.0
+    gearbox_rpm: float = 0.0
+    transmission_top_speed: float = 0.0
+
+    unknown_0: float = 0.0
+    unknown_1: float = 0.0
+    unknown_2: float = 0.0
+    unknown_3: float = 0.0
+    unknown_4: float = 0.0
+    unknown_5: float = 0.0
+    unknown_6: float = 0.0
+    unknown_7: float = 0.0
+    """0xD4–0xF4, oito floats que a engenharia reversa dá como não usados.
+
+    Lidos mesmo assim, e **sem nome de verdade**: é aqui que um campo novo
+    de uma versão futura do GT7 apareceria primeiro. Nomear seria afirmar o
+    que não se sabe; `unknown_3` não afirma nada e continua sendo gravado no
+    arquivo de sessão, que é o que permite investigar depois.
+
+    Oito campos soltos, e não uma tupla, porque o gravador empacota cada
+    campo do quadro como um double — uma tupla o faria estourar, e a
+    alternativa seria uma lista de exceções para manter à mão."""
+
+    @property
+    def orientation_is_valid(self) -> bool:
+        """A orientação lida faz sentido como rotação?
+
+        Um quaternion de rotação tem norma 1 — é definição, não estatística.
+        Se os quatro floats de 0x1C não somarem 1 em quadrado, ou a
+        interpretação do offset está errada, ou o campo é outra coisa; nos
+        dois casos usar o valor seria desenhar um gráfico confiante sobre
+        lixo, que é exatamente o defeito que este projeto já cometeu duas
+        vezes.
+
+        A tolerância é folgada para float de 32 bits e apertada o bastante
+        para que dado arbitrário não passe por acaso.
+        """
+        norma_ao_quadrado = (
+            self.rotation_i ** 2
+            + self.rotation_j ** 2
+            + self.rotation_k ** 2
+            + self.rotation_w ** 2
+        )
+        return abs(norma_ao_quadrado - 1.0) < QUATERNION_TOLERANCE
+
+    @property
+    def yaw_rate_deg_s(self) -> float | None:
+        """Guinada medida, em °/s, ou `None` quando não dá para confiar.
+
+        `None` e não zero: zero afirmaria "o carro não girou", que seria uma
+        medição; a ausência é honesta e deixa quem chama cair na guinada
+        derivada da trajetória, que sempre funciona.
+
+        A validade da orientação serve de aval para a velocidade angular
+        porque os dois blocos são vizinhos e vêm da mesma hipótese de
+        layout: se o quaternion está no lugar certo, o bloco seguinte também
+        está. Norma errada derruba os dois de uma vez.
+        """
+        if not self.orientation_is_valid:
+            return None
+        if abs(self.angular_velocity_y) > MAX_PLAUSIBLE_YAW_RAD_S:
+            return None
+        return math.degrees(self.angular_velocity_y)
+
     @property
     def is_on_track(self) -> bool:
         return bool(self.flags & FLAG_CAR_ON_TRACK)
@@ -175,6 +286,12 @@ class TelemetryFrame:
         """
         position_x, position_y, position_z = struct.unpack("<fff", d[0x04:0x10])
         velocity_x, velocity_y, velocity_z = struct.unpack("<fff", d[0x10:0x1C])
+        # 0x1C–0x38: orientação e velocidade angular. Ver os campos.
+        rotation_i, rotation_j, rotation_k = struct.unpack("<fff", d[0x1C:0x28])
+        rotation_w = struct.unpack("<f", d[0x28:0x2C])[0]
+        angular_velocity_x, angular_velocity_y, angular_velocity_z = struct.unpack(
+            "<fff", d[0x2C:0x38]
+        )
         body_height = struct.unpack("<f", d[0x38:0x3C])[0]
         rpm = struct.unpack("<f", d[0x3C:0x40])[0]
         fuel = struct.unpack("<f", d[0x44:0x48])[0]
@@ -235,6 +352,18 @@ class TelemetryFrame:
         tire_slip_fl, tire_slip_fr, tire_slip_rl, tire_slip_rr = (
             abs(rps) * radius for rps, radius in zip(wheel_rps, tire_radius, strict=True)
         )
+        # 0x94–0xA4: plano do asfalto sob o carro.
+        road_plane_x, road_plane_y, road_plane_z = struct.unpack(
+            "<fff", d[0x94:0xA0]
+        )
+        road_plane_distance = struct.unpack("<f", d[0xA0:0xA4])[0]
+
+        # 0xD4–0xF4 sem nome; 0xF4–0x104 embreagem e transmissão.
+        desconhecidos = struct.unpack("<ffffffff", d[0xD4:0xF4])
+        clutch_pedal, clutch_engagement, gearbox_rpm, transmission_top_speed = (
+            struct.unpack("<ffff", d[0xF4:0x104])
+        )
+
         car_id = struct.unpack("<i", d[0x124:0x128])[0]
 
         return TelemetryFrame(
@@ -280,4 +409,27 @@ class TelemetryFrame:
             max_speed_kmh=max_speed_kmh,
             flags=flags,
             car_id=car_id,
+            rotation_i=rotation_i,
+            rotation_j=rotation_j,
+            rotation_k=rotation_k,
+            rotation_w=rotation_w,
+            angular_velocity_x=angular_velocity_x,
+            angular_velocity_y=angular_velocity_y,
+            angular_velocity_z=angular_velocity_z,
+            road_plane_x=road_plane_x,
+            road_plane_y=road_plane_y,
+            road_plane_z=road_plane_z,
+            road_plane_distance=road_plane_distance,
+            clutch_pedal=clutch_pedal,
+            clutch_engagement=clutch_engagement,
+            gearbox_rpm=gearbox_rpm,
+            transmission_top_speed=transmission_top_speed,
+            unknown_0=desconhecidos[0],
+            unknown_1=desconhecidos[1],
+            unknown_2=desconhecidos[2],
+            unknown_3=desconhecidos[3],
+            unknown_4=desconhecidos[4],
+            unknown_5=desconhecidos[5],
+            unknown_6=desconhecidos[6],
+            unknown_7=desconhecidos[7],
         )

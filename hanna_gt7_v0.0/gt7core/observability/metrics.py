@@ -26,6 +26,7 @@ class TelemetryStats:
     packets_invalid: int
     packets_dropped: int
     frames_emitted: int
+    callback_errors: int
     bytes_received: int
     uptime_s: float
     packets_per_second: float
@@ -63,6 +64,7 @@ class TelemetryMetrics:
         self._packets_invalid = 0
         self._packets_dropped = 0
         self._frames_emitted = 0
+        self._callback_errors = 0
         self._bytes_received = 0
         self._last_packet_at: float | None = None
 
@@ -73,6 +75,7 @@ class TelemetryMetrics:
             self._packets_invalid = 0
             self._packets_dropped = 0
             self._frames_emitted = 0
+            self._callback_errors = 0
             self._bytes_received = 0
             self._last_packet_at = None
 
@@ -96,6 +99,19 @@ class TelemetryMetrics:
         with self._lock:
             self._frames_emitted += 1
 
+    def record_callback_error(self) -> None:
+        """Um consumidor levantou exceção ao receber o quadro.
+
+        Contado, e não só registrado no log, porque este é o modo de falha
+        mais cruel do programa: a captura continua saudável — pacotes
+        chegando, contador subindo, botão verde — e **nenhum** quadro chega
+        à tela. O log tem a resposta e ninguém abre o log; um contador que
+        a barra de status sabe mostrar transforma tela vazia inexplicável
+        em "o consumidor está quebrado".
+        """
+        with self._lock:
+            self._callback_errors += 1
+
     def snapshot(self) -> TelemetryStats:
         with self._lock:
             now = time.monotonic()
@@ -105,6 +121,7 @@ class TelemetryMetrics:
                 packets_invalid=self._packets_invalid,
                 packets_dropped=self._packets_dropped,
                 frames_emitted=self._frames_emitted,
+                callback_errors=self._callback_errors,
                 bytes_received=self._bytes_received,
                 uptime_s=uptime,
                 packets_per_second=self._packets_received / uptime,

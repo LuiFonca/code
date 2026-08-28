@@ -30,7 +30,7 @@ from gt7core.analytics.aids import AIDS, aid_spans, unknown_bits, was_recorded
 from gt7core.analytics.braking import BrakingZone, detect_braking_zones
 from gt7core.analytics.corners import Corner, corner_at, detect_corners
 from gt7core.analytics.series import sector_boundaries_m
-from gt7core.analytics.steering import steering_wheel_series, yaw_rate_series
+from gt7core.analytics.steering import yaw_rate_series
 from gt7core.analytics.tyres import (
     MIN_SPEED_FOR_SLIP_KMH,
     WHEELS,
@@ -66,7 +66,7 @@ NUM_SECTORS = 3
 #: 500 linhas não diz qual gráfico é, e trocar dois por engano é um defeito que
 #: só aparece olhando a tela.
 CHART_SPEED, CHART_PEDALS, CHART_YAW = 0, 1, 2
-CHART_STEER, CHART_GRIP, CHART_BOOST = 3, 4, 5
+CHART_GRIP, CHART_BOOST = 3, 4
 
 #: Rótulo de cada roda no gráfico de aderência, na ordem de `WHEELS`.
 WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
@@ -75,13 +75,6 @@ WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
 #: escala colada no pico faz duas voltas parecidas parecerem diferentes.
 YAW_STEP_DEG = 30.0
 YAW_TOP_MIN_DEG = 60.0
-
-#: Degraus do eixo de volante, em graus **de giro do volante**. 90° é um
-#: quarto de volta, que é a unidade em que se pensa esterço na mão; com
-#: degrau de 90 o traço se lê sem contar linha, e o teto mínimo de 180° dá
-#: meia volta para cada lado, que cobre a maioria dos circuitos.
-STEER_STEP_DEG = 90.0
-STEER_TOP_MIN_DEG = 180.0
 
 #: Aderência em %, onde 100 é a roda girando na velocidade do carro.
 GRIP_STEP_PCT = 25.0
@@ -164,9 +157,12 @@ class AnalysisPage(Page):
             DistanceChart(
                 self.theme, "Pedais", unit="%", height=110, y_range=(0.0, 100.0)
             ),
-            # Guinada, e não "esterço": o pacote de 296 bytes do GT7 não
-            # transmite ângulo de volante. Ver `gt7core.analytics.steering` —
-            # o que dá para saber com certeza é quanto o carro girou, que é a
+            # Guinada, e não esterço. O GT7 **não transmite volante**, e a
+            # leitura dos 296 bytes inteiros confirmou: não há campo de
+            # entrada de direção em lugar nenhum do pacote. Houve aqui um
+            # gráfico de volante estimado por geometria; ele saiu a pedido,
+            # porque estimativa apresentada como canal acaba lida como
+            # medição. O que se mede é quanto o carro girou — que é a
             # pergunta por trás de olhar um canal de volante.
             DistanceChart(
                 self.theme,
@@ -175,18 +171,6 @@ class AnalysisPage(Page):
                 height=110,
                 y_step=YAW_STEP_DEG,
                 y_top_min=YAW_TOP_MIN_DEG,
-                y_symmetric=True,
-            ),
-            # Esterço logo abaixo da guinada porque o par se lê junto: guinada é
-            # o quanto o carro girou, esterço é o quanto se pediu que girasse.
-            # Onde os dois divergem está o subesterço.
-            DistanceChart(
-                self.theme,
-                "Volante estimado — giro  (+ direita)",
-                unit="°",
-                height=110,
-                y_step=STEER_STEP_DEG,
-                y_top_min=STEER_TOP_MIN_DEG,
                 y_symmetric=True,
             ),
             DistanceChart(
@@ -206,16 +190,11 @@ class AnalysisPage(Page):
                 y_top_min=BOOST_TOP_MIN_BAR,
             ),
         ]
-        for indice, chart in enumerate(self._charts):
+        for chart in self._charts:
             channels.add(chart)
             chart.hovered.connect(self._on_hover)
             chart.hover_left.connect(self._on_hover_left)
             chart.clicked.connect(self._on_click)
-            if indice == CHART_STEER:
-                # A ressalva mora colada no gráfico que ela qualifica. No rodapé
-                # da página ela seria lida depois de já se ter tirado conclusão
-                # do traço — que é o mesmo que não estar escrita.
-                channels.add(self._build_steer_hint())
 
         # Aviso do canal de escorregamento, logo abaixo do gráfico que ele
         # qualifica. Ver `_fill_grip_chart`.
@@ -347,35 +326,6 @@ class AnalysisPage(Page):
         self._cursor_hint.setWordWrap(True)
         self.content.addWidget(self._cursor_hint)
 
-    def _build_steer_hint(self) -> QLabel:
-        """A ressalva do canal de volante — sempre presente, nunca condicional.
-
-        Um aviso que aparecesse só às vezes ensinaria que, quando ele não está
-        lá, o número foi medido. Nenhum número deste gráfico é medido.
-
-        O texto é remontado a cada volta, e não fixo na construção: ele cita os
-        dois valores em vigor, e alguém que os ajuste em Configurações precisa
-        ver o eixo e a explicação concordarem.
-        """
-        self._steer_hint = QLabel("")
-        self._steer_hint.setWordWrap(True)
-        self._refresh_steer_hint()
-        return self._steer_hint
-
-    def _refresh_steer_hint(self) -> None:
-        veiculo = self.core.settings.vehicle
-        self._steer_hint.setText(
-            "O GT7 não transmite o volante. Este traço é a geometria da curva "
-            f"descrita, convertida com dois valores supostos: entre-eixos "
-            f"{veiculo.wheelbase_m:.2f} m e relação de direção "
-            f"{veiculo.steering_ratio:.1f}:1 (ajustáveis em Configurações). Os "
-            "dois só escalam o eixo — onde a mão entra, quanto tempo fica e "
-            "quantas correções teve não depende deles. É a direção geométrica: "
-            "no limite o volante gira mais que isto, porque o pneu trabalha com "
-            "ângulo de deriva, e num contra-esterço o traço marca o lado da "
-            "curva, não o lado para onde a mão foi."
-        )
-
     # ---------- dados ----------
 
     def refresh(self) -> None:
@@ -482,24 +432,6 @@ class AnalysisPage(Page):
                     [
                         (x_at.get(distancia, distancia), graus)
                         for distancia, graus in yaw_rate_series(points)
-                    ],
-                )
-            ]
-        )
-        veiculo = self.core.settings.vehicle
-        self._refresh_steer_hint()
-        self._charts[CHART_STEER].set_series(
-            [
-                Series(
-                    "esterço",
-                    palette.channel_steering,
-                    [
-                        (x_at.get(distancia, distancia), graus)
-                        for distancia, graus in steering_wheel_series(
-                            points,
-                            wheelbase_m=veiculo.wheelbase_m,
-                            steering_ratio=veiculo.steering_ratio,
-                        )
                     ],
                 )
             ]
