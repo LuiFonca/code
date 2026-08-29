@@ -108,6 +108,8 @@ class DistanceChart(QWidget):
         y_step: float | None = None,
         y_top_min: float | None = None,
         y_symmetric: bool = False,
+        y_anchor_zero: bool = True,
+        y_min_span: float | None = None,
         x_unit: str = "m",
     ) -> None:
         super().__init__()
@@ -136,6 +138,25 @@ class DistanceChart(QWidget):
         #: aderência) espelhar seria desperdiçar metade da altura, e por
         #: isso isto é opção e não regra.
         self._y_symmetric = y_symmetric
+        #: Ancorar o eixo no zero, ou deixá-lo flutuar com os dados.
+        #:
+        #: Ancorar é o padrão e está certo para velocidade, pedais e turbo: são
+        #: canais em que zero **é** uma referência — pedal solto, carro parado —
+        #: e a altura do traço no quadro significa alguma coisa.
+        #:
+        #: Em aderência e altura de suspensão zero não é referência nenhuma:
+        #: roda com 0% de aderência é roda que não gira, e 0 mm de altura é o
+        #: carro deitado no chão. Nenhum dos dois acontece, e forçar o zero para
+        #: dentro do quadro espreme os 10 ou 20 pontos onde a informação está
+        #: numa faixa de pixels — a linha vira uma reta e o canal, decoração.
+        #:
+        #: Sem âncora, `y_min_span` é o que impede o efeito contrário: uma volta
+        #: sem nada acontecendo tem os dados numa faixa estreitíssima, e sem um
+        #: piso de amplitude o ruído seria esticado até a altura toda do quadro
+        #: e leria como drama. É a mesma preocupação da âncora, resolvida do
+        #: jeito que cabe num canal cujo zero não diz nada.
+        self._y_anchor_zero = y_anchor_zero
+        self._y_min_span = y_min_span
         self._series: list[Series] = []
         # Faixa vertical memorizada. Recalculada só quando as séries mudam —
         # ver a nota em `_y_bounds`.
@@ -291,13 +312,22 @@ class DistanceChart(QWidget):
 
         low, high = min(values), max(values)
 
-        # **Zero sempre no eixo.** Sem isso, uma volta cuja velocidade varia de
-        # 180 a 200 km/h desenha uma serra dramática entre esses dois valores, e
-        # os 20 km/h de variação ocupam a altura toda. O olho lê inclinação, não
-        # números: escala flutuante transforma ruído em drama e faz duas voltas
-        # parecidas parecerem diferentes. Ancorar em zero devolve a proporção.
-        low = min(0.0, low)
-        high = max(0.0, high)
+        # **Zero no eixo, por padrão.** Sem isso, uma volta cuja velocidade
+        # varia de 180 a 200 km/h desenha uma serra dramática entre esses dois
+        # valores, e os 20 km/h de variação ocupam a altura toda. O olho lê
+        # inclinação, não números: escala flutuante transforma ruído em drama e
+        # faz duas voltas parecidas parecerem diferentes.
+        #
+        # Só que a âncora pressupõe que zero **seja** uma referência, e em
+        # aderência e altura de suspensão não é: nem uma roda para de girar nem
+        # o carro deita no chão. Ali a âncora causava o defeito oposto — toda a
+        # informação espremida numa faixa fina de pixels. Ver `_y_anchor_zero`,
+        # onde `y_min_span` faz o papel de guarda contra o drama.
+        if self._y_anchor_zero:
+            low = min(0.0, low)
+            high = max(0.0, high)
+        else:
+            return self._floating_bounds(low, high)
 
         if self._y_symmetric:
             extremo = max(abs(low), abs(high))
@@ -318,6 +348,31 @@ class DistanceChart(QWidget):
         # Uma folga de 8% no topo impede que o pico encoste na borda, onde
         # ficaria visualmente cortado. O piso fica colado no zero de propósito.
         return low, high + (high - low) * 0.08
+
+    def _floating_bounds(self, low: float, high: float) -> tuple[float, float]:
+        """Faixa que segue os dados, com amplitude mínima e folga nas duas pontas.
+
+        A amplitude mínima é o que substitui a âncora no zero. Numa volta em que
+        as quatro rodas ficam entre 99% e 101% de aderência, a faixa medida tem
+        2 pontos; desenhada sozinha, essa oscilação de nada preencheria o quadro
+        inteiro e pareceria um problema. Com `y_min_span=20`, ela desenha como o
+        que é — uma linha quase reta —, e uma volta com um travamento de 60%
+        expande o quadro sozinha, porque aí a faixa medida é maior que o piso.
+
+        A faixa cresce em torno do **centro** dos dados, e não a partir do zero:
+        é o que mantém o traço no meio do quadro em vez de encostado numa borda.
+        """
+        span = high - low
+        piso = self._y_min_span or 0.0
+        if span < piso:
+            centro = (high + low) / 2.0
+            low, high = centro - piso / 2.0, centro + piso / 2.0
+            span = piso
+        if span < 1e-9:
+            return low - 0.5, high + 0.5
+
+        folga = span * 0.08
+        return low - folga, high + folga
 
     def _x_pixel(self, x_value: float, rect: QRectF) -> float:
         """Valor do eixo X → pixel. **Uma** fórmula, quatro chamadores.
