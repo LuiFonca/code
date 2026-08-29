@@ -81,6 +81,15 @@ class Card(QFrame):
             item = self._layout.takeAt(first)
             widget = item.widget() if item is not None else None
             if widget is not None:
+                # `setParent(None)` **antes** do `deleteLater()`, e é a linha
+                # que conserta um defeito visível: `takeAt` tira o widget do
+                # layout mas não do cartão, e `deleteLater` só agenda a
+                # destruição. Entre uma coisa e outra o rótulo continua filho e
+                # continua pintando na última geometria que teve — de modo que
+                # cada reconstrução da tela empilhava mais uma camada de texto
+                # por cima da anterior. Com oito voltas na Análise de stint o
+                # cartão "A trabalhar" virava um borrão ilegível.
+                widget.setParent(None)
                 widget.deleteLater()
 
 
