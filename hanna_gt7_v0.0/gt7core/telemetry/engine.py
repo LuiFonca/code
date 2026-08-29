@@ -115,6 +115,10 @@ class TelemetryEngine:
         self._last_lap_count: int | None = None
         self._last_elapsed_ms: float | None = None
         self._last_speed_ms: float | None = None
+        self._last_packet_id: int | None = None
+        #: Quadros gastos em pausa/carregamento nesta volta. Descontados do
+        #: tempo decorrido — ver `_elapsed_ms`.
+        self._paused_ticks = 0
 
         self._prev_velocity_x: float | None = None
         self._prev_velocity_z: float | None = None
@@ -138,6 +142,8 @@ class TelemetryEngine:
         self._last_elapsed_ms = None
         self._last_speed_ms = None
         self._lap_start_packet_id = None
+        self._last_packet_id = None
+        self._paused_ticks = 0
         self._prev_velocity_x = None
         self._prev_velocity_z = None
         self._prev_velocity_ms = None
@@ -171,8 +177,13 @@ class TelemetryEngine:
             # Contador reiniciou (sessão nova, ou o jogo voltou ao menu). Sem
             # isto, o tempo ficaria negativo e a integração pararia em silêncio.
             self._lap_start_packet_id = frame.packet_id
+            self._paused_ticks = 0
             ticks = 0
-        return ticks * self._ms_per_tick
+        # O tick do GT7 **continua correndo com o jogo pausado**. Sem
+        # descontar, despausar fazia o tempo da volta saltar o tamanho da
+        # pausa de uma vez: o delta ao vivo dava um pulo que não veio de
+        # pilotagem nenhuma, e a distância integrada herdava o erro.
+        return max(0, ticks - self._paused_ticks) * self._ms_per_tick
 
     def on_frame(self, frame: TelemetryFrame) -> None:
         """Processa um quadro. Chamado ~60x/s — tudo aqui precisa ser barato."""
@@ -182,15 +193,26 @@ class TelemetryEngine:
             self._finalize_lap(frame.last_lap_ms)
             # O relógio da volta nova começa aqui, não no início da sessão.
             self._lap_start_packet_id = frame.packet_id
+            # A pausa da volta anterior não é dívida da volta nova.
+            self._paused_ticks = 0
 
         elapsed_ms = self._elapsed_ms(frame)
 
         # Pausado ou carregando: o tempo do jogo não corre, então acumular
         # amostras inflaria a distância e distorceria o delta. O contador de
         # volta ainda é atualizado, para não perder a virada.
+        #
+        # O tick, porém, **corre na pausa** — é contador de quadros do jogo,
+        # não de simulação. Cada quadro pausado é somado a `_paused_ticks` e
+        # descontado em `_elapsed_ms`, senão despausar faz o tempo da volta
+        # saltar o tamanho da pausa de uma vez.
         if frame.is_paused or frame.is_loading:
+            if self._last_packet_id is not None:
+                salto = frame.packet_id - self._last_packet_id
+                if salto > 0:
+                    self._paused_ticks += salto
+            self._last_packet_id = frame.packet_id
             self._last_lap_count = frame.lap_count
-            self._last_elapsed_ms = elapsed_ms
             return
 
         g_lateral, g_longitudinal = self._compute_g_forces(frame, elapsed_ms)
@@ -202,6 +224,7 @@ class TelemetryEngine:
         self._last_lap_count = frame.lap_count
         self._last_elapsed_ms = elapsed_ms
         self._last_speed_ms = frame.speed_kmh / 3.6
+        self._last_packet_id = frame.packet_id
 
         self._bus.publish(TelemetryReceived(point=point, frame=frame))
 

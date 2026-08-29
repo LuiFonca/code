@@ -108,12 +108,15 @@ class TestDistanciaChegaNaTela:
 class TestGraficoAoVivo:
     """A página, alimentada pelo motor real."""
 
-    def test_o_traco_cobre_uma_faixa_de_pista(self, tmp_path) -> None:  # noqa: ANN001
+    def test_o_traco_cobre_uma_faixa_de_tempo(self, tmp_path) -> None:  # noqa: ANN001
         """Da amostra ao pixel: a série precisa ter largura.
 
-        Verifica o contrato que o usuário enxerga — o traço cobre um trecho de
-        pista — em vez de detalhes internos do widget. Com o defeito, `min` e
-        `max` do eixo coincidiam e a largura era zero.
+        Verifica o contrato que o usuário enxerga — o traço cobre um trecho
+        de tempo — em vez de detalhes internos do widget. Com o defeito,
+        `min` e `max` do eixo coincidiam e a largura era zero.
+
+        O eixo do painel passou de distância para tempo: ao vivo a pergunta
+        é sempre "o que acabou de acontecer".
         """
         from PySide6.QtWidgets import QApplication
 
@@ -141,16 +144,22 @@ class TestGraficoAoVivo:
             trilha = live._trail  # noqa: SLF001
             assert len(trilha) > QUADROS * 0.9, "o rastro não acumulou amostras"
 
-            largura = trilha[-1][0] - trilha[0][0]
-            assert largura > 500.0, (
-                f"o traço cobre apenas {largura:.1f} m — os pontos estão "
+            largura_s = trilha[-1][1] - trilha[0][1]
+            assert largura_s > 1.0, (
+                f"o traço cobre apenas {largura_s:.1f} s — os pontos estão "
                 "empilhados no mesmo ponto do eixo"
             )
 
             serie = live._speed_chart._series  # noqa: SLF001
             assert serie, "o gráfico de velocidade ficou sem série"
             xs = [x for x, _ in serie[0].points]
-            assert max(xs) - min(xs) > 500.0, "a série tem largura zero no eixo"
+            assert max(xs) - min(xs) > 1.0, "a série tem largura zero no eixo"
+
+            # A janela é **fixa**: 30 s sempre, mesmo com 2 s de dado. É o
+            # que faz ausência de telemetria aparecer como vazio em vez de
+            # ser comprimida para fora de vista.
+            grafico = live._speed_chart  # noqa: SLF001
+            assert grafico._x_span == pytest.approx(30.0)  # noqa: SLF001
             window.close()
         finally:
             core.close()

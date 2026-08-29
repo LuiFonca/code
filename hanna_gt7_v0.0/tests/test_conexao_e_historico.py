@@ -21,9 +21,13 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from gt7app.application import build_core, build_gui  # noqa: E402
 from gt7app.pages.history import CAR_COLUMN, HISTORY_COLUMNS  # noqa: E402
 from gt7core.config.settings import Settings  # noqa: E402
-from gt7core.domain.models import Lap  # noqa: E402
+from gt7core.domain.models import Lap, Track  # noqa: E402
+from gt7core.telemetry.engine import LapBoundaryDetected  # noqa: E402
 from gt7core.telemetry.sources.base import ConnectionState  # noqa: E402
-from gt7core.telemetry.sources.mock import synthetic_lap  # noqa: E402
+from gt7core.telemetry.sources.mock import (  # noqa: E402
+    synthetic_lap,
+    synthetic_session,
+)
 from tests.conftest import dispose_window  # noqa: E402
 
 
@@ -341,6 +345,111 @@ class TestOTesteNaoDisputaAPortaComACaptura:
 
             assert sondou, "a sonda devia ter rodado"
 
+            dispose_window(window)
+        finally:
+            core.close()
+
+
+class TestGravacaoDeVoltas:
+    """As voltas param de ser gravadas sem que nada na tela diga por quê.
+
+    O portão é `SessionManager.can_persist`, que exige pista definida. Com o
+    autoconectar disparando na abertura — quando o campo de pista nasce vazio
+    de propósito — ninguém chamava `set_track`, e toda volta virava
+    `LapDiscarded("nenhuma pista definida")`. Em silêncio: o motivo já vinha
+    pronto no evento e nenhuma tela o exibia.
+    """
+
+    def test_escolher_a_pista_no_campo_define_a_sessao(
+        self, app: QApplication, tmp_path  # noqa: ANN001, ARG002
+    ) -> None:
+        """A pista era lida **só** no instante do clique em Conectar.
+
+        Escolher no dropdown depois disso não fazia nada — o combo não tinha
+        ligação nenhuma, e nada além de `_on_start` lia aquele campo.
+        """
+        core = build_core(_settings(tmp_path))
+        try:
+            window = build_gui(core)
+            live = window._pages[0]  # noqa: SLF001
+
+            assert core.session_manager.track is None
+
+            live._track_input.setCurrentText("Interlagos")  # noqa: SLF001
+            live._on_track_chosen()  # noqa: SLF001
+
+            assert core.session_manager.track is not None
+            assert core.session_manager.track.name == "Interlagos"
+            assert core.session_manager.can_persist
+
+            dispose_window(window)
+        finally:
+            core.close()
+
+    def test_a_primeira_volta_com_pista_escolhida_e_gravada(
+        self, app: QApplication, tmp_path  # noqa: ANN001, ARG002
+    ) -> None:
+        """Com pista definida, a volta 1 grava — não só a partir da segunda."""
+        core = build_core(_settings(tmp_path))
+        try:
+            track_id = core.tracks.get_or_create("Interlagos")
+            core.session_manager.set_track(Track(id=track_id, name="Interlagos"))
+            core.start()
+
+            for frame in synthetic_session(lap_count=2):
+                core.engine.on_frame(frame)
+
+            gravadas = core.laps.get_by_track(track_id)
+            core.stop()
+
+            assert gravadas, "nenhuma volta foi gravada"
+        finally:
+            core.close()
+
+    def test_a_deteccao_de_pista_roda_antes_do_gravador(
+        self, app: QApplication, tmp_path  # noqa: ANN001, ARG002
+    ) -> None:
+        """Ordem de inscrição é a garantia — o barramento despacha nela.
+
+        A detecção vinha pelo adaptador Qt, que entrega um turno de evento
+        adiante: o gravador já tinha decidido descartar quando a pista era
+        aplicada, e a primeira volta de toda sessão se perdia.
+        """
+        core = build_core(_settings(tmp_path))
+        try:
+            handlers = core.bus._handlers[LapBoundaryDetected]  # noqa: SLF001
+            nomes = [getattr(h, "__name__", type(h).__name__) for h in handlers]
+
+            assert "nomear_pista_pelo_comprimento" in nomes
+            detector = nomes.index("nomear_pista_pelo_comprimento")
+            gravador = next(
+                i for i, n in enumerate(nomes) if "lap_boundary" in n
+            )
+            assert detector < gravador, f"ordem errada: {nomes}"
+        finally:
+            core.close()
+
+    def test_o_aviso_aparece_quando_a_gravacao_esta_bloqueada(
+        self, app: QApplication, tmp_path  # noqa: ANN001, ARG002
+    ) -> None:
+        """Sem isto o programa sabia o motivo e guardava para si."""
+        core = build_core(_settings(tmp_path))
+        try:
+            window = build_gui(core)
+            live = window._pages[0]  # noqa: SLF001
+
+            core.start()
+            live._refresh_recording_hint()  # noqa: SLF001
+
+            assert live._recording_badge.isVisibleTo(live)  # noqa: SLF001
+            assert "NÃO ESTÃO SENDO GRAVADAS" in live._recording_badge.text()  # noqa: SLF001
+
+            live._track_input.setCurrentText("Interlagos")  # noqa: SLF001
+            live._on_track_chosen()  # noqa: SLF001
+
+            assert not live._recording_badge.isVisibleTo(live)  # noqa: SLF001
+
+            core.stop()
             dispose_window(window)
         finally:
             core.close()

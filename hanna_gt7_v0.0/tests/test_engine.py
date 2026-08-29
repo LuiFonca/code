@@ -323,3 +323,49 @@ class TestPipelineComFonteSintetica:
         assert len(completed) == 2
         assert all(event.lap_time_ms > 0 for event in completed)
         assert all(len(event.points) > 5000 for event in completed)
+
+
+class TestPausaNaoContaTempo:
+    """O tick do GT7 corre com o jogo pausado — o relógio da volta não pode.
+
+    `packet_id` é contador de **quadros do jogo**, e o jogo continua produzindo
+    quadros na tela de pausa. O motor já descartava esses quadros (não vira
+    amostra), mas o tempo decorrido é derivado do tick, então despausar fazia o
+    relógio saltar o tamanho da pausa de uma vez: o delta ao vivo dava um pulo
+    que não veio de pilotagem nenhuma, e a distância integrada herdava o erro.
+    """
+
+    def _quadros(self, motor, inicio: int, quantos: int, *, pausado: bool):  # noqa: ANN001, ANN202
+        flags = FLAG_CAR_ON_TRACK | (FLAG_PAUSED if pausado else 0)
+        for i in range(quantos):
+            motor.on_frame(
+                make_frame(
+                    packet_id=inicio + i,
+                    lap_count=1,
+                    speed_kmh=180.0,
+                    flags=flags,
+                )
+            )
+
+    def test_o_tempo_ignora_os_quadros_pausados(self) -> None:
+        bus = EventBus()
+        motor = TelemetryEngine(bus, sample_rate_hz=60)
+
+        self._quadros(motor, 0, 60, pausado=False)      # 1 s rodando
+        self._quadros(motor, 60, 600, pausado=True)     # 10 s pausado
+        self._quadros(motor, 660, 60, pausado=False)    # mais 1 s rodando
+
+        pontos = list(motor._buffer)  # noqa: SLF001
+        assert pontos, "nenhuma amostra sobreviveu"
+        # Dois segundos de pilotagem, não doze.
+        assert pontos[-1].elapsed_ms == pytest.approx(2000, abs=40)
+
+    def test_sem_pausa_o_tempo_e_o_de_sempre(self) -> None:
+        """A correção não pode encurtar uma volta que nunca pausou."""
+        bus = EventBus()
+        motor = TelemetryEngine(bus, sample_rate_hz=60)
+
+        self._quadros(motor, 0, 120, pausado=False)
+
+        pontos = list(motor._buffer)  # noqa: SLF001
+        assert pontos[-1].elapsed_ms == pytest.approx(1983, abs=40)

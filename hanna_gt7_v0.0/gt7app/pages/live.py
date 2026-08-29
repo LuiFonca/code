@@ -50,15 +50,15 @@ from .base import Page
 if TYPE_CHECKING:  # pragma: no cover - só para o verificador
     from gt7voice import VoiceRadio
 
-# Quantos metros de rastro manter nas tiras ao vivo. Uma volta inteira deixaria
-# o gráfico ilegível; ~800 m é o horizonte que o piloto consegue relacionar com
-# onde está.
-TRAIL_WINDOW_M = 800.0
-
-#: Janela do eixo de tempo, em segundos. Fixa, e não "o que couber no rastro":
-#: com janela elástica a escala horizontal mudava a cada quadro e o traço
-#: parecia acelerar e desacelerar sozinho. Trinta segundos é o horizonte que o
-#: piloto consegue relacionar com o que acabou de fazer.
+#: Janela do painel ao vivo, em segundos. **Fixa**, e não "o que couber no
+#: rastro": com janela elástica a escala horizontal muda a cada quadro, o
+#: traço parece acelerar e desacelerar sozinho, e — o que mais importa — um
+#: trecho sem telemetria é comprimido para fora de vista em vez de aparecer
+#: como vazio. Ausência de dado é dado.
+#:
+#: Trinta segundos é o horizonte que o piloto relaciona com o que acabou de
+#: fazer. O eixo por distância saiu do painel: ao vivo a pergunta é sempre
+#: "o que acabou de acontecer", e distância não responde isso.
 TRAIL_WINDOW_S = 30.0
 
 REPAINT_INTERVAL_MS = 66  # ~15 Hz
@@ -85,7 +85,6 @@ class LivePage(Page):
     ) -> None:
         self._vm = view_model
         self._trail: list[tuple[float, float, float, float, float]] = []
-        self._x_mode = "distance"
         self._pending_repaint = False
         super().__init__(core, theme)
         self._connect()
@@ -111,6 +110,15 @@ class LivePage(Page):
         self.content.addWidget(self._synthetic_badge)
         self._update_synthetic_badge()
 
+        # Aviso de gravação bloqueada. O `SessionManager` já publicava
+        # `LapDiscarded` com o motivo, e **ninguém mostrava** — o programa
+        # sabia dizer "nenhuma pista definida" e guardava para si enquanto
+        # o piloto rodava uma sessão inteira que não seria gravada.
+        self._recording_badge = Badge("")
+        self._recording_badge.set_color(self.theme.palette.red)
+        self._recording_badge.setVisible(False)
+        self.content.addWidget(self._recording_badge)
+
         self._grid = MetricGrid(columns=7)
         for key, label, unit in (
             ("speed", "Velocidade", "km/h"),
@@ -124,7 +132,7 @@ class LivePage(Page):
             self._grid.add_card(key, MetricCard(label, unit))
         self.content.addWidget(self._grid)
 
-        traces = Card("Últimos 800 metros")
+        traces = Card(f"Últimos {TRAIL_WINDOW_S:.0f} segundos")
         self._speed_chart = DistanceChart(
             self.theme,
             "Velocidade",
@@ -136,6 +144,12 @@ class LivePage(Page):
         self._pedals_chart = DistanceChart(
             self.theme, "Pedais", unit="%", height=120, y_range=(0.0, 100.0)
         )
+        # Segundos, sempre. O painel perdeu o seletor de eixo — ao vivo a
+        # pergunta é "o que acabou de acontecer", e distância não responde.
+        for chart in (self._speed_chart, self._pedals_chart):
+            chart.set_x_unit("s")
+        self._apply_time_window()
+
         traces.add(self._speed_chart)
         traces.add(self._pedals_chart)
         self.content.addWidget(traces)
@@ -179,15 +193,13 @@ class LivePage(Page):
         # detecção automática não está funcionando".
         self._track_input.setCurrentIndex(-1)
         self._track_input.setCurrentText("")
-
-        # Eixo X: distância ou tempo. Não é preferência estética — são duas
-        # perguntas. Por distância, "onde na pista"; duas voltas se sobrepõem
-        # no mesmo ponto do traçado mesmo com ritmos diferentes. Por tempo,
-        # "quanto tempo levou"; é o que revela quanto uma freada custou em
-        # segundos, que a distância comprime.
-        self._x_selector = QComboBox()
-        self._x_selector.addItems(["Eixo: distância", "Eixo: tempo"])
-        self._x_selector.currentIndexChanged.connect(self._on_x_mode)
+        # `activated` e não `currentTextChanged`: aquele dispara só por ação
+        # de quem usa o programa, este dispararia também quando o código
+        # repopula a lista — e aí recarregar as pistas aplicaria uma pista.
+        self._track_input.activated.connect(self._on_track_chosen)
+        editor_pista = self._track_input.lineEdit()
+        if editor_pista is not None:
+            editor_pista.editingFinished.connect(self._on_track_chosen)
 
         # O IP fica **à esquerda do botão**, colado nele: o botão diz o estado
         # da conexão pela cor, e o endereço diz com quem. Separados, "conectado"
@@ -209,7 +221,6 @@ class LivePage(Page):
 
         layout.addWidget(QLabel("Pista:"))
         layout.addWidget(self._track_input)
-        layout.addWidget(self._x_selector)
         layout.addWidget(self._ps_ip_label)
         layout.addWidget(self._start_button)
         layout.addWidget(self._stop_button)
@@ -230,19 +241,6 @@ class LivePage(Page):
         ip = telemetry.ps_ip.strip()
         self._ps_ip_label.setText(f"PS5: {ip}" if ip else "PS5: sem IP configurado")
 
-    def _x_of(self, row: tuple[float, float, float, float, float]) -> float:
-        """Qual coluna do rastro vira o eixo X."""
-        return row[1] if self._x_mode == "time" else row[0]
-
-    def _on_x_mode(self, index: int) -> None:
-        self._x_mode = "time" if index == 1 else "distance"
-        unidade = "s" if self._x_mode == "time" else "m"
-        for chart in (self._speed_chart, self._pedals_chart):
-            chart.set_x_unit(unidade)
-        # Redesenha já: esperar o próximo quadro deixaria o gráfico com o eixo
-        # novo e os dados velhos por até 66 ms, o que pisca.
-        self._pending_repaint = True
-        self._repaint_traces()
 
     def _connect_radio(self) -> None:
         """Liga o detector do núcleo ao engenheiro, passando pela thread da UI.
@@ -470,13 +468,57 @@ class LivePage(Page):
             return ""
         return nome
 
-    def _on_start(self) -> None:
-        name = self._resolve_track_name()
-        if name:
-            track_id = self.core.tracks.get_or_create(name)
-            self.core.session_manager.set_track(Track(id=track_id, name=name))
+    def _apply_track_from_field(self) -> bool:
+        """Leva o que está escrito no campo para a sessão. Devolve se aplicou.
+
+        Existe como método próprio, e ligado ao sinal do combo, porque a
+        pista **só** era lida no instante do clique em Conectar. Com o
+        autoconectar disparando na abertura — quando o campo nasce vazio de
+        propósito — ninguém mais chamava `set_track`, e sem pista o
+        `SessionManager` bloqueia a gravação: toda volta virava
+        `LapDiscarded("nenhuma pista definida")`, em silêncio.
+
+        Escolher a pista no meio da sessão passa a valer, que é o que
+        qualquer um espera de um campo que oferece uma lista.
+        """
+        nome = self._resolve_track_name()
+        if not nome:
+            return False
+
+        track_id = self.core.tracks.get_or_create(nome)
+        mudou = self.core.session_manager.set_track(Track(id=track_id, name=nome))
+        if mudou:
             self._reload_tracks()
-            self._track_input.setCurrentText(name)
+            self._track_input.setCurrentText(nome)
+        self._refresh_recording_hint()
+        return True
+
+    def _refresh_recording_hint(self) -> None:
+        """Mostra, na tela, se a volta que fechar agora será gravada.
+
+        A regra vive no `SessionManager` e o motivo já vinha pronto em
+        `blocked_reason`; o que faltava era alguém exibi-lo. Sem isto, uma
+        sessão inteira pode ser rodada e descartada sem um sinal — foi
+        exatamente o que aconteceu.
+
+        Só aparece com a captura de pé: parado, "não vai gravar" é óbvio e o
+        aviso viraria mobília que se aprende a ignorar.
+        """
+        motivo = self.core.session_manager.blocked_reason
+        mostrar = bool(motivo) and self.core.source.is_running
+        if mostrar:
+            self._recording_badge.setText(
+                f"VOLTAS NÃO ESTÃO SENDO GRAVADAS — {motivo}. "
+                "Escolha a pista no campo acima."
+            )
+        self._recording_badge.setVisible(mostrar)
+
+    def _on_track_chosen(self) -> None:
+        """O campo de pista mudou por ação de quem usa o programa."""
+        self._apply_track_from_field()
+
+    def _on_start(self) -> None:
+        self._apply_track_from_field()
 
         self._trail.clear()
         self.core.start()
@@ -488,6 +530,7 @@ class LivePage(Page):
         self._update_synthetic_badge()
         self._start_button.setEnabled(False)
         self._stop_button.setEnabled(True)
+        self._refresh_recording_hint()
 
     def _on_track_candidates(self, names: list[str]) -> None:
         """Mostra o que o comprimento da volta sugere.
@@ -544,6 +587,7 @@ class LivePage(Page):
         self._start_button.setEnabled(True)
         self._paint_connection(ConnectionState.DISCONNECTED.value)
         self._status.setText("Parado")
+        self._refresh_recording_hint()
 
     # ---------- reação ----------
 
@@ -581,13 +625,30 @@ class LivePage(Page):
         if len(self._trail) > 1 and self._trail[-1][1] < self._trail[-2][1]:
             self._trail = self._trail[-1:]
 
-        corte_m = point.distance_m - TRAIL_WINDOW_M
+        # Corte só por **tempo**: o painel mede segundos, e cortar também por
+        # distância descartaria amostras dentro da janela sempre que o carro
+        # estivesse rápido — janela de 30 s que às vezes guarda 12 não é
+        # janela de 30 s.
         corte_s = point.elapsed_ms / 1000.0 - TRAIL_WINDOW_S
-        if self._trail[0][0] < corte_m or self._trail[0][1] < corte_s:
-            self._trail = [
-                row for row in self._trail if row[0] >= corte_m and row[1] >= corte_s
-            ]
+        if self._trail[0][1] < corte_s:
+            self._trail = [row for row in self._trail if row[1] >= corte_s]
         self._pending_repaint = True
+
+    def _apply_time_window(self) -> None:
+        """Ancora os dois gráficos nos últimos N segundos, sempre.
+
+        A janela termina no instante mais recente que chegou e recua N
+        segundos — mesmo que não haja dado para preencher. Sem isso o eixo
+        seguia os dados: nos primeiros instantes de captura ele media 1 s,
+        depois 2, depois 3, e o traço percorria a largura toda enquanto
+        existia um piscar de dado. A escala mudava embaixo do olho a cada
+        repintura, e um trecho sem telemetria — o que mais importa notar —
+        era comprimido para fora de vista em vez de aparecer como vazio.
+        """
+        fim = self._trail[-1][1] if self._trail else 0.0
+        janela = (fim - TRAIL_WINDOW_S, fim)
+        for chart in (self._speed_chart, self._pedals_chart):
+            chart.set_x_window(janela)
 
     def _repaint_traces(self) -> None:
         if not self._pending_repaint:
@@ -595,12 +656,13 @@ class LivePage(Page):
         self._pending_repaint = False
 
         palette = self.theme.palette
+        self._apply_time_window()
         self._speed_chart.set_series(
             [
                 Series(
                     "vel",
                     palette.channel_speed,
-                    [(self._x_of(row), row[2]) for row in self._trail],
+                    [(row[1], row[2]) for row in self._trail],
                 )
             ]
         )
@@ -609,12 +671,12 @@ class LivePage(Page):
                 Series(
                     "acel",
                     palette.channel_throttle,
-                    [(self._x_of(row), row[3]) for row in self._trail],
+                    [(row[1], row[3]) for row in self._trail],
                 ),
                 Series(
                     "freio",
                     palette.channel_brake,
-                    [(self._x_of(row), row[4]) for row in self._trail],
+                    [(row[1], row[4]) for row in self._trail],
                 ),
             ]
         )

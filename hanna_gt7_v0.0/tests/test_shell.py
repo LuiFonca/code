@@ -511,21 +511,23 @@ class TestPausaCongelaOsNumeros:
 
 
 class TestEixoPorTempo:
-    def test_o_seletor_troca_a_unidade_dos_graficos(self, shell) -> None:  # noqa: ANN001
+    def test_o_painel_ao_vivo_e_sempre_em_segundos(self, shell) -> None:  # noqa: ANN001
+        """O seletor de eixo saiu do painel, e a janela é fixa.
+
+        Ao vivo a pergunta é sempre "o que acabou de acontecer", e distância não
+        responde isso. O que ficou é uma janela de tempo **fixa**: com o eixo
+        seguindo os dados, os primeiros instantes de captura desenhavam 1 s,
+        depois 2, depois 3 — a escala mudava embaixo do olho e um trecho sem
+        telemetria era comprimido para fora de vista em vez de aparecer vazio.
+        """
         window, _core, app = shell
         live = window._pages[0]  # noqa: SLF001
         window._activate(0)  # noqa: SLF001
         app.processEvents()
 
-        live._x_selector.setCurrentIndex(1)  # noqa: SLF001
-        app.processEvents()
-
-        assert live._x_mode == "time"  # noqa: SLF001
+        assert not hasattr(live, "_x_selector")
         assert live._speed_chart._x_unit == "s"  # noqa: SLF001
         assert live._pedals_chart._x_unit == "s"  # noqa: SLF001
-
-        live._x_selector.setCurrentIndex(0)  # noqa: SLF001
-        assert live._speed_chart._x_unit == "m"  # noqa: SLF001
 
     def test_na_analise_o_cursor_encontra_a_amostra_certa(self, shell) -> None:  # noqa: ANN001
         """No modo tempo o cursor recebe segundos.

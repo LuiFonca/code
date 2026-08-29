@@ -141,6 +141,9 @@ class DistanceChart(QWidget):
         # ver a nota em `_y_bounds`.
         self._bounds: tuple[float, float] = y_range or (0.0, 1.0)
         self._cursor_m: float | None = None
+        #: Janela fixa do eixo X, ou None para seguir os dados. Ver
+        #: `set_x_window`.
+        self._x_window: tuple[float, float] | None = None
         self._min_x = 0.0
         self._max_distance = 0.0
         # Amplitude memorizada, como `_bounds`. Era uma `@property`, e property
@@ -162,19 +165,47 @@ class DistanceChart(QWidget):
 
     # ---------- dados ----------
 
-    def set_series(self, series: list[Series]) -> None:
-        self._series = series
+    def set_x_window(self, window: tuple[float, float] | None) -> None:
+        """Fixa o eixo X numa janela, em vez de deixá-lo seguir os dados.
+
+        Ao vivo isto é questão de fidelidade, não de estética. Com o eixo
+        seguindo os dados, os primeiros segundos de captura desenham uma
+        janela de 1 s, depois 2 s, depois 3 — o traço parece percorrer a
+        largura toda enquanto na verdade só existe um instante de dado, e a
+        escala horizontal muda embaixo do olho a cada repintura. Com a
+        janela fixa, o que não foi medido aparece como **espaço vazio**, que
+        é a representação honesta de ausência.
+
+        `None` devolve o comportamento elástico, que é o certo na Análise:
+        ali a volta inteira já existe e o eixo deve cobri-la.
+        """
+        self._x_window = window
+        self._recompute_x()
+        self.update()
+
+    def _recompute_x(self) -> None:
+        if self._x_window is not None:
+            inicio, fim = self._x_window
+            self._min_x = inicio
+            self._max_distance = fim
+            self._x_span = (fim - inicio) or 1.0
+            return
+
         self._max_distance = max(
-            (s.points[-1][0] for s in series if not s.is_empty), default=0.0
+            (s.points[-1][0] for s in self._series if not s.is_empty), default=0.0
         )
         # O eixo começa onde os dados começam, não em zero. Ao vivo o rastro
         # guarda só os últimos 800 m, então aos 1.500 m os dados vão de 700 a
         # 1.500 — ancorado em zero, o gráfico desenhava metade vazia e o traço
         # se espremia na direita. Era o "gráfico pela metade" relatado.
         self._min_x = min(
-            (s.points[0][0] for s in series if not s.is_empty), default=0.0
+            (s.points[0][0] for s in self._series if not s.is_empty), default=0.0
         )
         self._x_span = (self._max_distance - self._min_x) or 1.0
+
+    def set_series(self, series: list[Series]) -> None:
+        self._series = series
+        self._recompute_x()
         self._bounds = self._y_bounds()
         self.update()
 
@@ -198,9 +229,11 @@ class DistanceChart(QWidget):
         self._series = []
         self._markers = []
         self._cursor_m = None
-        self._min_x = 0.0
-        self._max_distance = 0.0
-        self._x_span = 1.0
+        self._recompute_x()
+        if self._x_window is None:
+            self._min_x = 0.0
+            self._max_distance = 0.0
+            self._x_span = 1.0
         self._bounds = self._forced_range or (0.0, 1.0)
         self.update()
 

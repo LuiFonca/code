@@ -125,21 +125,17 @@ class TrackLapSelector(QWidget):
         self._car_label.setObjectName(OBJ_SELECTOR_NOTE)
         self._car_label.setVisible(False)
 
+        # O carro vem **sempre depois do combo de volta**, e a posição não
+        # depende de a pista estar à mostra. Já dependeu: na comparação, a linha
+        # de referência mostrava o carro antes da volta e a de comparação
+        # depois, e as duas lado a lado pareciam ter os campos trocados. Ordem
+        # igual nas duas é o que alinha a coluna e faz a leitura ser sempre a
+        # mesma: qual volta, de qual carro.
         layout.addWidget(self._track_label)
         layout.addWidget(self._track_combo)
-        # Com a pista à mostra, o carro entra entre ela e a volta: é a ordem em
-        # que a pergunta se forma — onde, com o quê, qual volta.
-        #
-        # Com a pista oculta (a segunda volta da comparação), essa posição fica
-        # **antes do rótulo** "Comparar:", e o carro passa a parecer legenda de
-        # um campo que não está na tela. Aí ele vai para o fim, onde se lê como
-        # o que é: o carro daquela volta.
-        if show_track:
-            layout.addWidget(self._car_label)
         layout.addWidget(QLabel(lap_label))
         layout.addWidget(self._lap_combo)
-        if not show_track:
-            layout.addWidget(self._car_label)
+        layout.addWidget(self._car_label)
 
         self._track_combo.currentIndexChanged.connect(self._on_track_changed)
         self._lap_combo.currentIndexChanged.connect(self._on_lap_changed)

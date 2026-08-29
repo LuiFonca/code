@@ -121,6 +121,14 @@ class HistoryPage(Page):
         self._track_combo = QComboBox()
         self._track_combo.currentIndexChanged.connect(lambda _: self._reload_laps())
 
+        # Filtro **opcional** de carro. Uma pista com dois carros diferentes
+        # tem duas tabelas de tempo misturadas numa, e comparar as duas não
+        # diz nada sobre pilotagem. Opcional porque o caso comum é um carro
+        # só, e um filtro obrigatório cobraria uma escolha a mais de quem não
+        # precisa dela.
+        self._car_combo = QComboBox()
+        self._car_combo.currentIndexChanged.connect(lambda _: self._reload_laps())
+
         reload_button = QPushButton("Atualizar")
         reload_button.setObjectName(OBJ_GHOST_BUTTON)
         reload_button.clicked.connect(self.refresh)
@@ -142,6 +150,8 @@ class HistoryPage(Page):
 
         layout.addWidget(QLabel("Pista:"))
         layout.addWidget(self._track_combo)
+        layout.addWidget(QLabel("Carro:"))
+        layout.addWidget(self._car_combo)
         layout.addWidget(reload_button)
         layout.addWidget(self._rename)
         layout.addWidget(self._delete_selected)
@@ -290,8 +300,34 @@ class HistoryPage(Page):
             self._note.setText("nenhuma pista gravada ainda")
             return
 
-        self._laps = self.core.laps.get_by_track(int(track_id))
+        todas = self.core.laps.get_by_track(int(track_id))
+        self._reload_cars(todas)
+
+        car_id = self._car_combo.currentData()
+        self._laps = (
+            todas if car_id is None else [x for x in todas if x.car_id == car_id]
+        )
         self._populate(int(track_id))
+
+    def _reload_cars(self, laps: list[Lap]) -> None:
+        """Repõe a lista com os carros que **esta pista** tem gravados.
+
+        Só os desta pista: oferecer o catálogo inteiro seria oferecer
+        filtros que não filtram nada, e a lista útil tem dois ou três nomes.
+        A escolha atual sobrevive à reposição quando o carro ainda existe —
+        senão trocar de pista descartaria o filtro sem avisar.
+        """
+        anterior = self._car_combo.currentData()
+        ids = {x.car_id for x in laps if x.car_id is not None}
+
+        self._car_combo.blockSignals(True)
+        self._car_combo.clear()
+        self._car_combo.addItem("todos", None)
+        for car_id in sorted(ids, key=lambda i: self.car_name(i).lower()):
+            self._car_combo.addItem(self.car_name(car_id), car_id)
+        indice = self._car_combo.findData(anterior)
+        self._car_combo.setCurrentIndex(max(0, indice))
+        self._car_combo.blockSignals(False)
 
     def _populate(self, track_id: int) -> None:
         palette = self.theme.palette

@@ -277,6 +277,35 @@ def build_core(
     bus = EventBus()
     engine = TelemetryEngine(bus, sample_rate_hz=settings.telemetry.sample_rate_hz)
     session_manager = SessionManager(bus, sessions)
+
+    def nomear_pista_pelo_comprimento(event: LapBoundaryDetected) -> None:
+        """Batiza a sessão pelo comprimento da volta que acabou de fechar.
+
+        **Assinado antes do `RecordingService`, e de propósito.** O
+        barramento despacha na ordem de inscrição, e o gravador consulta
+        `can_persist` — que exige pista. Registrado depois, a primeira volta
+        de toda sessão era descartada por falta de pista e só a segunda
+        aproveitava o nome que esta função acabara de descobrir.
+
+        A parte que fala com a tela continua em `build_gui`, no adaptador
+        Qt: esta aqui não toca em widget nenhum, e é justamente isso que
+        permite rodar síncrona, na thread da captura, antes do gravador.
+        """
+        if session_manager.track is not None:
+            return
+        candidatos = catalog.guess_by_length(event.distance_m)
+        if len(candidatos) != 1:
+            # Zero: comprimento fora do catálogo. Mais de um: circuitos de
+            # comprimento parecido, e batizar com o palpite errado mistura
+            # voltas de pistas diferentes sob um rótulo só. A sugestão para
+            # a tela sai do lado de lá.
+            return
+        nome = candidatos[0].name
+        track_id = tracks.get_or_create(nome)
+        session_manager.set_track(Track(id=track_id, name=nome))
+        _log.info("pista identificada pelo comprimento", extra={"track": nome})
+
+    bus.subscribe(LapBoundaryDetected, nomear_pista_pelo_comprimento)
     recording = RecordingService(bus, laps, session_manager)
 
     metrics = TelemetryMetrics()
@@ -433,17 +462,17 @@ def build_gui(core: CoreApplication) -> AppShell:
 
     adapter.subscribe(CarChanged, persist_car)
 
-    def detect_track(event: LapBoundaryDetected) -> None:
-        """Nomeia a pista pelo **comprimento** da primeira volta fechada.
+    def sugerir_pista(event: LapBoundaryDetected) -> None:
+        """Leva os candidatos de pista para o campo da tela.
 
-        O GT7 não transmite o nome do circuito — nem um id dele. O que dá para
-        medir é a distância percorrida na volta, e o catálogo sabe o
-        comprimento de 105 pistas.
+        **Só sugere.** Quem de fato batiza a sessão é
+        `nomear_pista_pelo_comprimento`, no núcleo, que roda antes do gravador
+        e sem tocar em widget. Aqui é a metade que fala com a interface, e por
+        isso passa pelo adaptador Qt — mas passar por ele significa chegar um
+        turno de evento depois, tarde demais para a volta que fechou.
 
-        Só assume quando o candidato é **único** dentro da tolerância. Vários
-        circuitos têm comprimento parecido, e batizar a sessão com o palpite
-        errado é pior que deixá-la sem nome: o histórico passa a misturar voltas
-        de pistas diferentes sob um rótulo, e nada na tela denuncia.
+        As duas metades existiam numa função só, e a consequência era esta: a
+        pista era aplicada depois de o gravador já ter decidido descartar.
         """
         if core.session_manager.track is not None:
             return
@@ -453,12 +482,6 @@ def build_gui(core: CoreApplication) -> AppShell:
 
         nomes = [c.name for c in candidatos]
         if len(candidatos) > 1:
-            # Vários circuitos compartilham comprimento, e batizar a sessão com
-            # o palpite errado é pior que deixá-la sem nome: o histórico passa a
-            # misturar voltas de pistas diferentes sob um rótulo, sem nada na
-            # tela denunciando. Então **sugere** em vez de decidir — os
-            # candidatos vão para o campo, o mais provável na frente, e um
-            # clique confirma.
             _log.info(
                 "pista ambígua pelo comprimento",
                 extra={
@@ -466,16 +489,9 @@ def build_gui(core: CoreApplication) -> AppShell:
                     "candidatos": nomes[:3],
                 },
             )
-            shell.on_track_candidates(nomes)
-            return
-
-        nome = nomes[0]
-        track_id = core.tracks.get_or_create(nome)
-        core.session_manager.set_track(Track(id=track_id, name=nome))
-        _log.info("pista identificada pelo comprimento", extra={"track": nome})
         shell.on_track_candidates(nomes)
 
-    adapter.subscribe(LapBoundaryDetected, detect_track)
+    adapter.subscribe(LapBoundaryDetected, sugerir_pista)
 
     shell = AppShell(core, live_vm, adapter)
     return shell
