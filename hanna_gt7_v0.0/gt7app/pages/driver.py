@@ -16,10 +16,10 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QSpinBox,
     QWidget,
 )
 
+from gt7core.analytics.coaching import CornerReport, diagnose_corners
 from gt7core.analytics.driver import DriverProfile, build_profile
 from gt7core.analytics.tyres import stint_degradation
 from gt7core.domain.models import Lap, TelemetryPoint
@@ -30,12 +30,27 @@ from ..design.tokens import Palette, Space, Theme
 from ..widgets.advice import AdviceCard
 from ..widgets.cards import Badge, Card, MetricCard, MetricGrid, StatRow
 from ..widgets.charts import DistanceChart, Series
-from ..widgets.selectors import format_lap_time
+from ..widgets.selectors import (
+    LAP_COMBO_MIN_W,
+    TRACK_COMBO_MIN_W,
+    format_lap_time,
+)
 from .base import Page
 
 # Teto de voltas carregadas para o perfil. Coincide com a janela de retenção
 # padrão por pista (Fase 3): é a mesma "janela recente" em outra forma.
 PROFILE_LAP_LIMIT = 20
+
+#: Largura mínima do combo de carro. Nomes do GT7 são longos — "Porsche 911
+#: GT3 RS (992) '22" —, e cortado no meio um modelo deixa de identificar o
+#: carro, que é a única coisa que o filtro precisa fazer.
+CAR_COMBO_MIN_W = 200
+
+#: Quantas curvas aparecem em "A trabalhar", e quantos apontamentos por
+#: curva. Uma lista longa deixa de ser conselho e vira relatório: quem vai
+#: para a pista leva duas ou três correções na cabeça, não quinze.
+MAX_CORNERS_SHOWN = 4
+MAX_ISSUES_PER_CORNER = 2
 
 
 class DriverPage(Page):
@@ -122,43 +137,95 @@ class DriverPage(Page):
         layout.setSpacing(Space.SM.px)
 
         self._track_combo = QComboBox()
+        self._track_combo.setMinimumWidth(TRACK_COMBO_MIN_W)
         self._track_combo.currentIndexChanged.connect(lambda _: self._rebuild())
 
-        self._from_spin = QSpinBox()
-        self._from_spin.setMinimum(1)
-        self._from_spin.setMaximum(1)
-        self._to_spin = QSpinBox()
-        self._to_spin.setMinimum(1)
-        self._to_spin.setMaximum(1)
-        for spin in (self._from_spin, self._to_spin):
-            spin.valueChanged.connect(lambda _: self._rebuild())
+        # Filtro de carro. Um stint é de **um** carro: misturar o GT3 com o
+        # carro de rua na mesma janela produz um desvio padrão que descreve a
+        # troca de carro, não a consistência de quem pilota.
+        self._car_combo = QComboBox()
+        self._car_combo.setMinimumWidth(CAR_COMBO_MIN_W)
+        self._car_combo.currentIndexChanged.connect(lambda _: self._rebuild())
+
+        # Voltas por dropdown, e não por número.
+        #
+        # Aqui havia dois QSpinBox contando ordinais — "da 3ª à 12ª". Escolher
+        # assim exige ir ao Histórico, contar as linhas e voltar, porque a
+        # janela útil de um stint se identifica pelo tempo da volta, não pela
+        # posição dela na lista. Os combos mostram tempo e número da volta, que
+        # é o que se reconhece.
+        self._from_combo = QComboBox()
+        self._to_combo = QComboBox()
+        for combo in (self._from_combo, self._to_combo):
+            combo.setMinimumWidth(LAP_COMBO_MIN_W)
+            combo.currentIndexChanged.connect(lambda _: self._rebuild())
 
         layout.addWidget(QLabel("Pista:"))
         layout.addWidget(self._track_combo)
-        layout.addWidget(QLabel("Voltas:"))
-        layout.addWidget(self._from_spin)
+        layout.addWidget(QLabel("Carro:"))
+        layout.addWidget(self._car_combo)
+        layout.addWidget(QLabel("De:"))
+        layout.addWidget(self._from_combo)
         layout.addWidget(QLabel("a"))
-        layout.addWidget(self._to_spin)
+        layout.addWidget(self._to_combo)
         return bar
 
     # ---------- dados ----------
 
-    def _sync_range(self, total: int) -> None:
-        """Ajusta os limites dos seletores ao que existe na pista.
+    def _reload_cars(self, laps: list[Lap]) -> None:
+        """Repõe a lista com os carros que **esta pista** tem gravados.
+
+        Só os desta pista, pelo mesmo motivo do Histórico: o catálogo inteiro
+        ofereceria filtros que não filtram nada. A escolha atual sobrevive à
+        reposição quando o carro ainda existe.
+        """
+        anterior = self._car_combo.currentData()
+        ids = {x.car_id for x in laps if x.car_id is not None}
+
+        self._car_combo.blockSignals(True)
+        self._car_combo.clear()
+        self._car_combo.addItem("todos", None)
+        for car_id in sorted(ids, key=lambda i: self.car_name(i).lower()):
+            self._car_combo.addItem(self.car_name(car_id), car_id)
+        indice = self._car_combo.findData(anterior)
+        self._car_combo.setCurrentIndex(max(0, indice))
+        self._car_combo.blockSignals(False)
+
+    def _sync_range(self, laps: list[Lap]) -> None:
+        """Repõe os combos de volta com o que existe na janela atual.
+
+        Guarda a escolha por **id de volta**, e não por posição: trocar o
+        filtro de carro reordena a lista, e um índice preservado passaria a
+        apontar para outra volta em silêncio. O id ou existe na lista nova, e a
+        escolha é a mesma volta, ou não existe, e a queda é para a ponta.
 
         Sem isto, trocar de uma pista com 20 voltas para outra com 3 deixaria
         "voltas 5 a 12" selecionado e o perfil sairia vazio, sem explicação.
         """
-        for spin in (self._from_spin, self._to_spin):
-            spin.blockSignals(True)
-            spin.setMaximum(max(1, total))
-            spin.setMinimum(1)
-        if self._to_spin.value() > total or self._to_spin.value() <= 1:
-            self._to_spin.setValue(max(1, total))
-        if self._from_spin.value() > total:
-            self._from_spin.setValue(1)
-        for spin in (self._from_spin, self._to_spin):
-            spin.blockSignals(False)
+        anterior_de = self._from_combo.currentData()
+        anterior_ate = self._to_combo.currentData()
+
+        for combo in (self._from_combo, self._to_combo):
+            combo.blockSignals(True)
+            combo.clear()
+
+        for ordem, lap in enumerate(laps, start=1):
+            rotulo = f"{ordem}ª  {format_lap_time(lap.lap_time_ms)}"
+            self._from_combo.addItem(rotulo, lap.id)
+            self._to_combo.addItem(rotulo, lap.id)
+
+        # Padrão: a janela inteira. É o que alguém espera ao abrir a página,
+        # e recortar é uma decisão que se toma depois de ver o conjunto.
+        self._restore_or(self._from_combo, anterior_de, 0)
+        self._restore_or(self._to_combo, anterior_ate, self._to_combo.count() - 1)
+
+        for combo in (self._from_combo, self._to_combo):
+            combo.blockSignals(False)
+
+    @staticmethod
+    def _restore_or(combo: QComboBox, lap_id: object, fallback: int) -> None:
+        indice = combo.findData(lap_id) if lap_id is not None else -1
+        combo.setCurrentIndex(indice if indice >= 0 else max(0, fallback))
 
     def refresh(self) -> None:
         previous = self._track_combo.currentData()
@@ -179,21 +246,28 @@ class DriverPage(Page):
             self._clear("nenhuma pista gravada ainda")
             return
 
-        laps = self.core.laps.get_by_track(int(track_id), limit=PROFILE_LAP_LIMIT)
+        todas = self.core.laps.get_by_track(int(track_id), limit=PROFILE_LAP_LIMIT)
         # Ordem cronológica: a tendência de ritmo depende disso, e o repositório
         # devolve da mais recente para a mais antiga.
-        laps = list(reversed(laps))
+        todas = list(reversed(todas))
+
+        self._reload_cars(todas)
+        car_id = self._car_combo.currentData()
+        laps = todas if car_id is None else [x for x in todas if x.car_id == car_id]
 
         # Recorte de voltas. Um perfil sobre a sessão inteira mistura as voltas
         # de reconhecimento com as de ritmo, e a "consistência" resultante
         # descreve um piloto que não existe. Escolher a faixa é o que separa
         # "como eu piloto" de "como eu piloto quando estou tentando".
-        self._sync_range(len(laps))
-        inicio = max(1, self._from_spin.value())
-        fim = min(len(laps), self._to_spin.value())
+        self._sync_range(laps)
+        inicio = self._from_combo.currentIndex()
+        fim = self._to_combo.currentIndex()
+        if inicio < 0 or fim < 0:
+            self._clear("nenhuma volta gravada nesta pista")
+            return
         if inicio > fim:
             inicio, fim = fim, inicio
-        laps = laps[inicio - 1 : fim]
+        laps = laps[inicio : fim + 1]
 
         point_lists: list[list[TelemetryPoint]] = []
         for lap in laps:
@@ -208,8 +282,9 @@ class DriverPage(Page):
             self._clear("nenhuma volta com amostras nesta pista")
             return
 
-        self._populate(profile, point_lists)
-        self._request_report(profile, laps)
+        reports = diagnose_corners(point_lists)
+        self._populate(profile, point_lists, reports)
+        self._request_report(profile, laps, reports)
 
     def _clear(self, message: str) -> None:
         self._summary.clear_values(self.theme)
@@ -223,7 +298,12 @@ class DriverPage(Page):
 
     # ---------- engenheiro ----------
 
-    def _request_report(self, profile: DriverProfile, laps: list[Lap]) -> None:
+    def _request_report(
+        self,
+        profile: DriverProfile,
+        laps: list[Lap],
+        reports: list[CornerReport],
+    ) -> None:
         """Pede o relatório da janela de voltas exibida.
 
         Nível 3 é a única chamada que olha o conjunto, e por isso a única que
@@ -239,6 +319,7 @@ class DriverPage(Page):
             profile,
             track=self._track_combo.currentText(),
             lap_times_ms=[lap.lap_time_ms for lap in laps if lap.lap_time_ms > 0],
+            recurring=_recurring_block(reports),
         )
 
     def _on_engineer_started(self, level: str) -> None:
@@ -250,7 +331,10 @@ class DriverPage(Page):
             self._advice.show_advice(advice)
 
     def _populate(
-        self, profile: DriverProfile, point_lists: list[list[TelemetryPoint]]
+        self,
+        profile: DriverProfile,
+        point_lists: list[list[TelemetryPoint]],
+        reports: list[CornerReport],
     ) -> None:
         palette = self.theme.palette
 
@@ -279,7 +363,12 @@ class DriverPage(Page):
         )
 
         _fill_card(self._strengths, profile.strengths(), palette.green, "—")
-        _fill_card(self._weaknesses, profile.weaknesses(), palette.yellow, "nada a apontar")
+        # "A trabalhar" passa a ser por curva. As contagens da volta inteira
+        # — 7 travamentos, ±25 m de dispersão — continuam existindo, e ficam
+        # no cartão "Medidas" logo abaixo: lá elas são o que são, um resumo.
+        # Aqui o que se quer é o que fazer na próxima volta, e isso é sempre
+        # sobre uma curva.
+        self._fill_weaknesses(reports, profile)
 
         rows = self._rows
         rows["style"].set_value(profile.braking_style)
@@ -317,6 +406,58 @@ class DriverPage(Page):
                 )
             ]
         )
+
+
+    def _fill_weaknesses(
+        self, reports: list[CornerReport], profile: DriverProfile
+    ) -> None:
+        """Apontamentos por curva, da mais grave para a menos.
+
+        Teto de `MAX_CORNERS_SHOWN` curvas: uma lista com quinze itens não é
+        lida, é rolada, e quem sai para a pista leva duas ou três coisas na
+        cabeça. As piores primeiro é o que faz o corte valer.
+
+        Sem apontamento nenhum, cai nas observações gerais do perfil — que
+        falam de consistência e ritmo, coisas que não moram numa curva. Só
+        quando também não há nenhuma delas é que a tela diz que está tudo bem.
+        """
+        linhas: list[str] = []
+        for relatorio in reports[:MAX_CORNERS_SHOWN]:
+            linhas.extend(relatorio.as_lines()[:MAX_ISSUES_PER_CORNER])
+
+        if not linhas:
+            linhas = profile.weaknesses()
+
+        _fill_card(
+            self._weaknesses,
+            linhas,
+            self.theme.palette.yellow,
+            "nada a apontar",
+        )
+
+
+def _recurring_block(reports: list[CornerReport]) -> str:
+    """Os apontamentos por curva, no formato que o prompt do engenheiro espera.
+
+    O parâmetro `recurring` do `session_report` já existia e ninguém preenchia;
+    sem ele o modelo recebia médias da volta inteira e, para falar de curva —
+    que é como um engenheiro fala —, teria que **adivinhar** qual. Adivinhar
+    número de curva é exatamente o tipo de grandeza que o prompt proíbe
+    inventar, então ele calava ou generalizava.
+
+    Agora recebe a medição, com curva e frequência. O modelo continua sem poder
+    inventar; a diferença é que não precisa mais.
+    """
+    if not reports:
+        return ""
+    linhas = [
+        linha
+        for relatorio in reports[:MAX_CORNERS_SHOWN]
+        for linha in relatorio.as_lines()[:MAX_ISSUES_PER_CORNER]
+    ]
+    if not linhas:
+        return ""
+    return "Recorrente por curva (medido):\n" + "\n".join(f"- {x}" for x in linhas)
 
 
 def _consistency_colour(profile: DriverProfile, palette: Palette) -> str:

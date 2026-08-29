@@ -182,6 +182,7 @@ class EngineerService(QObject):
         track: str,
         car: str = "",
         lap_times_ms: list[int] | None = None,
+        recurring: str = "",
     ) -> None:
         engineer = self._engineer
         if engineer is None:
@@ -189,7 +190,11 @@ class EngineerService(QObject):
 
         self._submit(
             lambda: engineer.session_report(
-                profile, track=track, car=car, lap_times_ms=lap_times_ms
+                profile,
+                track=track,
+                car=car,
+                lap_times_ms=lap_times_ms,
+                recurring=recurring,
             ),
             "session",
         )

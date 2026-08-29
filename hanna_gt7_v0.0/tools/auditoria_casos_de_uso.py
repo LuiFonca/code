@@ -339,8 +339,8 @@ def caso_piloto(app, tmp):  # noqa: ANN001
         piloto.refresh()
         app.processEvents()
         # Faixa invertida: fim antes do início.
-        piloto._from_spin.setValue(4)  # noqa: SLF001
-        piloto._to_spin.setValue(1)  # noqa: SLF001
+        piloto._from_combo.setCurrentIndex(3)  # noqa: SLF001
+        piloto._to_combo.setCurrentIndex(0)  # noqa: SLF001
         app.processEvents()
         w.close(); w.deleteLater(); app.processEvents()
     finally:
