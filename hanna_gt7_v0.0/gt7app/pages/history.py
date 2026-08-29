@@ -94,6 +94,10 @@ class HistoryPage(Page):
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # Duplo clique abre a volta na Análise. O caminho antes era: anotar
+        # o número da volta, trocar de aba, reencontrar a pista no combo e
+        # procurar a volta na lista — quatro passos para uma intenção só.
+        self._table.itemDoubleClicked.connect(self._on_lap_double_clicked)
         # Todas as colunas ao conteúdo, **menos a do carro**, que fica com a
         # sobra. Esticando todas por igual, tempo e setor — que são números
         # curtos e de largura fixa — recebiam o mesmo espaço que "Porsche 911
@@ -158,6 +162,29 @@ class HistoryPage(Page):
         layout.addWidget(self._delete_all)
         layout.addStretch(1)
         return bar
+
+    def _on_lap_double_clicked(self, item: QTableWidgetItem) -> None:
+        """Abre a volta da linha na aba de Análise.
+
+        A pista vem do combo e não da linha: a tabela mostra uma pista de
+        cada vez, e ler dali evita depender de uma coluna que pode mudar de
+        posição.
+        """
+        volta = self._lap_at_row(item.row())
+        track_id = self._track_combo.currentData()
+        if volta is None or volta.id is None or track_id is None:
+            return
+
+        shell = self.window()
+        abrir = getattr(shell, "open_lap_in_analysis", None)
+        if abrir is not None:
+            abrir(int(track_id), volta.id)
+
+    def _lap_at_row(self, row: int) -> Lap | None:
+        """A volta de uma linha da tabela, se a linha existir."""
+        if 0 <= row < len(self._laps):
+            return self._laps[row]
+        return None
 
     # ---------- renomear ----------
 

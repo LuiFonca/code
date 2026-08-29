@@ -328,6 +328,16 @@ class AnalysisPage(Page):
 
     # ---------- dados ----------
 
+    def show_lap(self, track_id: int, lap_id: int) -> bool:
+        """Abre uma volta específica, vinda de outra página.
+
+        A pista primeiro: o combo de voltas só lista as da pista corrente, e
+        pedir a volta antes acharia uma lista que ainda é de outro circuito.
+        """
+        self._selector.reload()
+        self._selector.select_track(track_id)
+        return self._selector.select_lap(lap_id)
+
     def refresh(self) -> None:
         self._selector.reload()
 

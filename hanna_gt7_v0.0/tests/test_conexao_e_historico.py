@@ -453,3 +453,65 @@ class TestGravacaoDeVoltas:
             dispose_window(window)
         finally:
             core.close()
+
+
+class TestDuploCliqueAbreAAnalise:
+    """Do Histórico direto para a volta, sem reencontrá-la na outra aba.
+
+    O caminho antes era: anotar o número da volta, trocar de aba, reencontrar a
+    pista no combo e procurar a volta na lista — quatro passos para uma
+    intenção só.
+    """
+
+    def test_duplo_clique_leva_a_analise_com_a_volta(
+        self, app: QApplication, tmp_path  # noqa: ANN001, ARG002
+    ) -> None:
+        core = build_core(_settings(tmp_path))
+        try:
+            track_id = core.tracks.get_or_create("Interlagos")
+            for tempo in (92_000, 93_500):
+                core.engine.reset()
+                for frame in synthetic_lap(lap_time_ms=tempo):
+                    core.engine.on_frame(frame)
+                core.laps.save(
+                    Lap(
+                        track_id=track_id,
+                        lap_time_ms=tempo,
+                        start_time=datetime.now(),
+                        points=list(core.engine._buffer),  # noqa: SLF001
+                    )
+                )
+
+            window = build_gui(core)
+            window.show()
+            historico = window._pages[3]  # noqa: SLF001
+            historico.refresh()
+
+            alvo = historico._laps[1]  # noqa: SLF001
+            historico._on_lap_double_clicked(  # noqa: SLF001
+                historico._table.item(1, 0)  # noqa: SLF001
+            )
+
+            analise = window._pages[1]  # noqa: SLF001
+            assert window._stack.currentIndex() == 1, "não navegou para a Análise"  # noqa: SLF001
+            assert analise._selector.current_lap_id() == alvo.id  # noqa: SLF001
+
+            dispose_window(window)
+        finally:
+            core.close()
+
+    def test_linha_invalida_nao_estoura(
+        self, app: QApplication, tmp_path  # noqa: ANN001, ARG002
+    ) -> None:
+        """Tabela vazia, ou linha fora da lista, não pode derrubar a página."""
+        core = build_core(_settings(tmp_path))
+        try:
+            window = build_gui(core)
+            historico = window._pages[3]  # noqa: SLF001
+
+            assert historico._lap_at_row(0) is None  # noqa: SLF001
+            assert historico._lap_at_row(-1) is None  # noqa: SLF001
+
+            dispose_window(window)
+        finally:
+            core.close()

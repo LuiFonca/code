@@ -328,6 +328,23 @@ class AppShell(QMainWindow):
                 page.refresh()
                 return
 
+    def open_lap_in_analysis(self, track_id: int, lap_id: int) -> None:
+        """Leva à Análise já com a volta escolhida.
+
+        Mora na casca porque só ela conhece as outras páginas: o Histórico
+        alcançar a Análise por conta própria seria uma página aprendendo o
+        índice da outra, e a navegação deixaria de ter um dono.
+        """
+        for index, page in enumerate(self._pages):
+            if page.page_id != "analysis":
+                continue
+            self._activate(index)
+            # Depois de ativar: `on_enter` recarrega os combos, e escolher a
+            # volta antes disso seria escolher numa lista que a recarga
+            # substitui em seguida.
+            page.show_lap(track_id, lap_id)
+            return
+
     def on_track_candidates(self, names: list[str]) -> None:
         """A detecção automática avisa a página ao vivo, que mostra o nome.
 
