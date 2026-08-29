@@ -5,11 +5,13 @@ Página de análise — uma volta, dissecada.
 pneus só existiam no terminal, via `python3 -m gt7core.demo`; esta página é a
 interface deles.
 
-Organização: os canais empilhados à esquerda compartilham o cursor, o traçado à
-direita marca os ápices, e a tabela embaixo lista as curvas com o que foi medido
-em cada uma. Passar o mouse por qualquer gráfico move o cursor de todos e
-destaca a curva correspondente — é a leitura que um engenheiro faz, relacionando
-o que aconteceu no pedal com onde aconteceu na pista.
+Organização: em cima, uma faixa com as quatro leituras que são **formas** —
+traçado, força G, temperatura dos pneus e o cursor —, lado a lado; embaixo dela,
+os canais por distância na largura inteira da página; e no rodapé a tabela de
+curvas com o que foi medido em cada uma. Passar o mouse por qualquer gráfico
+move o cursor de todos e destaca a curva correspondente — é a leitura que um
+engenheiro faz, relacionando o que aconteceu no pedal com onde aconteceu na
+pista.
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QTableWidget,
     QTableWidgetItem,
-    QVBoxLayout,
 )
 
 from gt7core.analytics.aids import AIDS, aid_spans, unknown_bits, was_recorded
@@ -141,9 +142,6 @@ class AnalysisPage(Page):
             self._summary.add_card(key, MetricCard(label, unit))
         self.content.addWidget(self._summary)
 
-        middle = QHBoxLayout()
-        middle.setSpacing(Space.LG.px)
-
         channels = Card("Canais por distância")
         self._charts = [
             DistanceChart(
@@ -211,18 +209,41 @@ class AnalysisPage(Page):
         # patinando são o mesmo evento visto de dois lados.
         self._aid_band = AidBand(self.theme, aids=tuple(AIDS))
         channels.add(self._aid_band)
-        # O círculo mora na coluna larga, abaixo dos canais. Sair de dois
-        # gráficos para três deixou um vazio grande aqui, e o envelope de
-        # aderência é justamente o gráfico que precisa de área: espremido, a
-        # nuvem vira um borrão e a forma — que é a informação inteira — some.
-        grip_card = Card("Força G")
-        self._gforce = GForceDiagram(self.theme, height=300)
 
         self._x_selector = QComboBox()
         self._x_selector.addItems(["Eixo: distância", "Eixo: tempo"])
         self._x_selector.currentIndexChanged.connect(self._on_x_mode)
         channels.add(self._x_selector)
 
+        # ---------- faixa de cima: os quatro quadros quadrados ----------
+        #
+        # Mapa, força G, pneus e cursor lado a lado. Os três primeiros são
+        # **quadrados por natureza** — o conteúdo de cada um é uma forma, não
+        # uma série —, e empilhados numa coluna estreita eles disputavam altura
+        # com o cursor enquanto os gráficos de linha, que são os que precisam de
+        # largura, ficavam com dois terços da tela.
+        #
+        # Invertido: os quadrados dividem uma faixa horizontal, cada um com o
+        # tamanho que a forma pede, e os canais por distância passam a ocupar a
+        # **largura inteira** da página. Numa volta de 4 km isso é o que separa
+        # ver a freada da curva 7 de ver um risco.
+        map_card = Card("Traçado")
+        self._map_channel = QComboBox()
+        for rotulo, chave in MAP_CHANNELS:
+            self._map_channel.addItem(rotulo, chave)
+        self._map_channel.currentIndexChanged.connect(self._on_map_channel)
+        map_card.add(self._map_channel)
+
+        self._map = TrackMap(self.theme, height=300, heatmap_label="km/h")
+        # A ligação nos dois sentidos é o que faz o mapa e os gráficos serem uma
+        # leitura só: os gráficos dizem *o que* aconteceu, o mapa diz *onde*.
+        self._map.hovered.connect(self._on_hover)
+        self._map.hover_left.connect(self._on_hover_left)
+        self._map.clicked.connect(self._on_click)
+        map_card.add(self._map)
+
+        grip_card = Card("Força G")
+        self._gforce = GForceDiagram(self.theme, height=300)
         self._g_scale = QComboBox()
         self._g_scale.addItem("Limite: automático", None)
         for degrau in SCALE_STEPS_G:
@@ -231,66 +252,12 @@ class AnalysisPage(Page):
         grip_card.add(self._g_scale)
         grip_card.add(self._gforce)
 
-        # Pneus e força G descem os dois para a coluna estreita, sob o mapa e o
-        # cartão do cursor. Aquela coluna terminava num vazio de meia tela; a
-        # larga, com seis canais empilhados, é a que precisava de altura.
-        #
-        # O envelope de aderência ganha com isso: ele é **quadrado** — o
-        # conteúdo é a forma da nuvem —, e numa faixa larga e baixa sobrava
-        # vazio dos dois lados sem o círculo crescer um pixel.
         tyre_card = Card("Temperatura dos pneus")
-        self._tyre_temps = TyreTemperatures(self.theme, height=210)
+        self._tyre_temps = TyreTemperatures(self.theme, height=290)
         self._tyre_caption = QLabel("")
         self._tyre_caption.setWordWrap(True)
         tyre_card.add(self._tyre_temps)
         tyre_card.add(self._tyre_caption)
-
-        # A tabela de curvas fecha a coluna larga, e não a página inteira.
-        # Com quatro colunas ela não precisa da largura toda, e embaixo dos
-        # canais ela fica **ao lado** do mapa — que é como se lê: a linha da
-        # curva 3 e o ponto C3 no traçado, no mesmo campo de visão. No rodapé
-        # de página inteira, escolher uma linha rolava o mapa para fora.
-        table_card = Card("Curvas")
-        self._table = QTableWidget(0, len(CORNER_COLUMNS))
-        self._table.setHorizontalHeaderLabels(CORNER_COLUMNS)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setAlternatingRowColors(True)
-        self._table.setSelectionBehavior(
-            QAbstractItemView.SelectionBehavior.SelectRows
-        )
-        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._table.setMinimumHeight(180)
-        self._table.itemSelectionChanged.connect(self._on_row_selected)
-        table_card.add(self._table)
-
-        left = QVBoxLayout()
-        left.setSpacing(Space.LG.px)
-        left.addWidget(channels)
-        left.addWidget(table_card)
-        left.addStretch(1)
-        middle.addLayout(left, stretch=3)
-
-        right = QVBoxLayout()
-        right.setSpacing(Space.LG.px)
-
-        map_card = Card("Traçado")
-        self._map_channel = QComboBox()
-        for rotulo, chave in MAP_CHANNELS:
-            self._map_channel.addItem(rotulo, chave)
-        self._map_channel.currentIndexChanged.connect(self._on_map_channel)
-        map_card.add(self._map_channel)
-
-        self._map = TrackMap(self.theme, height=280, heatmap_label="km/h")
-        # A ligação nos dois sentidos é o que faz o mapa e os gráficos serem uma
-        # leitura só: os gráficos dizem *o que* aconteceu, o mapa diz *onde*.
-        self._map.hovered.connect(self._on_hover)
-        self._map.hover_left.connect(self._on_hover_left)
-        self._map.clicked.connect(self._on_click)
-        map_card.add(self._map)
-        right.addWidget(map_card)
 
         self._detail = Card("No cursor")
         self._detail_rows = {
@@ -306,13 +273,39 @@ class AnalysisPage(Page):
         }
         for row in self._detail_rows.values():
             self._detail.add(row)
-        right.addWidget(self._detail)
-        right.addWidget(tyre_card)
-        right.addWidget(grip_card)
-        right.addStretch(1)
 
-        middle.addLayout(right, stretch=2)
-        self.content.addLayout(middle)
+        topo = QHBoxLayout()
+        topo.setSpacing(Space.LG.px)
+        # O mapa leva mais: o traçado de um circuito é comprido e, apertado, as
+        # curvas lentas viram um nó onde nada se distingue.
+        topo.addWidget(map_card, stretch=4)
+        topo.addWidget(grip_card, stretch=3)
+        topo.addWidget(tyre_card, stretch=3)
+        topo.addWidget(self._detail, stretch=2)
+        self.content.addLayout(topo)
+
+        # ---------- e os canais na largura inteira ----------
+        self.content.addWidget(channels)
+
+        # A tabela de curvas embaixo, também na largura inteira. Com quatro
+        # colunas ela sobra em espaço, e o que se ganha é a linha inteira
+        # legível sem truncar o diagnóstico.
+        table_card = Card("Curvas")
+        self._table = QTableWidget(0, len(CORNER_COLUMNS))
+        self._table.setHorizontalHeaderLabels(CORNER_COLUMNS)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self._table.setMinimumHeight(180)
+        self._table.itemSelectionChanged.connect(self._on_row_selected)
+        table_card.add(self._table)
+        self.content.addWidget(table_card)
 
         self._tyres = QLabel("")
         self._tyres.setWordWrap(True)
