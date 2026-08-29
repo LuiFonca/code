@@ -41,6 +41,22 @@ THROTTLE_HALF_PCT = 50.0
 # Queda de pedal considerada um alívio deliberado, não ruído de mão.
 LIFT_DROP_PCT = 10.0
 
+#: Freio acima disto significa que o piloto ainda está pedindo desaceleração.
+#:
+#: Não é zero: o gatilho analógico do controle repousa em 1–2%, e exigir zero
+#: exato faria toda saída de curva parecer sobreposição de pedais.
+BRAKE_ACTIVE_PCT = 5.0
+
+#: Duração mínima, em ms, para uma subida de acelerador ser retomada e não
+#: **autoblip**.
+#:
+#: O GT7 acelera sozinho na redução de marcha, para casar a rotação. Isso
+#: produz um pico de pedal que sobe e volta em 150–250 ms, e que o detector
+#: lia como "o piloto voltou a acelerar aqui". Uma retomada de verdade dura
+#: segundos — vai até a próxima frenagem. 300 ms separa as duas com folga dos
+#: dois lados.
+MIN_APPLICATION_MS = 300
+
 
 @dataclass(frozen=True, slots=True)
 class ThrottleApplication:
@@ -132,9 +148,7 @@ def _analyse_exit(
 
     window = points[apex_index : exit_index + 1]
 
-    start = next(
-        (i for i, p in enumerate(window) if p.throttle >= application_pct), None
-    )
+    start = _find_application(window, application_pct)
     if start is None:
         return None
 
@@ -142,14 +156,7 @@ def _analyse_exit(
     time_to_half = _time_to_reach(window, start, THROTTLE_HALF_PCT)
     time_to_full = _time_to_reach(window, start, THROTTLE_FULL_PCT)
 
-    lifts = 0
-    peak = origin.throttle
-    for point in window[start + 1 :]:
-        if point.throttle < peak - LIFT_DROP_PCT:
-            lifts += 1
-            peak = point.throttle
-        else:
-            peak = max(peak, point.throttle)
+    lifts = _count_lifts(window, start)
 
     in_window = sum(
         1
@@ -168,6 +175,81 @@ def _analyse_exit(
         exit_speed_kmh=window[-1].speed_kmh,
         wheelspin_events=in_window,
     )
+
+
+def _find_application(
+    window: list[TelemetryPoint], application_pct: float
+) -> int | None:
+    """Onde o **piloto** voltou a acelerar, ignorando o que o carro fez sozinho.
+
+    Antes isto era a primeira amostra com pedal acima do limiar, e era por isso
+    que o autoblip contaminava a medida: o GT7 acelera sozinho na redução de
+    marcha, e esse pico de 150–250 ms virava "a retomada". Duas consequências,
+    as duas silenciosas — a distância até a retomada saía muito menor do que
+    foi, e a volta do pedal a zero logo depois entrava como alívio.
+
+    Duas travas, porque cada uma pega um caso que a outra deixa passar:
+
+    - **Freio ainda apoiado.** É onde a maioria das reduções acontece, e pedido
+      de desaceleração e retomada de acelerador não coexistem por vontade do
+      piloto.
+    - **Pico curto demais.** Pega a redução feita já fora do freio, entrando de
+      inércia no ápice — ali o freio está solto e só a duração denuncia.
+    """
+    total = len(window)
+    i = 0
+    while i < total:
+        ponto = window[i]
+        if ponto.throttle < application_pct or ponto.brake >= BRAKE_ACTIVE_PCT:
+            i += 1
+            continue
+
+        fim = i
+        while fim < total and window[fim].throttle >= application_pct:
+            fim += 1
+
+        duracao = window[fim - 1].elapsed_ms - ponto.elapsed_ms
+        # Trecho que chega até o fim da janela é retomada por definição: a curva
+        # acabou com o pedal ainda em pé, então não houve pico nenhum.
+        if duracao >= MIN_APPLICATION_MS or fim >= total:
+            return i
+        i = fim
+    return None
+
+
+def _count_lifts(window: list[TelemetryPoint], start: int) -> int:
+    """Quantos alívios **distintos** houve depois da retomada.
+
+    Um alívio é soltar e voltar a acelerar. A versão anterior contava a cada
+    queda de 10 pontos abaixo do pico corrente e rebaixava o pico junto, de modo
+    que uma única soltada contínua de 100% a 0% saía como **oito** alívios — e
+    esse número ia para a tela, para o perfil do piloto e para o prompt do
+    engenheiro, que foi instruído a nunca inventar grandeza e repetia a inflação
+    fielmente.
+
+    Agora o contador só rearma quando o pedal **volta a subir**, que é o que
+    fecha o ciclo de soltar-e-reaplicar descrito por `lift_count`.
+    """
+    origem = window[start].throttle
+    pico = origem
+    vale = origem
+    aliviando = False
+    alivios = 0
+
+    for ponto in window[start + 1 :]:
+        if aliviando:
+            vale = min(vale, ponto.throttle)
+            if ponto.throttle > vale + LIFT_DROP_PCT:
+                aliviando = False
+                pico = ponto.throttle
+        elif ponto.throttle < pico - LIFT_DROP_PCT:
+            alivios += 1
+            aliviando = True
+            vale = ponto.throttle
+        else:
+            pico = max(pico, ponto.throttle)
+
+    return alivios
 
 
 def _time_to_reach(
