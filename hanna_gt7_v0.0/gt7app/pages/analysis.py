@@ -1127,7 +1127,30 @@ def _gravada_antes_da_correcao(points: list[TelemetryPoint]) -> bool:
 def _point_at(
     points: list[TelemetryPoint], distance_m: float
 ) -> TelemetryPoint | None:
-    """Amostra mais próxima da distância informada."""
+    """Amostra mais próxima da distância informada.
+
+    Busca binária, e não `min()` sobre a lista inteira: a distância acumulada é
+    monotônica por construção — o hodômetro só anda para a frente —, e uma volta
+    tem ~6.000 amostras. Varrer todas custava 5 ms por movimento do cursor, o
+    que só ficou visível depois que a pintura deixou de custar 160.
+    """
     if not points:
         return None
-    return min(points, key=lambda p: abs(p.distance_m - distance_m))
+
+    baixo, alto = 0, len(points) - 1
+    while baixo < alto:
+        meio = (baixo + alto) // 2
+        if points[meio].distance_m < distance_m:
+            baixo = meio + 1
+        else:
+            alto = meio
+
+    # O vizinho de trás pode estar mais perto que o encontrado: a busca para na
+    # primeira amostra **maior ou igual**, e o alvo costuma cair entre duas.
+    if baixo > 0:
+        anterior = points[baixo - 1]
+        if abs(anterior.distance_m - distance_m) <= abs(
+            points[baixo].distance_m - distance_m
+        ):
+            return anterior
+    return points[baixo]

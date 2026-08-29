@@ -26,8 +26,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QMouseEvent, QPainter, QPaintEvent, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..design.tokens import Palette, Theme
@@ -39,6 +49,11 @@ from ..design.tokens import Palette, Theme
 #: com escala colada no pico, a mesma curva parece agressiva numa volta lenta.
 SPEED_TOP_MIN_KMH = 300.0
 SPEED_STEP_KMH = 100.0
+
+#: Teto de eventos de cursor, em ms. 16 ms são 60 por segundo — a cadência
+#: de uma tela comum, e acima disso os quadros extras não chegam a ser
+#: mostrados. Ver `_queue_hover`.
+HOVER_COALESCE_MS = 16
 
 MARGIN_LEFT = 46
 MARGIN_RIGHT = 12
@@ -179,6 +194,36 @@ class DistanceChart(QWidget):
         #: si acabaria com metade travada e metade seguindo o ponteiro.
         self._cursor_locked = False
 
+        #: Fundo memorizado: moldura, marcas e traçado — tudo o que **não**
+        #: depende do cursor.
+        #:
+        #: Mover o cursor repintava o widget inteiro, e com ele os ~2.000 pontos
+        #: por série eram reconstruídos do zero. Medido: 167 ms por evento de
+        #: mouse na Análise, com sete quadros na tela — seis quadros por segundo,
+        #: que é o "travando" relatado. E o traçado não tinha mudado: só a linha
+        #: vertical e a caixa de leitura.
+        #:
+        #: Agora o traçado é desenhado uma vez numa imagem e o cursor é a única
+        #: coisa pintada por movimento. A imagem é descartada em toda mudança
+        #: que altere o desenho — série, marca, escala, unidade, tamanho —, e é
+        #: por isso que `set_cursor` é o único mutador que **não** a invalida.
+        self._backdrop: QPixmap | None = None
+        #: (largura, altura, densidade de pixels) do fundo memorizado. A
+        #: densidade entra na chave porque arrastar a janela para um monitor
+        #: Retina muda a escala do dispositivo, e uma imagem gerada na escala
+        #: antiga apareceria borrada.
+        self._backdrop_key: tuple[int, int, float] | None = None
+
+        #: Coalescência dos eventos de mouse. O sistema entrega movimento a
+        #: centenas de eventos por segundo; sem um teto, a fila cresce mais
+        #: rápido do que a tela consegue esvaziar e o cursor fica arrastando
+        #: atrás do ponteiro mesmo com a pintura já barata.
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(HOVER_COALESCE_MS)
+        self._hover_timer.timeout.connect(self._flush_hover)
+        self._pending_hover: float | None = None
+
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setMouseTracking(True)
@@ -202,7 +247,7 @@ class DistanceChart(QWidget):
         """
         self._x_window = window
         self._recompute_x()
-        self.update()
+        self._invalidate_backdrop()
 
     def _recompute_x(self) -> None:
         if self._x_window is not None:
@@ -228,18 +273,18 @@ class DistanceChart(QWidget):
         self._series = series
         self._recompute_x()
         self._bounds = self._y_bounds()
-        self.update()
+        self._invalidate_backdrop()
 
     def set_x_unit(self, unit: str) -> None:
         """Troca o rótulo do eixo X (m ou s). Quem troca também troca os dados."""
         if self._x_unit != unit:
             self._x_unit = unit
-            self.update()
+            self._invalidate_backdrop()
 
     def set_markers(self, markers: list[tuple[float, str, str]]) -> None:
         """Marcas verticais: (distância, rótulo, cor). Usado para ápices e setores."""
         self._markers = markers
-        self.update()
+        self._invalidate_backdrop()
 
     def set_cursor(self, distance_m: float | None) -> None:
         if self._cursor_m != distance_m:
@@ -251,7 +296,7 @@ class DistanceChart(QWidget):
         só se conhece depois de ler a volta — o desnível, por exemplo."""
         if self._title != title:
             self._title = title
-            self.update()
+            self._invalidate_backdrop()
 
     def clear(self) -> None:
         self._series = []
@@ -263,7 +308,7 @@ class DistanceChart(QWidget):
             self._max_distance = 0.0
             self._x_span = 1.0
         self._bounds = self._forced_range or (0.0, 1.0)
-        self.update()
+        self._invalidate_backdrop()
 
     @property
     def is_empty(self) -> bool:
@@ -396,24 +441,69 @@ class DistanceChart(QWidget):
 
     # ---------- pintura ----------
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802  (API do Qt)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    # ---------- pintura ----------
+
+    def _invalidate_backdrop(self) -> None:
+        """Descarta o fundo memorizado e pede repintura.
+
+        Todo mutador que muda o **desenho** chama isto. `set_cursor` e
+        `set_cursor_locked` não: são exatamente o que o cache existe para
+        separar do resto.
+        """
+        self._backdrop = None
+        self._backdrop_key = None
+        self.update()
+
+    def _current_backdrop_key(self) -> tuple[int, int, float]:
+        return (self.width(), self.height(), self.devicePixelRatioF())
+
+    def _render_backdrop(self) -> QPixmap:
+        """Desenha moldura, marcas e traçado numa imagem do tamanho do widget.
+
+        A imagem é criada na **densidade do dispositivo**, e não no tamanho
+        lógico. Num MacBook a tela tem o dobro dos pixels, e uma imagem gerada
+        no tamanho lógico apareceria esticada e borrada — trocar lentidão por
+        traço borrado não seria melhoria nenhuma.
+        """
+        densidade = self.devicePixelRatioF()
+        imagem = QPixmap(
+            max(1, int(self.width() * densidade)),
+            max(1, int(self.height() * densidade)),
+        )
+        imagem.setDevicePixelRatio(densidade)
+
         palette = self._theme.palette
+        imagem.fill(QColor(palette.surface))
+
+        painter = QPainter(imagem)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self._plot_rect()
-
-        painter.fillRect(self.rect(), QColor(palette.surface))
         self._paint_frame(painter, rect, palette)
-
         if self.is_empty:
             self._paint_placeholder(painter, rect, palette)
-            painter.end()
-            return
-
-        self._paint_markers(painter, rect)
-        self._paint_series(painter, rect)
-        self._paint_cursor(painter, rect, palette)
+        else:
+            self._paint_markers(painter, rect)
+            self._paint_series(painter, rect)
         painter.end()
+        return imagem
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802  (API do Qt)
+        chave = self._current_backdrop_key()
+        if self._backdrop is None or self._backdrop_key != chave:
+            self._backdrop = self._render_backdrop()
+            self._backdrop_key = chave
+
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._backdrop)
+        if not self.is_empty:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            self._paint_cursor(painter, self._plot_rect(), self._theme.palette)
+        painter.end()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802  (API do Qt)
+        # A imagem tem o tamanho do widget; mudou o tamanho, mudou o desenho.
+        self._invalidate_backdrop()
+        super().resizeEvent(event)
 
     def _paint_frame(self, painter: QPainter, rect: QRectF, palette: Palette) -> None:
         font = QFont(self._theme.type_scale.family_ui.split(",")[0].strip("'"))
@@ -553,9 +643,35 @@ class DistanceChart(QWidget):
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802  (API do Qt)
         rect = self._plot_rect()
         if rect.contains(event.position()):
-            distance = self._to_distance(event.position().x(), rect)
-            self.hovered.emit(distance)
+            self._queue_hover(self._to_distance(event.position().x(), rect))
         super().mouseMoveEvent(event)
+
+    def _queue_hover(self, x_value: float) -> None:
+        """Emite `hovered` no máximo a cada `HOVER_COALESCE_MS`.
+
+        O primeiro movimento sai **na hora** — atrasar o cursor de propósito
+        para economizar quadro faria a tela parecer mais lenta, não mais rápida.
+        O que o teto corta é a enxurrada que vem depois: o sistema entrega
+        movimento a centenas de eventos por segundo, e cada um deles faz sete
+        gráficos, o mapa, o diagrama de força G e quatro rótulos se repintarem.
+        Sem teto a fila cresce mais rápido do que a tela a esvazia, e o cursor
+        passa a arrastar atrás do ponteiro mesmo com a pintura já barata.
+        """
+        if self._hover_timer.isActive():
+            self._pending_hover = x_value
+            return
+        self._pending_hover = None
+        self.hovered.emit(x_value)
+        self._hover_timer.start()
+
+    def _flush_hover(self) -> None:
+        """Solta o último movimento retido, se houve algum."""
+        if self._pending_hover is None:
+            return
+        pendente = self._pending_hover
+        self._pending_hover = None
+        self.hovered.emit(pendente)
+        self._hover_timer.start()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802  (API do Qt)
         rect = self._plot_rect()

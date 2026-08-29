@@ -43,6 +43,8 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QPen,
+    QPixmap,
+    QResizeEvent,
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -152,6 +154,13 @@ class TrackMap(QWidget):
         self._legend: list[tuple[str, str]] = []
         self._marker_legend: list[tuple[str, str]] = []
 
+        #: Traçado memorizado. O mapa de calor pinta um segmento colorido
+        #: por trecho da volta e recolore cada um deles — 24 ms por
+        #: repintura, medidos —, e nada disso muda quando o cursor anda. O
+        #: que muda é o anel do cursor. Mesma solução do `DistanceChart`.
+        self._backdrop: QPixmap | None = None
+        self._backdrop_key: tuple[int, int, float] | None = None
+
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
@@ -175,7 +184,7 @@ class TrackMap(QWidget):
     def set_legend(self, entries: list[tuple[str, str]]) -> None:
         """Legenda discreta: pares (cor, rótulo). Vazia volta à rampa."""
         self._legend = entries
-        self.update()
+        self._invalidate_backdrop()
 
     def set_marker_legend(self, entries: list[tuple[str, str]]) -> None:
         """O que cada bolinha significa: pares (cor, rótulo).
@@ -188,7 +197,7 @@ class TrackMap(QWidget):
         que se leia à distância qual é qual.
         """
         self._marker_legend = entries
-        self.update()
+        self._invalidate_backdrop()
 
     # ---------- dados ----------
 
@@ -196,11 +205,11 @@ class TrackMap(QWidget):
         self._paths = paths
         self._recompute_bounds()
         self._recompute_heatmap_range()
-        self.update()
+        self._invalidate_backdrop()
 
     def set_markers(self, markers: list[TrackMarker]) -> None:
         self._markers = markers
-        self.update()
+        self._invalidate_backdrop()
 
     def set_cursor(self, distance_m: float | None) -> None:
         if self._cursor_m != distance_m:
@@ -215,7 +224,7 @@ class TrackMap(QWidget):
         self._heatmap_range = None
         self._legend = []
         self._marker_legend = []
-        self.update()
+        self._invalidate_backdrop()
 
     @property
     def is_empty(self) -> bool:
@@ -274,12 +283,25 @@ class TrackMap(QWidget):
 
     # ---------- pintura ----------
 
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802  (API do Qt)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        palette = self._theme.palette
+    def _invalidate_backdrop(self) -> None:
+        self._backdrop = None
+        self._backdrop_key = None
+        self.update()
 
-        painter.fillRect(self.rect(), QColor(palette.surface))
+    def _render_backdrop(self) -> QPixmap:
+        """Traçado, marcas e legenda numa imagem — tudo menos o cursor."""
+        densidade = self.devicePixelRatioF()
+        imagem = QPixmap(
+            max(1, int(self.width() * densidade)),
+            max(1, int(self.height() * densidade)),
+        )
+        imagem.setDevicePixelRatio(densidade)
+
+        palette = self._theme.palette
+        imagem.fill(QColor(palette.surface))
+
+        painter = QPainter(imagem)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self._plot_rect()
 
         if self.is_empty or self._bounds is None:
@@ -288,7 +310,7 @@ class TrackMap(QWidget):
                 rect, int(Qt.AlignmentFlag.AlignCenter), "sem traçado disponível"
             )
             painter.end()
-            return
+            return imagem
 
         for path in self._paths:
             if path.is_empty:
@@ -300,15 +322,38 @@ class TrackMap(QWidget):
             else:
                 self._paint_plain(painter, path, rect)
 
-        # Ordem deliberada: marcas, cursor, e só então os rótulos. Texto é a
-        # última coisa pintada para que nada o cubra — sem isso o anel do cursor
-        # apaga o rótulo da curva sobre a qual ele está parado, que é
-        # exatamente o momento em que se quer ler os dois.
         self._paint_markers(painter, rect)
+        painter.end()
+        return imagem
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802  (API do Qt)
+        del event
+        chave = (self.width(), self.height(), self.devicePixelRatioF())
+        if self._backdrop is None or self._backdrop_key != chave:
+            self._backdrop = self._render_backdrop()
+            self._backdrop_key = chave
+
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._backdrop)
+        if self.is_empty or self._bounds is None:
+            painter.end()
+            return
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self._plot_rect()
+        # Ordem deliberada: cursor e só então os rótulos. Texto é a última coisa
+        # pintada para que nada o cubra — sem isso o anel do cursor apaga o
+        # rótulo da curva sobre a qual ele está parado, que é exatamente o
+        # momento em que se quer ler os dois. Os rótulos ficam fora da imagem
+        # memorizada por causa dessa ordem: dentro dela, o anel os cobriria.
         self._paint_cursor(painter, rect)
         self._paint_marker_labels(painter, rect)
         self._paint_legend(painter, rect)
         painter.end()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802  (API do Qt)
+        self._invalidate_backdrop()
+        super().resizeEvent(event)
 
     def _paint_plain(self, painter: QPainter, path: TrackPath, rect: QRectF) -> None:
         pen = QPen(QColor(path.color), path.width)

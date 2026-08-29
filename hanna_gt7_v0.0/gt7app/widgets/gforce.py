@@ -35,7 +35,15 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPaintEvent, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..design.tokens import Palette, Theme
@@ -97,6 +105,15 @@ class GForceDiagram(QWidget):
         self._forced_scale: float | None = None
         self._scale = MIN_SCALE_G
 
+        #: Grade e nuvem memorizadas. A nuvem tem a volta inteira — ~6.000
+        #: pontos — e era redesenhada a cada movimento do cursor só para a
+        #: bola mudar de lugar: 34 ms por evento, medidos. A bola é o único
+        #: elemento que se mexe, e é a única coisa pintada agora por
+        #: movimento; ver `DistanceChart._render_backdrop`, que resolve o
+        #: mesmo problema do mesmo jeito.
+        self._backdrop: QPixmap | None = None
+        self._backdrop_key: tuple[int, int, float] | None = None
+
         self.setMinimumHeight(height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
@@ -114,7 +131,7 @@ class GForceDiagram(QWidget):
         """
         self._points = [_to_display(lat, lon) for lat, lon in points]
         self._scale = self._compute_scale()
-        self.update()
+        self._invalidate_backdrop()
 
     def set_current(self, value: tuple[float, float] | None) -> None:
         """Onde o carro está agora — ou onde o cursor está apontando."""
@@ -125,7 +142,7 @@ class GForceDiagram(QWidget):
         self._points = []
         self._current = None
         self._scale = MIN_SCALE_G
-        self.update()
+        self._invalidate_backdrop()
 
     @property
     def scale_g(self) -> float:
@@ -146,7 +163,7 @@ class GForceDiagram(QWidget):
         """Fixa o limite dos eixos, ou volta ao automático com `None`."""
         self._forced_scale = scale_g
         self._scale = self._compute_scale()
-        self.update()
+        self._invalidate_backdrop()
 
     def _compute_scale(self) -> float:
         """Automático: o **menor degrau que contém** o pico da volta.
@@ -201,22 +218,55 @@ class GForceDiagram(QWidget):
 
     # ---------- pintura ----------
 
+    def _invalidate_backdrop(self) -> None:
+        self._backdrop = None
+        self._backdrop_key = None
+        self.update()
+
+    def _render_backdrop(self) -> QPixmap:
+        """Grade e nuvem numa imagem, na densidade do dispositivo."""
+        densidade = self.devicePixelRatioF()
+        imagem = QPixmap(
+            max(1, int(self.width() * densidade)),
+            max(1, int(self.height() * densidade)),
+        )
+        imagem.setDevicePixelRatio(densidade)
+        imagem.fill(Qt.GlobalColor.transparent)
+
+        palette = self._theme.palette
+        painter = QPainter(imagem)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self._plot_rect()
+        self._paint_grid(painter, rect, palette)
+        if self._points:
+            self._paint_cloud(painter, rect, palette)
+        painter.end()
+        return imagem
+
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802  (API do Qt)
         del event
+        chave = (self.width(), self.height(), self.devicePixelRatioF())
+        if self._backdrop is None or self._backdrop_key != chave:
+            self._backdrop = self._render_backdrop()
+            self._backdrop_key = chave
+
         painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._backdrop)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         palette = self._theme.palette
         rect = self._plot_rect()
 
-        self._paint_grid(painter, rect, palette)
         if not self._points and self._current is None:
             self._paint_placeholder(painter, rect, palette)
             painter.end()
             return
 
-        self._paint_cloud(painter, rect, palette)
         self._paint_ball(painter, rect, palette)
         painter.end()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802  (API do Qt)
+        self._invalidate_backdrop()
+        super().resizeEvent(event)
 
     def _paint_grid(
         self, painter: QPainter, rect: QRectF, palette: Palette
