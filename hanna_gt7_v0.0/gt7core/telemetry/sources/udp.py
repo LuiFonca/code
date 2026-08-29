@@ -247,8 +247,9 @@ class Gt7UdpTelemetrySource(TelemetrySource):
                         break
                     raise
 
+                # Qualquer pacote conta para o relógio do silêncio: silêncio é
+                # ausência **de tráfego**, e lixo na porta não é ausência.
                 last_packet_at = time.time()
-                reported_no_signal = False
                 self.metrics.record_packet(len(data))
 
                 decoded = salsa20_decode(data)
@@ -257,10 +258,25 @@ class Gt7UdpTelemetrySource(TelemetrySource):
                     self.metrics.record_invalid()
                     continue
 
-                if not got_first_packet:
+                # Voltar a receber é um **evento**, e precisa ser anunciado.
+                #
+                # Antes, `RECEIVING` só era emitido na guarda de primeiro
+                # pacote; o retorno do silêncio limpava a bandeira interna e não
+                # avisava ninguém. Bastavam três segundos calados — um menu do
+                # jogo, uma tela de carregamento, um soluço de Wi-Fi — para o
+                # botão ficar em SEM SINAL **para sempre**, com a telemetria
+                # chegando normalmente atrás. O indicador mentia, e mentir sobre
+                # a conexão é o pior lugar para mentir: é o primeiro lugar em
+                # que se olha quando alguma coisa parece errada.
+                if not got_first_packet or reported_no_signal:
+                    primeiro = not got_first_packet
                     got_first_packet = True
+                    reported_no_signal = False
                     self._emit_status(ConnectionState.RECEIVING)
-                    _log.info("primeiro pacote recebido", extra={"ps_ip": self._ps_ip})
+                    _log.info(
+                        "primeiro pacote recebido" if primeiro else "sinal recuperado",
+                        extra={"ps_ip": self._ps_ip},
+                    )
 
                 try:
                     frame = TelemetryFrame.from_bytes(decoded)
