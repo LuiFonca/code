@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from gt7core.analytics.aids import aid_spans, was_recorded
 from gt7core.analytics.corners import detect_corners
+from gt7core.analytics.elevation import slope_series
 from gt7core.analytics.series import (
     LapSeries,
     compute_delta_series,
@@ -42,7 +43,10 @@ from ..pages.analysis import (
     BOOST_PRESENT_BAR,
     BOOST_STEP_BAR,
     BOOST_TOP_MIN_BAR,
+    MIN_SLOPE_COVERAGE,
     NUM_SECTORS,
+    SLOPE_STEP_PCT,
+    SLOPE_TOP_MIN_PCT,
 )
 from ..widgets.advice import AdviceCard
 from ..widgets.aidband import AidBand
@@ -316,6 +320,22 @@ class ComparePage(Page):
             y_step=BOOST_STEP_BAR,
             y_top_min=BOOST_TOP_MIN_BAR,
         )
+        # Inclinação da pista: **uma** linha, e não o par.
+        #
+        # A comparação só aceita voltas da mesma pista, então a rampa é a mesma
+        # estrada nas duas — desenhar duas linhas praticamente idênticas
+        # convidaria a procurar diferença onde não pode haver. Aqui ela é
+        # contexto: é o quadro que responde "por que perdi dois décimos neste
+        # trecho sem ter errado nada", quando a resposta é que ali sobe.
+        self._slope_chart = DistanceChart(
+            self.theme,
+            "Inclinação da pista  (+ subida)",
+            unit="%",
+            height=110,
+            y_step=SLOPE_STEP_PCT,
+            y_top_min=SLOPE_TOP_MIN_PCT,
+            y_symmetric=True,
+        )
 
         self._charts = [
             self._delta_chart,
@@ -323,6 +343,7 @@ class ComparePage(Page):
             self._throttle_chart,
             self._brake_chart,
             self._boost_chart,
+            self._slope_chart,
         ]
         for chart in self._charts:
             charts.add(chart)
@@ -522,6 +543,7 @@ class ComparePage(Page):
         self._throttle_chart.set_series(self._pair("throttle"))
         self._brake_chart.set_series(self._pair("brake"))
         self._fill_boost()
+        self._fill_slope()
         self._fill_aid_band()
 
         # As marcas destacam onde se perdeu, não todas as curvas: um gráfico
@@ -655,6 +677,31 @@ class ComparePage(Page):
             self._boost_chart.set_series(self._pair("boost_bar"))
         else:
             self._boost_chart.clear()
+
+    def _fill_slope(self) -> None:
+        """A rampa da pista, tirada da volta de referência.
+
+        Some inteira quando a referência não tem relevo gravado, em vez de
+        desenhar uma reta no zero: reta no zero afirma pista plana, e volta
+        antiga não mediu isso.
+        """
+        rampas = slope_series(self._reference)
+        medidas = [
+            (ponto.distance_m, valor)
+            for ponto, valor in zip(self._reference, rampas, strict=True)
+            if valor is not None
+        ]
+        tem_relevo = bool(self._reference) and len(medidas) >= len(
+            self._reference
+        ) * MIN_SLOPE_COVERAGE
+
+        self._slope_chart.setVisible(tem_relevo)
+        if not tem_relevo:
+            self._slope_chart.clear()
+            return
+        self._slope_chart.set_series(
+            [Series("pista", self.theme.palette.channel_slope, medidas)]
+        )
 
     def _fill_aid_band(self) -> None:
         """TCS e ASM das duas voltas, quatro linhas no mesmo eixo."""

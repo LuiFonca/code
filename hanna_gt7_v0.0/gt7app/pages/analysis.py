@@ -67,8 +67,8 @@ NUM_SECTORS = 3
 #: Índices em `self._charts`. Nomeados porque `self._charts[3]` num arquivo de
 #: 500 linhas não diz qual gráfico é, e trocar dois por engano é um defeito que
 #: só aparece olhando a tela.
-CHART_SPEED, CHART_PEDALS, CHART_YAW = 0, 1, 2
-CHART_GRIP, CHART_BOOST, CHART_SLOPE = 3, 4, 5
+CHART_SPEED, CHART_PEDALS, CHART_BOOST = 0, 1, 2
+CHART_YAW, CHART_GRIP, CHART_HEIGHT, CHART_SLOPE = 3, 4, 5, 6
 
 #: Rótulo de cada roda no gráfico de aderência, na ordem de `WHEELS`.
 WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
@@ -78,9 +78,23 @@ WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
 YAW_STEP_DEG = 30.0
 YAW_TOP_MIN_DEG = 60.0
 
-#: Aderência em %, onde 100 é a roda girando na velocidade do carro.
-GRIP_STEP_PCT = 25.0
-GRIP_TOP_MIN_PCT = 125.0
+#: Amplitude mínima do quadro de aderência, em pontos percentuais. Existe
+#: para o outro extremo do problema: sem piso, uma volta limpa — em que as
+#: quatro rodas ficam entre 99% e 101% — teria essa oscilação de 2 pontos
+#: esticada até a altura toda e leria como um problema grave.
+GRIP_MIN_SPAN_PCT = 20.0
+
+#: Amplitude mínima do quadro de altura, em milímetros. Um carro de rua
+#: mexe uns 30 mm entre freada e aceleração; um GT3 bem menos. O piso
+#: impede que a diferença de um milímetro num carro rígido desenhe do
+#: mesmo tamanho que trinta num carro mole.
+HEIGHT_MIN_SPAN_MM = 25.0
+
+#: Curso mínimo, em milímetros, para o canal de altura valer um quadro.
+#: Abaixo de um milímetro em toda a volta a suspensão não se mexeu, e o que
+#: se desenharia é uma reta — ou o campo não foi gravado, ou o carro está
+#: parado. Nos dois casos o quadro só ocuparia espaço.
+MIN_HEIGHT_TRAVEL_MM = 1.0
 
 #: Pressão de turbo: degraus de 1 bar, teto mínimo de 2. Um carro que faz 1,4
 #: bar desenha num quadro de 2; um de 2,4 bar sobe para 3, e assim por diante.
@@ -171,6 +185,19 @@ class AnalysisPage(Page):
             DistanceChart(
                 self.theme, "Pedais", unit="%", height=110, y_range=(0.0, 100.0)
             ),
+            # Turbo logo abaixo dos pedais: é onde ele se lê. Sozinho o canal
+            # não diz nada; ao lado do acelerador ele mostra o **atraso** —
+            # a distância entre o pé ir ao fundo e a pressão chegar —, e com
+            # um quadro de gráfico entre os dois essa comparação exige o olho
+            # ir e voltar.
+            DistanceChart(
+                self.theme,
+                "Pressão de turbo",
+                unit="bar",
+                height=110,
+                y_step=BOOST_STEP_BAR,
+                y_top_min=BOOST_TOP_MIN_BAR,
+            ),
             # Guinada, e não esterço. O GT7 **não transmite volante**, e a
             # leitura dos 296 bytes inteiros confirmou: não há campo de
             # entrada de direção em lugar nenhum do pacote. Houve aqui um
@@ -187,21 +214,32 @@ class AnalysisPage(Page):
                 y_top_min=YAW_TOP_MIN_DEG,
                 y_symmetric=True,
             ),
+            # Aderência com escala **flutuante**. Com o eixo ancorado em zero
+            # e teto de 125%, os dados — que vivem entre 90% e 105% — desenhavam
+            # numa faixa de poucos pixels: um travamento de 8 pontos e um de 2
+            # eram o mesmo risco. Zero não é referência aqui (roda com 0% de
+            # aderência é roda que não gira), então a âncora não estava
+            # protegendo nada e custava o canal inteiro.
             DistanceChart(
                 self.theme,
                 "Aderência por roda  (100% = rodando limpo)",
                 unit="%",
                 height=120,
-                y_step=GRIP_STEP_PCT,
-                y_top_min=GRIP_TOP_MIN_PCT,
+                y_anchor_zero=False,
+                y_min_span=GRIP_MIN_SPAN_PCT,
             ),
+            # Altura de suspensão por roda, em milímetros. Lida junto com a
+            # freada e a força G, mostra a transferência de carga: a dianteira
+            # afunda ao frear, a traseira ao acelerar, e o lado de fora numa
+            # curva. É também onde se vê o carro raspando em zebra ou quebra-
+            # -molas — e, num acerto, se a mola está mole demais para o traçado.
             DistanceChart(
                 self.theme,
-                "Pressão de turbo",
-                unit="bar",
-                height=110,
-                y_step=BOOST_STEP_BAR,
-                y_top_min=BOOST_TOP_MIN_BAR,
+                "Altura por roda",
+                unit="mm",
+                height=120,
+                y_anchor_zero=False,
+                y_min_span=HEIGHT_MIN_SPAN_MM,
             ),
             # Inclinação da pista, e não altitude: o que muda a frenagem é a
             # rampa, e o perfil de elevação de uma volta é quase sempre uma
@@ -475,6 +513,7 @@ class AnalysisPage(Page):
             ]
         )
         self._fill_grip_chart(points, x_at)
+        self._fill_height_chart(points, x_at)
         self._fill_boost_chart(points, x_at)
         self._fill_slope_chart(points, x_at)
         self._fill_aid_band(points, x_at)
@@ -578,6 +617,47 @@ class AnalysisPage(Page):
             series.append(Series(WHEEL_LABELS[roda], cores[roda], valores))
         self._charts[CHART_GRIP].set_series(series)
         self._warn_if_slip_implausible(series, points)
+
+    def _fill_height_chart(
+        self, points: list[TelemetryPoint], x_at: dict[float, float]
+    ) -> None:
+        """Altura de suspensão das quatro rodas, em milímetros.
+
+        O pacote traz esta altura em metros, num campo por roda (0xC4–0xD4). A
+        conversão para milímetro é só de unidade: em metro, a variação inteira
+        de uma volta cabe em três casas decimais e o eixo fica ilegível.
+
+        Some quando o carro não mexe — o gerador sintético emitia altura
+        constante até esta versão, e uma linha reta perfeita ocupando 120 px é
+        um quadro que não responde nada. As mesmas cores das rodas do canal de
+        aderência, para que "DE" signifique a mesma roda nos dois.
+        """
+        palette = self.theme.palette
+        cores = {
+            "fl": palette.channel_speed,
+            "fr": palette.green,
+            "rl": palette.orange,
+            "rr": palette.purple,
+        }
+
+        series = []
+        extremos: list[float] = []
+        for roda in WHEELS:
+            valores = [
+                (x_at.get(p.distance_m, p.distance_m),
+                 getattr(p, f"suspension_{roda}") * 1000.0)
+                for p in points
+                if getattr(p, f"suspension_{roda}") is not None
+            ]
+            extremos.extend(v for _, v in valores)
+            series.append(Series(WHEEL_LABELS[roda], cores[roda], valores))
+
+        mexeu = bool(extremos) and (max(extremos) - min(extremos)) >= MIN_HEIGHT_TRAVEL_MM
+        self._charts[CHART_HEIGHT].setVisible(mexeu)
+        if not mexeu:
+            self._charts[CHART_HEIGHT].clear()
+            return
+        self._charts[CHART_HEIGHT].set_series(series)
 
     def _warn_if_slip_implausible(
         self, series: list[Series], points: list[TelemetryPoint]

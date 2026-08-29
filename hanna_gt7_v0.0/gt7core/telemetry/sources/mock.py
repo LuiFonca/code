@@ -66,6 +66,18 @@ COAST_ACCEL_MS2 = 0.35
 #: absurdo que faria o gráfico parecer uma montanha-russa.
 ELEVATION_AMPLITUDE_M = 18.0
 
+#: Altura de repouso das suspensões, em metros — dianteira mais baixa que a
+#: traseira, como num carro de pista.
+FRONT_RIDE_HEIGHT_M = 0.100
+REAR_RIDE_HEIGHT_M = 0.110
+
+#: Curso da suspensão por unidade de aceleração, em metros por m/s².
+#: Calibrados para que uma freada de 1 g mexa ~15 mm e uma curva de 1 g
+#: ~10 mm — a ordem de grandeza de um carro de pista, e o suficiente para o
+#: canal mostrar transferência de carga sem virar montanha-russa.
+PITCH_TRAVEL_M_PER_MS2 = 0.0015
+ROLL_TRAVEL_M_PER_MS2 = 0.0010
+
 
 def _target_speed(lap_fraction: float) -> float:
     """Velocidade alvo na fração informada da volta.
@@ -144,8 +156,22 @@ def synthetic_lap(
     speed_scale = track_length_m / (profile_mean_ms * pace_factor * lap_time_s)
 
     fuel = 60.0
-    previous_speed_ms = 0.0
+    # Semeada com a velocidade da **própria primeira amostra**, e não com zero.
+    #
+    # Com zero, a primeira amostra de cada volta acusava aceleração de 3.900
+    # m/s² — o gerador afirmava que o carro saía de parado a 193 km/h em 16 ms.
+    # Uma volta gravada é uma volta lançada: no primeiro quadro o carro já está
+    # a ritmo, e a aceleração ali é praticamente nada.
+    #
+    # Ficou escondido enquanto só os pedais dependiam disso (o efeito era um
+    # quadro com acelerador em 100%, indistinguível de uma reta). Apareceu
+    # inteiro quando a suspensão passou a responder à carga: 400 g de
+    # transferência jogaram a altura da dianteira para 4,9 metros.
+    previous_speed_ms = (
+        max(20.0, _target_speed(0.0) * pace_factor * speed_scale) / 3.6
+    )
     throttle_hold = 0.0
+    previous_heading_rad: float | None = None
 
     for index in range(frame_count):
         elapsed_ms = int(index * dt_ms)
@@ -264,6 +290,36 @@ def synthetic_lap(
         fuel = max(0.0, fuel - speed_ms * (dt_ms / 1000.0) * 0.00018)
         tire_base = 78.0 + cornering * 22.0
 
+        # Suspensão que responde à carga. Era constante — 0,10 m na frente e
+        # 0,11 m atrás, os mesmos quatro números do começo ao fim da volta — e
+        # um canal de altura desenhado sobre isso seria uma reta perfeita que
+        # não exercita nada.
+        #
+        # Transferência longitudinal: freando, o nariz mergulha e a traseira
+        # sobe; acelerando, o contrário. `accel` já está em m/s² e é a mesma
+        # grandeza que causa a transferência no carro real.
+        mergulho = accel * PITCH_TRAVEL_M_PER_MS2
+
+        # Transferência lateral: a guinada do rumo dá a aceleração lateral. Com
+        # X e Z no plano e Y para cima, o ângulo crescente gira de +X para +Z, e
+        # +Z é a direita de quem anda em +X — então guinada positiva é curva à
+        # direita, e numa curva à direita o carro rola para a **esquerda**,
+        # comprimindo as rodas daquele lado.
+        heading_rad = math.atan2(rumo_z, rumo_x)
+        rolagem = 0.0
+        if previous_heading_rad is not None:
+            delta = (heading_rad - previous_heading_rad + math.pi) % (
+                2.0 * math.pi
+            ) - math.pi
+            yaw_rate = delta / max(dt_ms / 1000.0, 1e-6)
+            rolagem = yaw_rate * speed_ms * ROLL_TRAVEL_M_PER_MS2
+        previous_heading_rad = heading_rad
+
+        suspension_fl = FRONT_RIDE_HEIGHT_M + mergulho - rolagem
+        suspension_fr = FRONT_RIDE_HEIGHT_M + mergulho + rolagem
+        suspension_rl = REAR_RIDE_HEIGHT_M - mergulho - rolagem
+        suspension_rr = REAR_RIDE_HEIGHT_M - mergulho + rolagem
+
         yield TelemetryFrame(
             speed_kmh=speed_kmh,
             rpm=rpm,
@@ -297,10 +353,10 @@ def synthetic_lap(
             tire_temp_fr=tire_base + 5.0,
             tire_temp_rl=tire_base,
             tire_temp_rr=tire_base + 2.0,
-            suspension_fl=0.10,
-            suspension_fr=0.11,
-            suspension_rl=0.10,
-            suspension_rr=0.11,
+            suspension_fl=suspension_fl,
+            suspension_fr=suspension_fr,
+            suspension_rl=suspension_rl,
+            suspension_rr=suspension_rr,
             tire_slip_fl=slip_front,
             tire_slip_fr=slip_front,
             tire_slip_rl=slip_rear,

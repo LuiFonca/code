@@ -114,6 +114,76 @@ def montado(app: QApplication, tmp_path):  # noqa: ANN001, ARG001
         core.close()
 
 
+class TestCanalDeAltura:
+    """Altura de suspensão por roda — o canal novo desta rodada."""
+
+    def test_sai_preenchido_com_as_quatro_rodas(self, montado) -> None:  # noqa: ANN001
+        from gt7app.pages.analysis import CHART_HEIGHT
+
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        grafico = pagina._charts[CHART_HEIGHT]  # noqa: SLF001
+        assert not grafico.is_empty
+        assert len(grafico._series) == 4, "uma série por roda"  # noqa: SLF001
+
+    def test_os_valores_saem_em_milimetros(self, montado) -> None:  # noqa: ANN001
+        """O pacote traz metros; em metro o eixo fica em três casas decimais e
+        ilegível. A conversão é só de unidade, e é fácil de esquecer."""
+        from gt7app.pages.analysis import CHART_HEIGHT
+
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        valores = [
+            v
+            for s in pagina._charts[CHART_HEIGHT]._series  # noqa: SLF001
+            for _, v in s.points
+        ]
+        assert valores
+        # Um carro de pista anda entre 5 e 20 cm do chão. Em metro os números
+        # sairiam entre 0,05 e 0,2 e a asserção pegaria a unidade errada.
+        assert 20.0 < min(valores) < max(valores) < 400.0
+
+    def test_o_quadro_some_quando_a_suspensao_nao_mexe(self, montado) -> None:  # noqa: ANN001
+        """Suspensão travada — ou campo não gravado — desenharia uma reta
+        perfeita ocupando 120 px de uma página já longa."""
+        from gt7app.pages.analysis import CHART_HEIGHT
+
+        window, core = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        pontos = list(pagina._points)  # noqa: SLF001
+        assert pontos
+        for ponto in pontos:
+            ponto.suspension_fl = ponto.suspension_fr = 0.10
+            ponto.suspension_rl = ponto.suspension_rr = 0.10
+        pagina._fill_height_chart(  # noqa: SLF001
+            pontos, {p.distance_m: p.distance_m for p in pontos}
+        )
+
+        assert pagina._charts[CHART_HEIGHT].isHidden()  # noqa: SLF001
+
+
+class TestEscalaDaAderencia:
+    def test_o_quadro_acompanha_os_dados_em_vez_de_ancorar_no_zero(
+        self, montado  # noqa: ANN001
+    ) -> None:
+        """Com o eixo de 0 a 125, os dados — que vivem entre 90% e 105% —
+        desenhavam numa faixa de poucos pixels, e um travamento de 8 pontos
+        saía igual a um de 2."""
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        pagina.refresh()
+
+        baixo, alto = pagina._charts[CHART_GRIP]._bounds  # noqa: SLF001
+        assert baixo > 50.0, f"o quadro não deveria descer ao zero (baixo={baixo})"
+        assert alto - baixo < 60.0, "o quadro deveria estar apertado nos dados"
+
+
 class TestCanaisNovosDaAnalise:
     def test_guinada_e_aderencia_saem_preenchidos(self, montado) -> None:  # noqa: ANN001
         """Os dois canais novos precisam ter dado, não só existir.
@@ -480,8 +550,51 @@ class TestAjustesDeLeitura:
         from gt7app.pages import analysis
 
         assert not hasattr(analysis, "CHART_STEER")
-        assert analysis.CHART_GRIP == 3
-        assert analysis.CHART_BOOST == 4
+
+    def test_cada_indice_aponta_para_o_grafico_certo(self, montado) -> None:  # noqa: ANN001
+        """As constantes e a ordem da lista não podem divergir.
+
+        Antes este teste fixava os números — `CHART_GRIP == 3` —, o que trancava
+        a ordem dos quadros na tela junto com a correção dos índices. São duas
+        coisas diferentes: a ordem é escolha de layout e mudou quando o turbo
+        subiu para debaixo dos pedais; o que não pode mudar é um índice apontar
+        para outro canal, que preencheria o quadro de aderência com pressão de
+        turbo sem nada na tela dizer qual dos dois está errado.
+        """
+        from gt7app.pages import analysis
+
+        window, _ = montado
+        pagina = window._pages[1]  # noqa: SLF001
+        graficos = pagina._charts  # noqa: SLF001
+
+        esperado = {
+            analysis.CHART_SPEED: "Velocidade",
+            analysis.CHART_PEDALS: "Pedais",
+            analysis.CHART_BOOST: "Pressão de turbo",
+            analysis.CHART_YAW: "Guinada",
+            analysis.CHART_GRIP: "Aderência",
+            analysis.CHART_HEIGHT: "Altura",
+            analysis.CHART_SLOPE: "Inclinação",
+        }
+        assert len(esperado) == len(graficos), "índice a mais ou a menos"
+        for indice, inicio in esperado.items():
+            titulo = graficos[indice]._title  # noqa: SLF001
+            assert titulo.startswith(inicio), (
+                f"índice {indice} deveria ser '{inicio}...', é '{titulo}'"
+            )
+
+    def test_o_turbo_vem_logo_abaixo_dos_pedais(self) -> None:
+        """É ao lado do acelerador que a pressão de turbo se lê: o que ela
+        mostra é o **atraso** entre o pé ir ao fundo e a pressão chegar, e com
+        um quadro no meio essa comparação exige o olho ir e voltar."""
+        from gt7app.pages import analysis
+
+        assert analysis.CHART_BOOST == analysis.CHART_PEDALS + 1
+
+    def test_a_altura_vem_logo_abaixo_da_aderencia(self) -> None:
+        from gt7app.pages import analysis
+
+        assert analysis.CHART_HEIGHT == analysis.CHART_GRIP + 1
 
     def test_tabela_de_curvas_sem_raio_e_sem_saida(self, montado) -> None:  # noqa: ANN001
         from gt7app.pages.analysis import CORNER_COLUMNS
