@@ -63,6 +63,14 @@ _log = get_logger(__name__)
 
 SIDEBAR_WIDTH = 200
 
+#: Tamanho mínimo da janela. Não é o menor tamanho em que o programa
+#: **funciona** — com a quebra de linha no cabeçalho ele funciona bem
+#: abaixo disto —, é o menor em que ele ainda serve para alguma coisa: um
+#: gráfico de volta com 400 px de largura tem uma freada inteira em vinte
+#: pixels.
+WINDOW_MIN_W = 960
+WINDOW_MIN_H = 600
+
 
 class AppShell(QMainWindow):
     """Janela principal: barra lateral + páginas + paleta de comandos."""
@@ -86,6 +94,11 @@ class AppShell(QMainWindow):
 
         self.setWindowTitle("HANNA GT7")
         self.resize(1360, 860)
+        # Piso honesto. O Qt calculava 260 px de mínimo a partir dos
+        # widgets, e deixava encolher até um estado em que nada é legível —
+        # o que não é um tamanho que alguém queira, é um tamanho pelo qual
+        # se passa arrastando o canto da janela.
+        self.setMinimumSize(WINDOW_MIN_W, WINDOW_MIN_H)
         self.setStyleSheet(build_stylesheet(self._theme))
 
         self._build()
@@ -200,7 +213,16 @@ class AppShell(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(page)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Barra horizontal **quando precisar**, e não desligada.
+        #
+        # Desligada, o que não coubesse era cortado e ficava inalcançável:
+        # a Análise de stint pedia 1410 px e a janela oferecia 1160, então
+        # o último seletor não existia na tela e não havia como chegar
+        # nele. O cabeçalho que quebra linha resolve a causa; isto é a rede
+        # de segurança para qualquer página que um dia volte a passar do
+        # tamanho — melhor uma barra de rolagem feia do que conteúdo
+        # invisível.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         self._stack.addWidget(scroll)
         self._pages.append(page)

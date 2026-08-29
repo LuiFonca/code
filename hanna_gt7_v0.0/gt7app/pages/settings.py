@@ -128,7 +128,9 @@ class SettingsPage(Page):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Mesma regra do resto do programa: o que não couber rola, em vez
+        # de ser cortado sem que nada na tela diga que existe.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         inner = QWidget()
         column = QVBoxLayout(inner)

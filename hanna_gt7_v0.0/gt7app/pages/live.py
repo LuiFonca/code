@@ -43,6 +43,7 @@ from ..widgets.charts import (
     DistanceChart,
     Series,
 )
+from ..widgets.flow import FlowWidget, labelled
 from ..widgets.radio import RadioCard
 from ..widgets.tyres import TyreTemperatures
 from .base import Page
@@ -171,10 +172,9 @@ class LivePage(Page):
         self.content.addWidget(self._status)
 
     def _build_toolbar(self) -> QWidget:
-        bar = QWidget()
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Space.SM.px)
+        # Barra que quebra linha em janela estreita, em vez de ser cortada.
+        bar = FlowWidget(spacing=Space.SM.px, align_right=True)
+        layout = bar
 
         self._track_input = QComboBox()
         self._track_input.setEditable(True)
@@ -219,11 +219,19 @@ class LivePage(Page):
         self._stop_button.setObjectName(OBJ_GHOST_BUTTON)
         self._stop_button.setEnabled(False)
 
-        layout.addWidget(QLabel("Pista:"))
-        layout.addWidget(self._track_input)
-        layout.addWidget(self._ps_ip_label)
-        layout.addWidget(self._start_button)
-        layout.addWidget(self._stop_button)
+        # Blocos indivisíveis: o rótulo nunca se separa do campo, e o IP
+        # nunca se separa do botão de conexão — o botão diz o **estado** da
+        # ligação e o endereço diz **com quem**, e separados por uma quebra de
+        # linha "conectado" deixa de responder "a quê".
+        layout.addWidget(labelled("Pista:", self._track_input))
+        conexao = QWidget()
+        linha_conexao = QHBoxLayout(conexao)
+        linha_conexao.setContentsMargins(0, 0, 0, 0)
+        linha_conexao.setSpacing(Space.SM.px)
+        linha_conexao.addWidget(self._ps_ip_label)
+        linha_conexao.addWidget(self._start_button)
+        linha_conexao.addWidget(self._stop_button)
+        layout.addWidget(conexao)
         return bar
 
     def _refresh_ps_ip(self) -> None:

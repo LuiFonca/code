@@ -15,13 +15,14 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QComboBox, QLabel, QWidget
 
 from gt7core.domain.models import Lap
 from gt7core.storage.repositories import SqliteLapRepository, SqliteTrackRepository
 
 from ..design.theme import OBJ_SELECTOR_NOTE
 from ..design.tokens import Space
+from .flow import FlowLayout, labelled
 
 #: Larguras mínimas, em pixels. O catálogo tem nomes como "24 Heures du Mans
 #: Racing Circuit No Chicane"; caber todos deixaria o combo maior que a janela,
@@ -96,9 +97,11 @@ class TrackLapSelector(QWidget):
         self._limit = limit
         self._loading = False
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Space.SM.px)
+        # Layout que quebra linha. Numa linha rígida a largura mínima é a
+        # soma dos combos, e é ela que chegava ao cabeçalho da página e cortava
+        # a tela em janela estreita. Quebrando, o mínimo vira o do combo mais
+        # largo — e a barra continua sendo uma linha só sempre que couber.
+        layout = FlowLayout(self, spacing=Space.SM.px)
 
         # Combos que se recarregam ao **abrir**. Sem isso, uma volta apagada no
         # Histórico continuava listada aqui até a página ser reconstruída, e
@@ -117,13 +120,19 @@ class TrackLapSelector(QWidget):
         self._track_combo.setMinimumWidth(TRACK_COMBO_MIN_W)
         self._lap_combo.setMinimumWidth(LAP_COMBO_MIN_W)
 
-        self._track_label = QLabel("Pista:")
-        self._track_label.setVisible(show_track)
-        self._track_combo.setVisible(show_track)
-
         self._car_label = QLabel("")
         self._car_label.setObjectName(OBJ_SELECTOR_NOTE)
         self._car_label.setVisible(False)
+
+        # Cada par rótulo+combo é um **bloco indivisível**: quebrando linha, a
+        # barra corta entre os pares e nunca deixa um rótulo órfão no fim de
+        # uma linha com o campo dele no começo da seguinte.
+        #
+        # O bloco inteiro some quando a pista não é oferecida — comparar duas
+        # voltas de pistas diferentes não significa nada, e o segundo seletor
+        # da comparação segue a pista do primeiro.
+        self._track_block = labelled("Pista:", self._track_combo)
+        self._track_block.setVisible(show_track)
 
         # O carro vem **sempre depois do combo de volta**, e a posição não
         # depende de a pista estar à mostra. Já dependeu: na comparação, a linha
@@ -131,10 +140,8 @@ class TrackLapSelector(QWidget):
         # depois, e as duas lado a lado pareciam ter os campos trocados. Ordem
         # igual nas duas é o que alinha a coluna e faz a leitura ser sempre a
         # mesma: qual volta, de qual carro.
-        layout.addWidget(self._track_label)
-        layout.addWidget(self._track_combo)
-        layout.addWidget(QLabel(lap_label))
-        layout.addWidget(self._lap_combo)
+        layout.addWidget(self._track_block)
+        layout.addWidget(labelled(lap_label, self._lap_combo))
         layout.addWidget(self._car_label)
 
         self._track_combo.currentIndexChanged.connect(self._on_track_changed)

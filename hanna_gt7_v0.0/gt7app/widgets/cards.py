@@ -11,7 +11,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -31,6 +30,7 @@ from ..design.theme import (
     OBJ_SECTION_TITLE,
 )
 from ..design.tokens import Space, Theme
+from .flow import FlowLayout, FlowWidget
 
 PLACEHOLDER = "—"
 
@@ -202,9 +202,13 @@ class PageHeader(QWidget):
 
     def __init__(self, title: str, subtitle: str = "") -> None:
         super().__init__()
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Space.LG.px)
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(0, 0, 0, 0)
+        self._root.setSpacing(Space.SM.px)
+
+        self._top = QHBoxLayout()
+        self._top.setSpacing(Space.LG.px)
+        self._top.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         text = QVBoxLayout()
         text.setSpacing(0)
@@ -219,16 +223,42 @@ class PageHeader(QWidget):
         self._subtitle = QLabel(subtitle)
         self._subtitle.setObjectName(OBJ_PAGE_SUBTITLE)
         self._subtitle.setVisible(bool(subtitle))
+        # Subtítulo que quebra linha. Sem isso a largura mínima dele é a frase
+        # inteira — 460 px em "O que se repete volta após volta — consistência,
+        # evolução e desgaste" — e essa medida entrava direto na largura mínima
+        # da página, empurrando-a para além da janela por causa de um texto
+        # explicativo. Explicação é a última coisa que deveria decidir se um
+        # seletor cabe na tela.
+        self._subtitle.setWordWrap(True)
         text.addWidget(self._subtitle)
         text.addStretch(1)
 
-        layout.addLayout(text)
-        layout.addStretch(1)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # A coluna de texto fica com a folga (`stretch=1`), e não um esticador
+        # vazio. Com a folga num esticador, o subtítulo recebia só a largura do
+        # próprio `sizeHint` — que num rótulo que quebra linha é uma medida
+        # quadradinha —, e ele quebrava em duas linhas com meia tela sobrando ao
+        # lado. As ações continuam encostadas na direita porque o layout delas
+        # já alinha à direita por dentro.
+        self._top.addLayout(text, stretch=1)
+        self._root.addLayout(self._top)
 
-        self._actions = QHBoxLayout()
-        self._actions.setSpacing(Space.SM.px)
-        layout.addLayout(self._actions)
+        # As ações quebram linha quando não cabem, e **descem** para uma linha
+        # própria quando nem assim cabem ao lado do título.
+        #
+        # Eram um `QHBoxLayout` de linha única, e a largura mínima do cabeçalho
+        # era a **soma** de tudo que entrasse nele. A Análise de stint, ao
+        # ganhar quatro seletores, passou a pedir 1362 px só de cabeçalho —
+        # mais do que a janela oferece —, e como a rolagem horizontal estava
+        # desligada o último seletor simplesmente não existia na tela.
+        #
+        # As duas coisas são necessárias e resolvem problemas diferentes. A
+        # quebra de linha tira a **soma** da largura mínima; a descida devolve
+        # a largura inteira da página para os seletores, que senão disputariam
+        # a faixa com um subtítulo de 460 px e quebrariam cedo demais — em
+        # janela larga, com espaço de sobra logo abaixo.
+        self._actions = FlowWidget(spacing=Space.SM.px, align_right=True)
+        self._top.addWidget(self._actions, stretch=0)
+        self._stacked = False
 
     def set_subtitle(self, text: str) -> None:
         self._subtitle.setText(text)
@@ -236,22 +266,79 @@ class PageHeader(QWidget):
 
     def add_action(self, widget: QWidget) -> None:
         self._actions.addWidget(widget)
+        self._relayout()
+
+    def resizeEvent(self, event: object) -> None:  # noqa: N802  (API do Qt)
+        super().resizeEvent(event)  # type: ignore[arg-type]
+        self._relayout()
+
+    def _relayout(self) -> None:
+        """Decide entre título e ações lado a lado, ou em duas linhas.
+
+        Só age na **transição**, e é o que impede o Qt de entrar em laço: mexer
+        no layout dentro de `resizeEvent` dispara outro `resizeEvent`, e sem a
+        guarda os dois modos ficariam alternando para sempre.
+
+        A condição usa a largura do widget, que não muda por causa da troca de
+        modo — quem a define é a página. Por isso não há oscilação entre um
+        modo que cabe e outro que não.
+        """
+        precisa = (
+            self._text_width() + Space.LG.px + self._actions.sizeHint().width()
+        )
+        empilhar = precisa > self.width()
+        if empilhar == self._stacked:
+            return
+
+        self._stacked = empilhar
+        if empilhar:
+            self._top.removeWidget(self._actions)
+            self._root.addWidget(self._actions)
+        else:
+            self._root.removeWidget(self._actions)
+            self._top.addWidget(self._actions, stretch=0)
+
+    def _text_width(self) -> int:
+        return max(
+            self._title.sizeHint().width(),
+            self._subtitle.sizeHint().width() if self._subtitle.isVisible() else 0,
+        )
 
 
 class MetricGrid(QWidget):
-    """Grade de `MetricCard` que reflui conforme o número de colunas."""
+    """Grade de `MetricCard` que reflui conforme a **largura disponível**.
+
+    O nome sempre disse "reflui", e a implementação não refluía: os cartões
+    iam para um `QGridLayout` de número de colunas fixo, e a largura mínima da
+    grade era a soma de todos eles. Cinco cartões numa linha davam 865 px de
+    mínimo à página ao vivo — mais do que uma janela estreita oferece —, e o
+    que passasse disso era cortado.
+
+    `columns` continua sendo o número **máximo** por linha, que é a intenção de
+    quem monta a tela: cinco cartões em duas linhas de três e dois ficam feios,
+    e quem escreveu `columns=5` quis cinco. O que muda é que agora esse número
+    é um teto e não uma promessa: quando não cabem cinco, cabem os que couberem.
+    """
 
     def __init__(self, columns: int = 6) -> None:
         super().__init__()
         self._columns = columns
-        self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(Space.MD.px)
+        self._flow = FlowLayout(self, spacing=Space.MD.px, columns=columns)
         self._cards: dict[str, MetricCard] = {}
+        politica = QSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
+        )
+        politica.setHeightForWidth(True)
+        self.setSizePolicy(politica)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802  (API do Qt)
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802  (API do Qt)
+        return self._flow.heightForWidth(width)
 
     def add_card(self, key: str, card: MetricCard) -> MetricCard:
-        index = len(self._cards)
-        self._grid.addWidget(card, index // self._columns, index % self._columns)
+        self._flow.addWidget(card)
         self._cards[key] = card
         return card
 

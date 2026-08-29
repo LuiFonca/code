@@ -30,6 +30,7 @@ from ..design.tokens import Palette, Space, Theme
 from ..widgets.advice import AdviceCard
 from ..widgets.cards import Badge, Card, MetricCard, MetricGrid, StatRow
 from ..widgets.charts import DistanceChart, Series
+from ..widgets.flow import FlowWidget, labelled
 from ..widgets.selectors import (
     LAP_COMBO_MIN_W,
     TRACK_COMBO_MIN_W,
@@ -131,10 +132,11 @@ class DriverPage(Page):
         self.content.addStretch(1)
 
     def _build_toolbar(self) -> QWidget:
-        bar = QWidget()
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Space.SM.px)
+        # Quatro seletores numa linha rígida pediam 1362 px só de cabeçalho, e
+        # a página nascia cortada com o último inalcançável. Aqui eles quebram
+        # para a linha de baixo quando a janela aperta.
+        bar = FlowWidget(spacing=Space.SM.px, align_right=True)
+        layout = bar
 
         self._track_combo = QComboBox()
         self._track_combo.setMinimumWidth(TRACK_COMBO_MIN_W)
@@ -160,14 +162,12 @@ class DriverPage(Page):
             combo.setMinimumWidth(LAP_COMBO_MIN_W)
             combo.currentIndexChanged.connect(lambda _: self._rebuild())
 
-        layout.addWidget(QLabel("Pista:"))
-        layout.addWidget(self._track_combo)
-        layout.addWidget(QLabel("Carro:"))
-        layout.addWidget(self._car_combo)
-        layout.addWidget(QLabel("De:"))
-        layout.addWidget(self._from_combo)
-        layout.addWidget(QLabel("a"))
-        layout.addWidget(self._to_combo)
+        # Cada par rótulo+seletor é um bloco: a barra quebra **entre** eles,
+        # nunca no meio de um.
+        layout.addWidget(labelled("Pista:", self._track_combo))
+        layout.addWidget(labelled("Carro:", self._car_combo))
+        layout.addWidget(labelled("De:", self._from_combo))
+        layout.addWidget(labelled("a", self._to_combo))
         return bar
 
     # ---------- dados ----------
