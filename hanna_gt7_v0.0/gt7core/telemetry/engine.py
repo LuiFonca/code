@@ -45,6 +45,12 @@ MIN_SPEED_FOR_G_KMH = 5.0
 MIN_SPEED_XZ_MS = 0.5
 MIN_DT_S = 0.001
 
+#: Comprimento mínimo do vetor lateral (marcha × normal) para ele ser usado
+#: como direção. Vai a zero só quando o carro anda paralelo à normal do
+#: asfalto — o que não é pilotagem —, e a trava existe para não dividir por
+#: zero em vez de para filtrar dado ruim.
+MIN_LATERAL_NORM = 1e-6
+
 # Coerência interna de uma volta: distância percorrida contra o que a velocidade
 # média e o tempo prometem. Uma volta pode ter distância um pouco menor que a
 # integral ingênua (pausa, quadro perdido), mas não uma ordem de grandeza —
@@ -121,6 +127,7 @@ class TelemetryEngine:
         self._paused_ticks = 0
 
         self._prev_velocity_x: float | None = None
+        self._prev_velocity_y: float | None = None
         self._prev_velocity_z: float | None = None
         self._prev_velocity_ms: float | None = None
 
@@ -145,6 +152,7 @@ class TelemetryEngine:
         self._last_packet_id = None
         self._paused_ticks = 0
         self._prev_velocity_x = None
+        self._prev_velocity_y = None
         self._prev_velocity_z = None
         self._prev_velocity_ms = None
 
@@ -258,17 +266,30 @@ class TelemetryEngine:
     def _compute_g_forces(
         self, frame: TelemetryFrame, elapsed_ms: float
     ) -> tuple[float, float]:
-        """Força G lateral e longitudinal, derivando o vetor velocidade.
+        """Força G lateral e longitudinal — o que os pneus estão fazendo.
 
-        Preservado do original sem mudança — a auditoria classificou este
-        cálculo como correto e raro de ver feito certo. O pacote traz
-        velocidade, não aceleração; a derivada é projetada nos eixos do carro (o
-        vetor velocidade normalizado dá o "para frente", sua perpendicular no
-        plano XZ dá o "para o lado"). Sem a projeção o valor seria aceleração no
-        referencial do mundo, que muda de significado a cada curva.
+        O pacote traz velocidade, não aceleração; a derivada é projetada nos
+        eixos do carro (o vetor velocidade normalizado dá o "para frente", e o
+        produto vetorial dele com a normal do asfalto dá o "para o lado"). Sem
+        a projeção o valor seria aceleração no referencial do mundo, que muda
+        de significado a cada curva.
+
+        **A gravidade entra na conta.** Pela segunda lei, o que os pneus fazem
+        é `a − g⃗`, e não `a` — numa descida a passo constante a aceleração é
+        zero e mesmo assim os pneus estão freando, senão o carro ganharia
+        velocidade. A versão anterior media só `a`, no plano XZ, e por isso
+        relatava freada mais fraca do que a real em toda descida e mais forte
+        em toda subida. Numa pista plana as duas contas dão exatamente o mesmo
+        número: o termo novo entra multiplicado pela componente vertical, que
+        ali é zero.
+
+        Sem normal medida — volta antiga, fonte sintética —, cai no plano
+        horizontal, que reproduz o comportamento de antes. Cair no horizontal é
+        uma escolha ruim mas explícita; inventar uma inclinação seria pior.
         """
         if (
             self._prev_velocity_x is None
+            or self._prev_velocity_y is None
             or self._prev_velocity_z is None
             or self._prev_velocity_ms is None
             or elapsed_ms <= self._prev_velocity_ms
@@ -282,23 +303,60 @@ class TelemetryEngine:
             self._remember_velocity(frame, elapsed_ms)
             return 0.0, 0.0
 
+        speed_xz = math.hypot(frame.velocity_x, frame.velocity_z)
+        if speed_xz <= MIN_SPEED_XZ_MS:
+            self._remember_velocity(frame, elapsed_ms)
+            return 0.0, 0.0
+
         ax = (frame.velocity_x - self._prev_velocity_x) / dt
+        ay = (frame.velocity_y - self._prev_velocity_y) / dt
         az = (frame.velocity_z - self._prev_velocity_z) / dt
 
-        speed_xz = math.sqrt(frame.velocity_x**2 + frame.velocity_z**2)
-        g_lateral = g_longitudinal = 0.0
-        if speed_xz > MIN_SPEED_XZ_MS:
-            fwd_x = frame.velocity_x / speed_xz
-            fwd_z = frame.velocity_z / speed_xz
-            right_x, right_z = -fwd_z, fwd_x
-            g_longitudinal = (ax * fwd_x + az * fwd_z) / GRAVITY
-            g_lateral = (ax * right_x + az * right_z) / GRAVITY
+        # Direção de marcha em três dimensões: numa rampa o carro anda para
+        # frente **e** para cima, e um "para frente" achatado no plano XZ
+        # projetaria a subida fora da conta.
+        speed_3d = math.sqrt(
+            frame.velocity_x**2 + frame.velocity_y**2 + frame.velocity_z**2
+        )
+        if speed_3d <= MIN_SPEED_XZ_MS:
+            self._remember_velocity(frame, elapsed_ms)
+            return 0.0, 0.0
+        ux = frame.velocity_x / speed_3d
+        uy = frame.velocity_y / speed_3d
+        uz = frame.velocity_z / speed_3d
+
+        nx, ny, nz = frame.road_normal or (0.0, 1.0, 0.0)
+
+        # Lateral = marcha × normal. Na pista plana isto devolve exatamente a
+        # perpendicular de antes, (−fz, 0, fx); numa curva com sobrelevação ela
+        # se inclina junto com o asfalto, que é o que faz o banking aparecer
+        # como alívio de carga lateral em vez de sumir da conta.
+        rx = uy * nz - uz * ny
+        ry = uz * nx - ux * nz
+        rz = ux * ny - uy * nx
+        norma_lateral = math.sqrt(rx * rx + ry * ry + rz * rz)
+        if norma_lateral <= MIN_LATERAL_NORM:
+            # Marcha paralela à normal — carro subindo na vertical. Não
+            # acontece em pista; existe para não dividir por zero.
+            self._remember_velocity(frame, elapsed_ms)
+            return 0.0, 0.0
+        rx, ry, rz = rx / norma_lateral, ry / norma_lateral, rz / norma_lateral
+
+        # Força específica dos pneus, por unidade de massa: a − g⃗, com a
+        # gravidade apontando para baixo.
+        fx = ax
+        fy = ay + GRAVITY
+        fz = az
+
+        g_longitudinal = (fx * ux + fy * uy + fz * uz) / GRAVITY
+        g_lateral = (fx * rx + fy * ry + fz * rz) / GRAVITY
 
         self._remember_velocity(frame, elapsed_ms)
         return g_lateral, g_longitudinal
 
     def _remember_velocity(self, frame: TelemetryFrame, elapsed_ms: float) -> None:
         self._prev_velocity_x = frame.velocity_x
+        self._prev_velocity_y = frame.velocity_y
         self._prev_velocity_z = frame.velocity_z
         self._prev_velocity_ms = elapsed_ms
 
@@ -310,6 +368,12 @@ class TelemetryEngine:
         elapsed_ms: float,
     ) -> TelemetryPoint:
         """DTO de fio → modelo de domínio. Única tradução entre os dois."""
+        # A normal só atravessa se passar na própria validação; reprovada, os
+        # três campos vão `None` **juntos**. Meio vetor não tem significado, e
+        # um zero no lugar de uma componente que não foi medida seria a
+        # afirmação "pista horizontal aqui".
+        normal = frame.road_normal
+        road_x, road_y, road_z = normal if normal is not None else (None, None, None)
         return TelemetryPoint(
             elapsed_ms=int(round(elapsed_ms)),
             distance_m=self._cumulative_distance,
@@ -325,6 +389,10 @@ class TelemetryEngine:
             tire_temp_rr=frame.tire_temp_rr,
             position_x=frame.position_x,
             position_z=frame.position_z,
+            position_y=frame.position_y,
+            road_plane_x=road_x,
+            road_plane_y=road_y,
+            road_plane_z=road_z,
             g_lateral=g_lateral,
             g_longitudinal=g_longitudinal,
             suspension_fl=frame.suspension_fl,

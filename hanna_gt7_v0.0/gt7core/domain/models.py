@@ -8,6 +8,7 @@ estavam corretas e foram preservadas.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -68,9 +69,54 @@ class TelemetryPoint:
     terá sido gravado — sem outra migração e sem perder as voltas de agora.
     """
 
+    position_y: float | None = None
+    """Altitude, em metros. **Y é a vertical no GT7** — X e Z são o plano.
+
+    `None` em voltas gravadas antes deste campo existir. O pacote sempre trouxe
+    esta coordenada; o programa é que a lia e a descartava aqui, na fronteira do
+    domínio, e com ela ia embora toda a noção de subida e descida.
+    """
+
+    road_plane_x: float | None = None
+    road_plane_y: float | None = None
+    road_plane_z: float | None = None
+    """Normal do asfalto sob o carro — inclinação e sobrelevação **medidas**.
+
+    Guardada crua, e não já convertida em "rampa de 4%", por uma razão de
+    fidelidade: a conversão depende da direção em que o carro anda, e essa é
+    uma interpretação. Interpretação errada se corrige relendo o dado; dado
+    convertido na gravação se perde para sempre.
+
+    `None` junto, os três, ou nenhum: vêm do mesmo vetor e a validação é do
+    vetor inteiro (ver `TelemetryFrame.road_plane_is_valid`). Meio vetor não
+    tem significado.
+    """
+
     @property
     def elapsed_s(self) -> float:
         return self.elapsed_ms / 1000.0
+
+    @property
+    def has_road_normal(self) -> bool:
+        return (
+            self.road_plane_x is not None
+            and self.road_plane_y is not None
+            and self.road_plane_z is not None
+        )
+
+    @property
+    def road_gradient_pct(self) -> float | None:
+        """Declividade máxima do asfalto no ponto, em %, **sem sinal**.
+
+        É a rampa da ladeira mais íngreme que passa por ali, e não a que o
+        carro está subindo: esta não depende da direção de marcha, e por isso
+        cabe no ponto isolado. A inclinação com sinal — subindo ou descendo —
+        precisa da trajetória e mora em `analytics.elevation`.
+        """
+        if not self.has_road_normal:
+            return None
+        horizontal = math.hypot(self.road_plane_x, self.road_plane_z)
+        return 100.0 * horizontal / self.road_plane_y
 
     @property
     def boost_bar(self) -> float:

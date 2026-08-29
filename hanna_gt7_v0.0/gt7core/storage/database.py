@@ -47,7 +47,7 @@ from ..observability.logging import get_logger
 
 _log = get_logger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _memory_counter = itertools.count()
 _memory_lock = threading.Lock()
@@ -208,7 +208,8 @@ class SqliteDatabase:
                 fuel_level REAL,
                 tire_temp_fl REAL, tire_temp_fr REAL,
                 tire_temp_rl REAL, tire_temp_rr REAL,
-                position_x REAL, position_z REAL,
+                position_x REAL, position_z REAL, position_y REAL,
+                road_plane_x REAL, road_plane_y REAL, road_plane_z REAL,
                 g_lateral REAL, g_longitudinal REAL,
                 suspension_fl REAL, suspension_fr REAL,
                 suspension_rl REAL, suspension_rr REAL,
@@ -280,6 +281,25 @@ class SqliteDatabase:
             # alegar pilotagem sem auxílio que ninguém mediu.
             _log.info("migrando banco", extra={"from": current, "to": 7})
             self._try_alter("lap_frames", "flags INTEGER")
+
+        if current and current < 8:
+            # 7 -> 8: a altitude e a normal do asfalto passam a ser gravadas.
+            # O pacote sempre trouxe as duas; o programa é que as descartava na
+            # fronteira do domínio, e sem elas uma freada em descida ficava
+            # indistinguível de uma freada no plano.
+            #
+            # Voltas antigas ficam com NULL nas quatro colunas — "não foi
+            # medido". Preencher com zero afirmaria pista horizontal, que é uma
+            # medição que ninguém fez, e a força G corrigida sairia errada com
+            # cara de certa em toda a base histórica.
+            _log.info("migrando banco", extra={"from": current, "to": 8})
+            for coluna in (
+                "position_y REAL",
+                "road_plane_x REAL",
+                "road_plane_y REAL",
+                "road_plane_z REAL",
+            ):
+                self._try_alter("lap_frames", coluna)
 
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()

@@ -52,6 +52,16 @@ QUATERNION_TOLERANCE = 0.02
 #: mais que um rodopio. Serve de segunda trava caso a norma passe por acaso.
 MAX_PLAUSIBLE_YAW_RAD_S = 3.0
 
+#: Tolerância da norma da normal do plano da pista. Ver
+#: `TelemetryFrame.road_plane_is_valid`. Mesma ideia do quaternion: um vetor
+#: normal tem comprimento 1 por definição, então o próprio dado se valida.
+ROAD_NORMAL_TOLERANCE = 0.02
+
+#: Componente vertical mínima da normal para o plano ser tratado como pista.
+#: 0,5 é uma rampa de 60°, muito além de qualquer asfalto — abaixo disso o
+#: vetor está apontando para o lado, e dividir por ele explodiria a inclinação.
+MIN_ROAD_NORMAL_Y = 0.5
+
 
 def salsa20_decode(data: bytes) -> bytes | None:
     """Decifra um pacote bruto. None se não for um pacote reconhecível.
@@ -247,6 +257,39 @@ class TelemetryFrame:
         if abs(self.angular_velocity_y) > MAX_PLAUSIBLE_YAW_RAD_S:
             return None
         return math.degrees(self.angular_velocity_y)
+
+    @property
+    def road_plane_is_valid(self) -> bool:
+        """A normal do asfalto lida faz sentido como direção?
+
+        Mesma trava do quaternion, pelo mesmo motivo: um vetor normal tem
+        comprimento 1 por definição. Se os três floats de 0x94 não somarem 1
+        em quadrado, o offset está errado ou o campo é outra coisa — e uma
+        inclinação inventada estragaria a força G em vez de corrigi-la, que é
+        pior do que não ter inclinação nenhuma.
+
+        A segunda condição descarta normal deitada: sem ela, um `road_plane_y`
+        perto de zero viraria uma rampa de milhares de por cento na divisão.
+        """
+        norma_ao_quadrado = (
+            self.road_plane_x ** 2 + self.road_plane_y ** 2 + self.road_plane_z ** 2
+        )
+        if abs(norma_ao_quadrado - 1.0) >= ROAD_NORMAL_TOLERANCE:
+            return False
+        return self.road_plane_y >= MIN_ROAD_NORMAL_Y
+
+    @property
+    def road_normal(self) -> tuple[float, float, float] | None:
+        """A normal do asfalto, ou `None` quando não dá para confiar.
+
+        `None` e não (0, 1, 0): um plano horizontal é uma **afirmação** sobre a
+        pista, e nesta situação nada foi medido. Quem chama decide cair no
+        horizontal — a diferença é que a escolha fica visível no código que
+        depende dela, em vez de escondida aqui.
+        """
+        if not self.road_plane_is_valid:
+            return None
+        return (self.road_plane_x, self.road_plane_y, self.road_plane_z)
 
     @property
     def is_on_track(self) -> bool:

@@ -174,8 +174,8 @@ Três níveis, que diferem em latência e formato:
 
 ### A IA nunca vê telemetria bruta
 
-É a decisão que organiza o resto. Uma volta tem ~6.270 amostras de 27 canais —
-**169.290 números**. O que sobe para o modelo são **1.234 caracteres**: o
+É a decisão que organiza o resto. Uma volta tem ~6.270 amostras de 31 canais —
+**194.370 números**. O que sobe para o modelo são **1.234 caracteres**: o
 resultado da análise.
 
 Não é só economia de token. Um modelo lendo uma coluna de 6.000 velocidades não
@@ -255,8 +255,9 @@ não escolheu seria pior, porque você teria motivo para achar que configurou ce
 gt7core/          Núcleo — Python puro, ZERO Qt
   domain/           modelos (TelemetryPoint, Lap, Session, Car, Track)
   telemetry/        protocolo GT7, motor, fontes (mock/udp/replay)
-  analytics/        delta, curvas, frenagem, acelerador, pneus, perda de
-                    tempo, perfil do piloto, detecção ao vivo
+  analytics/        delta, curvas, frenagem, acelerador, pneus, relevo,
+                    perda de tempo, perfil do piloto, diagnóstico por
+                    curva, detecção ao vivo
   session/          SessionManager (política) + RecordingService (mecânica)
   storage/          SQLite: banco, migrações, repositórios
   catalog/          527 carros e 105 circuitos do GT7

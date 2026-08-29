@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from gt7core.analytics.aids import AIDS, aid_spans, unknown_bits, was_recorded
 from gt7core.analytics.braking import BrakingZone, detect_braking_zones
 from gt7core.analytics.corners import Corner, corner_at, detect_corners
+from gt7core.analytics.elevation import elevation_range_m, slope_series
 from gt7core.analytics.series import sector_boundaries_m
 from gt7core.analytics.steering import yaw_rate_series
 from gt7core.analytics.tyres import (
@@ -67,7 +68,7 @@ NUM_SECTORS = 3
 #: 500 linhas não diz qual gráfico é, e trocar dois por engano é um defeito que
 #: só aparece olhando a tela.
 CHART_SPEED, CHART_PEDALS, CHART_YAW = 0, 1, 2
-CHART_GRIP, CHART_BOOST = 3, 4
+CHART_GRIP, CHART_BOOST, CHART_SLOPE = 3, 4, 5
 
 #: Rótulo de cada roda no gráfico de aderência, na ordem de `WHEELS`.
 WHEEL_LABELS = {"fl": "DE", "fr": "DD", "rl": "TE", "rr": "TD"}
@@ -87,6 +88,21 @@ GRIP_TOP_MIN_PCT = 125.0
 #: em vez de ser reescalado para preencher o mesmo quadro.
 BOOST_STEP_BAR = 1.0
 BOOST_TOP_MIN_BAR = 2.0
+
+#: Inclinação em %, com degrau de 5 e teto mínimo de 10. Bathurst tem trechos
+#: de 16%; Suzuka fica quase toda abaixo de 5. Com degrau fixo, a mesma rampa
+#: desenha do mesmo tamanho em qualquer pista — que é o que permite comparar.
+SLOPE_STEP_PCT = 5.0
+SLOPE_TOP_MIN_PCT = 10.0
+
+#: Fração da volta que precisa ter rampa medida para o gráfico aparecer. Abaixo
+#: disso a linha sairia picotada, e uma linha com buracos num canal de análise
+#: é pior que canal nenhum: parece medição e é lacuna.
+MIN_SLOPE_COVERAGE = 0.5
+
+#: Desnível a partir do qual vale anunciá-lo no título, em metros. Abaixo disso
+#: é ondulação de asfalto, não relevo de circuito.
+MIN_INTERESTING_ELEVATION_M = 5.0
 
 #: Canais que o mapa sabe colorir: (rótulo, chave).
 MAP_CHANNELS = (
@@ -187,6 +203,20 @@ class AnalysisPage(Page):
                 y_step=BOOST_STEP_BAR,
                 y_top_min=BOOST_TOP_MIN_BAR,
             ),
+            # Inclinação da pista, e não altitude: o que muda a frenagem é a
+            # rampa, e o perfil de elevação de uma volta é quase sempre uma
+            # curva suave em que não se lê onde a descida começou. A rampa é
+            # medida pelo jogo, não derivada da altitude — derivar amplificaria
+            # ruído até a linha virar cabeleira.
+            DistanceChart(
+                self.theme,
+                "Inclinação da pista  (+ subida)",
+                unit="%",
+                height=110,
+                y_step=SLOPE_STEP_PCT,
+                y_top_min=SLOPE_TOP_MIN_PCT,
+                y_symmetric=True,
+            ),
         ]
         for chart in self._charts:
             channels.add(chart)
@@ -203,6 +233,10 @@ class AnalysisPage(Page):
         self._boost_hint = QLabel("")
         self._boost_hint.setWordWrap(True)
         channels.add(self._boost_hint)
+
+        self._slope_hint = QLabel("")
+        self._slope_hint.setWordWrap(True)
+        channels.add(self._slope_hint)
 
         # A faixa dos auxílios fecha a coluna de canais, alinhada ao mesmo eixo
         # X: é embaixo de "aderência" que ela se lê, porque TCS atuando e roda
@@ -369,6 +403,7 @@ class AnalysisPage(Page):
         self._cursor_hint.setText("")
         self._grip_hint.setText("")
         self._boost_hint.setText("")
+        self._slope_hint.setText("")
         self._frozen = False
         for chart in self._charts:
             chart.set_cursor_locked(False)
@@ -441,6 +476,7 @@ class AnalysisPage(Page):
         )
         self._fill_grip_chart(points, x_at)
         self._fill_boost_chart(points, x_at)
+        self._fill_slope_chart(points, x_at)
         self._fill_aid_band(points, x_at)
 
         # A volta inteira vira nuvem no círculo de atrito. G por distância
@@ -691,6 +727,51 @@ class AnalysisPage(Page):
                     [(x_at.get(p.distance_m, p.distance_m), p.boost_bar) for p in points],
                 )
             ]
+        )
+
+    def _fill_slope_chart(
+        self, points: list[TelemetryPoint], x_at: dict[float, float]
+    ) -> None:
+        """Rampa da pista ao longo da volta, ou o motivo de não haver rampa.
+
+        Lida junto com a freada, é o que separa "freou fraco" de "freou numa
+        descida": nos dois casos o carro desacelera menos, e só um deles é
+        erro do piloto. A força G desta página já desconta a gravidade — este
+        gráfico é onde se vê **de onde** veio o desconto.
+
+        Volta gravada antes de a normal do asfalto ser lida não tem rampa
+        nenhuma, e aí o quadro some inteiro em vez de desenhar uma reta no
+        zero. Reta no zero afirmaria pista plana, que é dado inventado.
+        """
+        rampas = slope_series(points)
+        medidas = [
+            (x_at.get(p.distance_m, p.distance_m), valor)
+            for p, valor in zip(points, rampas, strict=True)
+            if valor is not None
+        ]
+
+        tem_relevo = len(medidas) >= len(points) * MIN_SLOPE_COVERAGE
+        self._charts[CHART_SLOPE].setVisible(tem_relevo)
+
+        if not tem_relevo:
+            self._charts[CHART_SLOPE].clear()
+            self._slope_hint.setText(
+                "Sem relevo nesta volta — ela foi gravada antes de o programa "
+                "ler a inclinação da pista. As voltas novas já trazem."
+                if not any(p.has_road_normal for p in points)
+                else "Relevo medido em pedaços pequenos demais para desenhar."
+            )
+            return
+
+        self._slope_hint.setText("")
+        desnivel = elevation_range_m(points)
+        titulo = "Inclinação da pista  (+ subida)"
+        if desnivel is not None and desnivel >= MIN_INTERESTING_ELEVATION_M:
+            titulo = f"{titulo}  —  desnível de {desnivel:.0f} m na volta"
+        self._charts[CHART_SLOPE].set_title(titulo)
+
+        self._charts[CHART_SLOPE].set_series(
+            [Series("inclinação", self.theme.palette.channel_slope, medidas)]
         )
 
     def _fill_aid_band(

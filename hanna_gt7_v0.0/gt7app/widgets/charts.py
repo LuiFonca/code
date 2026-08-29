@@ -225,6 +225,13 @@ class DistanceChart(QWidget):
             self._cursor_m = distance_m
             self.update()
 
+    def set_title(self, title: str) -> None:
+        """Troca o rótulo do quadro. Serve para o título carregar um número que
+        só se conhece depois de ler a volta — o desnível, por exemplo."""
+        if self._title != title:
+            self._title = title
+            self.update()
+
     def clear(self) -> None:
         self._series = []
         self._markers = []

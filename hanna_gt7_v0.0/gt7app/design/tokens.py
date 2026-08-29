@@ -133,6 +133,10 @@ class Palette:
     channel_brake: str
     channel_gear: str
     channel_steering: str
+    channel_slope: str
+    """Inclinação da pista. Cor própria, e não a da guinada: os dois são
+    canais com sinal e ficam perto um do outro na página — desenhados no
+    mesmo amarelo, ler qual é qual passa a depender de contar quadros."""
 
     speed_ramp: SequentialRamp
     """Escala de magnitude para o mapa de calor de velocidade.
@@ -187,6 +191,7 @@ DARK = Palette(
     channel_brake="#ff5c5c",
     channel_gear="#b47cff",
     channel_steering="#f2c94c",
+    channel_slope="#5ad1c8",
     # No tema escuro a ponta lenta é a escura (encosta no fundo) e a rápida é a
     # clara. A escala é **escolhida** para o escuro, não invertida do claro.
     speed_ramp=SequentialRamp(
@@ -221,6 +226,7 @@ LIGHT = Palette(
     channel_brake="#d93636",
     channel_gear="#7b3fd4",
     channel_steering="#b8860b",
+    channel_slope="#0f8a80",
     speed_ramp=SequentialRamp(
         ("#86b6ef", "#5598e7", "#2a78d6", "#184f95", "#0d366b")
     ),

@@ -60,6 +60,12 @@ DEFAULT_CAR_ID = 2001
 # acelerador. Em m/s².
 COAST_ACCEL_MS2 = 0.35
 
+#: Meia altura da colina sintética, em metros — o desnível da volta é o dobro.
+#: 18 m dão rampas de até ~3%, na faixa de um circuito de verdade: o suficiente
+#: para a correção de gravidade mudar a freada de forma visível, e longe do
+#: absurdo que faria o gráfico parecer uma montanha-russa.
+ELEVATION_AMPLITUDE_M = 18.0
+
 
 def _target_speed(lap_fraction: float) -> float:
     """Velocidade alvo na fração informada da volta.
@@ -191,11 +197,47 @@ def synthetic_lap(
         position_x = radius * math.sin(theta)
         position_z = radius * math.sin(theta) * math.cos(theta)
 
-        # Direção do movimento, para que o vetor velocidade seja consistente com
-        # a trajetória — o cálculo de força G deriva desse vetor.
-        heading = theta + math.pi / 2.0
-        velocity_x = speed_ms * math.cos(heading)
-        velocity_z = speed_ms * math.sin(heading)
+        # Relevo: uma colina por volta, com o ponto alto no meio do traçado.
+        # Não é enfeite — sem subida e descida o gerador não exercita a correção
+        # de gravidade da força G nem o perfil de elevação, e um caminho que
+        # nunca roda é um caminho que ninguém sabe se funciona.
+        position_y = ELEVATION_AMPLITUDE_M * (1.0 - math.cos(theta))
+
+        # Rumo: a **tangente de verdade** do traçado, derivando a lemniscata.
+        #
+        #     dx/dθ = r·cos θ        dz/dθ = r·cos 2θ
+        #
+        # Aqui havia `heading = theta + π/2`, que é a tangente de um círculo e
+        # não desta curva: o vetor velocidade apontava para um lado e o carro
+        # desenhava para outro. Passava despercebido porque força G e mapa nunca
+        # eram conferidos um contra o outro — até a rampa medida discordar da
+        # rampa construída (2,50% contra 2,98%) e denunciar a diferença.
+        tangente_x = math.cos(theta)
+        tangente_z = math.cos(2.0 * theta)
+        norma_tangente = math.hypot(tangente_x, tangente_z) or 1.0
+        rumo_x = tangente_x / norma_tangente
+        rumo_z = tangente_z / norma_tangente
+
+        # Rampa: altitude por **distância percorrida**, e não por θ. O passo de
+        # θ cobre pedaços de pista de comprimentos diferentes ao longo da
+        # lemniscata, e ignorar isso produziria rampa demais nos trechos curtos.
+        d_percurso_d_theta = radius * norma_tangente
+        rampa = (
+            ELEVATION_AMPLITUDE_M * math.sin(theta) / max(d_percurso_d_theta, 1e-6)
+        )
+
+        # A rampa reparte a velocidade entre o plano e a vertical: o carro anda
+        # ao longo do asfalto, não do mapa visto de cima.
+        cos_rampa = 1.0 / math.hypot(1.0, rampa)
+        velocity_x = speed_ms * rumo_x * cos_rampa
+        velocity_z = speed_ms * rumo_z * cos_rampa
+        velocity_y = speed_ms * rampa * cos_rampa
+
+        # Normal unitária do asfalto: perpendicular à rampa, na direção da
+        # marcha. Sem sobrelevação — a lemniscata é uma pista plana de lado.
+        normal_x = -rampa * rumo_x * cos_rampa
+        normal_z = -rampa * rumo_z * cos_rampa
+        normal_y = cos_rampa
 
         # Escorregamento: o campo `tire_slip_*` do pacote GT7 é a **velocidade
         # da superfície do pneu em m/s**, não uma razão adimensional (ver
@@ -234,11 +276,14 @@ def synthetic_lap(
             lap_count=lap_number,
             total_laps=0,
             position_x=position_x,
-            position_y=0.0,
+            position_y=position_y,
             position_z=position_z,
             velocity_x=velocity_x,
-            velocity_y=0.0,
+            velocity_y=velocity_y,
             velocity_z=velocity_z,
+            road_plane_x=normal_x,
+            road_plane_y=normal_y,
+            road_plane_z=normal_z,
             body_height=0.12,
             best_lap_ms=best_lap_ms,
             last_lap_ms=last_lap_ms,
