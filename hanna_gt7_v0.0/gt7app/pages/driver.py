@@ -269,6 +269,14 @@ class DriverPage(Page):
             inicio, fim = fim, inicio
         laps = laps[inicio : fim + 1]
 
+        # Volta incompleta fica de fora do perfil. Ela cortou o traçado, então
+        # tem menos curvas, menos frenagens e um tempo mais rápido do que o
+        # piloto fez — entra na média puxando tudo para o lado errado e sai como
+        # "evolução de ritmo". O piloto ainda a vê no Histórico, marcada; o que
+        # ela não faz é descrever quem ele é.
+        descartadas = sum(1 for lap in laps if not lap.validity.counts_as_record)
+        laps = [lap for lap in laps if lap.validity.counts_as_record]
+
         point_lists: list[list[TelemetryPoint]] = []
         for lap in laps:
             if lap.id is None:
@@ -283,7 +291,7 @@ class DriverPage(Page):
             return
 
         reports = diagnose_corners(point_lists)
-        self._populate(profile, point_lists, reports)
+        self._populate(profile, point_lists, reports, descartadas)
         self._request_report(profile, laps, reports)
 
     def _clear(self, message: str) -> None:
@@ -335,18 +343,30 @@ class DriverPage(Page):
         profile: DriverProfile,
         point_lists: list[list[TelemetryPoint]],
         reports: list[CornerReport],
+        discarded: int = 0,
     ) -> None:
         palette = self.theme.palette
 
-        if profile.is_reliable:
-            self._badge.setVisible(False)
-        else:
-            self._badge.setText(
+        # Duas ressalvas independentes, que podem valer ao mesmo tempo: poucas
+        # voltas e voltas descartadas. Mostrar só uma esconderia a outra.
+        avisos: list[str] = []
+        if not profile.is_reliable:
+            avisos.append(
                 f"Perfil preliminar — {profile.lap_count} volta(s). "
                 "As médias já valem; o desvio ainda não descreve o piloto."
             )
+        if discarded:
+            avisos.append(
+                f"{discarded} volta(s) incompleta(s) fora do perfil — "
+                "distância abaixo do traçado da pista."
+            )
+
+        if avisos:
+            self._badge.setText("  ".join(avisos))
             self._badge.set_color(palette.yellow)
             self._badge.setVisible(True)
+        else:
+            self._badge.setVisible(False)
 
         cards = self._summary.cards
         cards["laps"].set_value(str(profile.lap_count))

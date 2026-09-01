@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from gt7core.analytics.sectors import NUM_SECTORS
 from gt7core.domain.models import Lap
+from gt7core.domain.validity import LapValidity, describe_coverage
 
 from ..application import CoreApplication
 from ..design.theme import OBJ_GHOST_BUTTON, OBJ_STATUS_BAR
@@ -47,8 +48,22 @@ from ..widgets.selectors import format_delta, format_lap_time
 from .base import Page
 
 HISTORY_COLUMNS = (
-    "Volta", "Carro", "Tempo", "Δ melhor", "Setor 1", "Setor 2", "Setor 3", "Data",
+    "Volta", "Carro", "Tempo", "Δ melhor",
+    "Setor 1", "Setor 2", "Setor 3", "Traçado", "Data",
 )
+
+#: Onde começa a faixa de setores. Era um `3 + i` escrito à mão no laço de
+#: pintura, e estava **um a menos**: o roxo de "melhor setor 1" caía na coluna
+#: "Δ melhor" e o Setor 3 nunca era marcado. Um índice derivado da tupla não
+#: sai de sincronia quando alguém insere uma coluna no meio — que foi
+#: exatamente o que aconteceu aqui.
+FIRST_SECTOR_COLUMN = HISTORY_COLUMNS.index("Setor 1")
+
+#: Coluna da cobertura — quanto do traçado oficial a volta percorreu. Aparece
+#: como número, e não como ícone de "ok/suspeita", por dois motivos: o piloto
+#: consegue julgar 97,8% sozinho, e é com voltas reais na mão que os limiares
+#: de `domain.validity` vão poder ser apertados com base em medição.
+COVERAGE_COLUMN = 7
 
 #: Índice da coluna de carro, para o alinhamento à esquerda junto com "Volta".
 #: Nome de carro é texto e centralizado fica ilegível numa lista.
@@ -367,11 +382,36 @@ class HistoryPage(Page):
             self._note.setText("nenhuma volta gravada nesta pista")
             return
 
-        times = [lap.lap_time_ms for lap in self._laps if lap.lap_time_ms > 0]
+        # Ritmo é medido só sobre as voltas que deram a volta.
+        #
+        # Aqui havia um `min()` sobre todos os tempos listados, e ele ignorava a
+        # validade: uma volta que cortou o traçado é a mais **rápida** da
+        # tabela, então virava o cartão "Melhor", ganhava o ★, pintava a linha
+        # de roxo e — o pior — virava a referência contra a qual todos os Δ da
+        # coluna eram calculados. Uma volta falsa deslocava a tabela inteira.
+        #
+        # A mediana segue a mesma regra: ela descreve o ritmo do piloto, e uma
+        # volta de meia pista não é ritmo.
+        times = [
+            lap.lap_time_ms
+            for lap in self._laps
+            if lap.lap_time_ms > 0 and lap.validity.counts_as_record
+        ]
         best_ms = min(times) if times else None
 
         sectors = self._compute_sectors(track_id)
-        best_sectors = _best_per_sector(sectors)
+        # O melhor de cada setor — e portanto a volta ideal — sai só das voltas
+        # que deram a volta. A cortada é a mais rápida em **todos** os trechos,
+        # porque é falsa em todos: deixá-la aqui sequestrava os três marcadores
+        # roxos e produzia uma "volta ideal" que ninguém chegaria perto de
+        # fazer. Os tempos dela continuam na tabela; o que ela perde é servir de
+        # referência.
+        elegiveis = {
+            lap.id: sectors.get(lap.id, [])
+            for lap in self._laps
+            if lap.validity.counts_as_record
+        }
+        best_sectors = _best_per_sector(elegiveis)
 
         cards = self._summary.cards
         cards["count"].set_value(str(len(self._laps)))
@@ -406,6 +446,7 @@ class HistoryPage(Page):
                     format_lap_time(value) if value else "—"
                     for value in lap_sectors[:NUM_SECTORS]
                 ],
+                describe_coverage(lap.coverage),
                 lap.start_time.strftime("%d/%m %H:%M") if lap.start_time else "—",
             ]
             for column, text in enumerate(cells):
@@ -417,7 +458,17 @@ class HistoryPage(Page):
                 )
                 self._table.setItem(row, column, item)
 
-            if best_ms is not None and lap.lap_time_ms == best_ms:
+            if lap.validity is LapValidity.INCOMPLETE:
+                # Marcada, e não escondida: uma volta cortada é um fato da
+                # sessão, e some do recorde e do perfil — não do acervo.
+                _colour_row(self._table, row, palette.text_muted)
+                item = self._table.item(row, COVERAGE_COLUMN)
+                if item is not None:
+                    item.setToolTip(
+                        "Distância abaixo do traçado da pista — fora do "
+                        "recorde e do perfil do piloto."
+                    )
+            elif best_ms is not None and lap.lap_time_ms == best_ms:
                 _colour_row(self._table, row, palette.purple)
 
             # Melhor setor em roxo, como na torre de cronometragem.
@@ -428,7 +479,9 @@ class HistoryPage(Page):
                     else None
                 )
                 if value is not None and value == best_sectors[sector_index]:
-                    cell = self._table.item(row, 3 + sector_index)
+                    cell = self._table.item(
+                        row, FIRST_SECTOR_COLUMN + sector_index
+                    )
                     if cell is not None:
                         cell.setForeground(QColor(palette.purple))
 
