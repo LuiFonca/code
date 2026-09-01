@@ -43,11 +43,12 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from ..analytics.sectors import resolve_anchor, sector_boundaries
 from ..observability.logging import get_logger
 
 _log = get_logger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _memory_counter = itertools.count()
 _memory_lock = threading.Lock()
@@ -169,7 +170,8 @@ class SqliteDatabase:
             CREATE TABLE IF NOT EXISTS tracks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
-                created_at REAL NOT NULL
+                created_at REAL NOT NULL,
+                length_m REAL
             );
             CREATE TABLE IF NOT EXISTS cars (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,7 +194,8 @@ class SqliteDatabase:
                 is_player INTEGER NOT NULL DEFAULT 1,
                 lap_time_ms INTEGER NOT NULL,
                 recorded_at REAL NOT NULL,
-                frame_count INTEGER NOT NULL
+                frame_count INTEGER NOT NULL,
+                sector_anchor_m REAL
             );
             CREATE TABLE IF NOT EXISTS lap_frames (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -301,6 +304,28 @@ class SqliteDatabase:
             ):
                 self._try_alter("lap_frames", coluna)
 
+        if current and current < 9:
+            # 8 -> 9: o comprimento oficial da pista passa a ser gravado, e cada
+            # volta registra a âncora com que seus setores foram medidos.
+            #
+            # O comprimento vem do catálogo do jogo (`track_list.csv`, 105 de
+            # 105 pistas), e é o que finalmente dá um ponto **físico e fixo**
+            # para as divisas de setor: Suzuka tem 5.807 m hoje e vai ter 5.807
+            # m daqui a um ano. Antes disso a divisa era ancorada na mediana das
+            # últimas voltas, na melhor volta ou na própria volta — três pontos
+            # diferentes no mesmo programa.
+            #
+            # `sector_anchor_m` guarda **com que âncora** os setores gravados
+            # foram calculados. Sem esse registro não há como saber se um valor
+            # guardado ainda vale, e a única saída segura seria recalcular tudo
+            # a cada abertura — que é exatamente o custo que se quer eliminar.
+            #
+            # Pistas e voltas antigas ficam com NULL: "não se sabe", e não um
+            # comprimento inventado.
+            _log.info("migrando banco", extra={"from": current, "to": 9})
+            self._try_alter("tracks", "length_m REAL")
+            self._try_alter("laps", "sector_anchor_m REAL")
+
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
 
@@ -349,18 +374,47 @@ def reference_lap_distance(
     return float(totals[len(totals) // 2])
 
 
+def track_length(conn: sqlite3.Connection, track_id: int | None) -> float | None:
+    """Comprimento oficial da pista, quando o catálogo o identificou."""
+    if track_id is None:
+        return None
+    row = conn.execute(
+        "SELECT length_m FROM tracks WHERE id = ?", (track_id,)
+    ).fetchone()
+    return float(row[0]) if row and row[0] else None
+
+
+def sector_anchor_for(
+    conn: sqlite3.Connection, track_id: int | None, exclude_lap_id: int | None = None
+) -> float | None:
+    """A âncora de setor desta pista: catálogo, e só então mediana das recentes.
+
+    A escolha mora em `analytics.sectors`; aqui só se juntam as duas fontes que
+    dependem do banco.
+    """
+    return resolve_anchor(
+        track_length(conn, track_id),
+        reference_lap_distance(conn, track_id, exclude_lap_id=exclude_lap_id),
+    )
+
+
 def compute_sector_times(
     conn: sqlite3.Connection,
     lap_id: int,
     num_sectors: int,
     track_id: int | None = None,
+    anchor_m: float | None = None,
 ) -> list[int]:
     """Divide a volta em setores por **distância**, não por tempo.
 
-    Limitação conhecida e documentada: sem os pontos oficiais de setor da pista,
-    a volta é dividida em trechos de distância igual, ancorados na distância de
-    referência. É aproximado, mas suficiente para localizar em que parte da volta
-    houve ganho ou perda. A detecção de curvas da Fase 6 substituirá isto.
+    Limitação conhecida: sem os pontos oficiais de setor da pista, a volta é
+    dividida em trechos de distância igual. É aproximado, mas suficiente para
+    localizar em que parte da volta houve ganho ou perda.
+
+    O que deixou de ser aproximado é **onde** ficam os cortes: as divisas saem do
+    comprimento oficial do catálogo, o mesmo ponto físico em toda volta da pista.
+    `anchor_m` já resolvido evita reconsultar o banco por volta; sem ele, resolve
+    aqui.
     """
     rows = conn.execute(
         "SELECT elapsed_ms, distance_m FROM lap_frames WHERE lap_id = ? ORDER BY seq ASC",
@@ -373,14 +427,10 @@ def compute_sector_times(
     if lap_total_distance <= 0:
         return []
 
-    reference = reference_lap_distance(conn, track_id, exclude_lap_id=lap_id)
-    # Referência absurdamente menor que esta volta significa histórico ruim
-    # (voltas parciais ou abortadas); melhor cair para a distância da própria.
-    if reference and reference < lap_total_distance * 0.3:
-        reference = None
-    total_distance = reference or lap_total_distance
+    if anchor_m is None:
+        anchor_m = sector_anchor_for(conn, track_id, exclude_lap_id=lap_id)
 
-    boundaries = [total_distance * (i / num_sectors) for i in range(1, num_sectors + 1)]
+    boundaries = sector_boundaries(lap_total_distance, anchor_m, num_sectors)
 
     sector_times: list[int] = []
     last_boundary_ms = rows[0][0]

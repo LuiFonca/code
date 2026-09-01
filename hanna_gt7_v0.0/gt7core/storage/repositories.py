@@ -27,6 +27,7 @@ from .database import (
     UNKNOWN_CAR_NAME,
     SqliteDatabase,
     compute_sector_times,
+    sector_anchor_for,
 )
 
 _log = get_logger(__name__)
@@ -36,6 +37,20 @@ _log = get_logger(__name__)
 _FRAME_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(TelemetryPoint))
 _FRAME_COLUMN_SQL = ", ".join(_FRAME_COLUMNS)
 _FRAME_PLACEHOLDERS = ", ".join("?" * len(_FRAME_COLUMNS))
+
+
+def _same_anchor(a: float | None, b: float | None) -> bool:
+    """Duas âncoras são a mesma régua?
+
+    Tolerância de 1 cm: a âncora trafega como REAL pelo SQLite e volta com o
+    ruído de ponto flutuante de sempre. Sem a folga, toda volta pareceria
+    desatualizada e a tela recalcularia tudo a cada abertura — exatamente o
+    custo que a releitura existe para eliminar.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    return abs(a - b) < 0.01
+
 
 _LAP_COLUMNS = "id, session_id, track_id, car_id, is_player, lap_time_ms, recorded_at"
 
@@ -99,8 +114,23 @@ class SqliteLapRepository:
                     ],
                 )
 
+                # A âncora é resolvida **uma vez** e gravada junto: quem ler
+                # os setores guardados precisa saber com que régua foram
+                # medidos. Sem esse registro, a única leitura segura seria
+                # recalcular tudo a cada abertura da tela.
+                anchor = sector_anchor_for(
+                    self._conn, lap.track_id, exclude_lap_id=lap_id
+                )
+                cursor.execute(
+                    "UPDATE laps SET sector_anchor_m = ? WHERE id = ?",
+                    (anchor, lap_id),
+                )
                 sectors = compute_sector_times(
-                    self._conn, lap_id, self._num_sectors, track_id=lap.track_id
+                    self._conn,
+                    lap_id,
+                    self._num_sectors,
+                    track_id=lap.track_id,
+                    anchor_m=anchor,
                 )
                 cursor.executemany(
                     "INSERT INTO sector_times (lap_id, sector_index, time_ms) "
@@ -277,6 +307,81 @@ class SqliteLapRepository:
             result[lap_id].append(time_ms)
         return result
 
+    def sector_anchor(self, track_id: int | None) -> float | None:
+        """A régua com que os setores desta pista são medidos.
+
+        As telas que desenham as divisas no mapa precisam da mesma âncora que a
+        gravação usou, senão a marca "S1" no traçado cai num ponto e o tempo do
+        setor 1 na tabela é medido noutro — que foi exatamente o estado
+        anterior.
+        """
+        return sector_anchor_for(self._conn, track_id)
+
+    def sector_times_for_track(
+        self, track_id: int, lap_ids: list[int]
+    ) -> dict[int, list[int | None]]:
+        """Setores das voltas informadas, comparáveis entre si.
+
+        Lê o que está gravado em vez de recalcular. A tela de histórico
+        recalculava as três divisas de cada volta a cada abertura — 797 ms num
+        acervo de 50 voltas — para chegar a números que já estavam no banco.
+
+        A releitura só é válida porque a volta guarda **com que âncora** foi
+        medida. Uma volta cuja âncora não bate com a atual é recalculada e
+        regravada aqui mesmo: acontece quando a pista ganha comprimento de
+        catálogo depois de já ter voltas gravadas, e o conserto é permanente em
+        vez de repetido a cada abertura.
+        """
+        if not lap_ids:
+            return {}
+
+        atual = sector_anchor_for(self._conn, track_id)
+        gravados = self.get_sector_times_batch(lap_ids)
+
+        placeholders = ",".join("?" * len(lap_ids))
+        ancoras = {
+            r[0]: r[1]
+            for r in self._conn.execute(
+                f"SELECT id, sector_anchor_m FROM laps WHERE id IN ({placeholders})",
+                lap_ids,
+            ).fetchall()
+        }
+
+        desatualizadas = [
+            lid
+            for lid in lap_ids
+            if not _same_anchor(ancoras.get(lid), atual)
+            or len(gravados.get(lid, [])) != self._num_sectors
+        ]
+
+        for lid in desatualizadas:
+            setores = compute_sector_times(
+                self._conn, lid, self._num_sectors, track_id=track_id, anchor_m=atual
+            )
+            if not setores:
+                continue
+            with self._db.lock:
+                self._conn.execute(
+                    "DELETE FROM sector_times WHERE lap_id = ?", (lid,)
+                )
+                self._conn.executemany(
+                    "INSERT INTO sector_times (lap_id, sector_index, time_ms) "
+                    "VALUES (?, ?, ?)",
+                    [(lid, i, ms) for i, ms in enumerate(setores)],
+                )
+                self._conn.execute(
+                    "UPDATE laps SET sector_anchor_m = ? WHERE id = ?", (atual, lid)
+                )
+                self._conn.commit()
+            gravados[lid] = list(setores)
+
+        if desatualizadas:
+            _log.info(
+                "setores realinhados à âncora atual",
+                extra={"track_id": track_id, "laps": len(desatualizadas)},
+            )
+        return gravados
+
     @staticmethod
     def _row_to_lap(row: Row) -> Lap:
         """Linha da tabela `laps` → modelo de domínio, sem as amostras."""
@@ -384,7 +489,19 @@ class SqliteTrackRepository:
     def _conn(self) -> sqlite3.Connection:
         return self._db.connection
 
-    def get_or_create(self, name: str) -> int:
+    def get_or_create(self, name: str, length_m: float | None = None) -> int:
+        """Id da pista, criando-a se preciso.
+
+        `length_m` é o comprimento oficial do catálogo do jogo, e é o que ancora
+        as divisas de setor num ponto físico fixo da pista. Chega aqui porque a
+        identificação já o tem em mãos: a pista é reconhecida **pelo**
+        comprimento, e até agora esse número era usado para achar o nome e
+        descartado em seguida.
+
+        Uma pista que já existe sem comprimento é completada; uma que já tem
+        comprimento é deixada em paz, porque sobrescrever mudaria de lugar as
+        divisas de todas as voltas já gravadas.
+        """
         clean = name.strip()
         if not clean:
             raise ValueError("nome de pista vazio")
@@ -400,6 +517,13 @@ class SqliteTrackRepository:
                 (clean, time.time()),
             )
             self._conn.commit()
+            if length_m and length_m > 0:
+                self._conn.execute(
+                    "UPDATE tracks SET length_m = ? "
+                    "WHERE name = ? AND (length_m IS NULL OR length_m <= 0)",
+                    (float(length_m), clean),
+                )
+                self._conn.commit()
             row = self._conn.execute(
                 "SELECT id FROM tracks WHERE name = ?", (clean,)
             ).fetchone()
@@ -407,15 +531,15 @@ class SqliteTrackRepository:
 
     def get_by_id(self, track_id: int) -> Track | None:
         row = self._conn.execute(
-            "SELECT id, name FROM tracks WHERE id = ?", (track_id,)
+            "SELECT id, name, length_m FROM tracks WHERE id = ?", (track_id,)
         ).fetchone()
-        return Track(id=row[0], name=row[1]) if row else None
+        return Track(id=row[0], name=row[1], length_m=row[2]) if row else None
 
     def get_all(self) -> list[Track]:
         rows = self._conn.execute(
-            "SELECT id, name FROM tracks ORDER BY name ASC"
+            "SELECT id, name, length_m FROM tracks ORDER BY name ASC"
         ).fetchall()
-        return [Track(id=r[0], name=r[1]) for r in rows]
+        return [Track(id=r[0], name=r[1], length_m=r[2]) for r in rows]
 
     def rename(self, track_id: int, new_name: str) -> int:
         """Renomeia a pista, **preservando as voltas**. Devolve o id final.

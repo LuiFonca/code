@@ -300,9 +300,16 @@ def build_core(
             # voltas de pistas diferentes sob um rótulo só. A sugestão para
             # a tela sai do lado de lá.
             return
-        nome = candidatos[0].name
-        track_id = tracks.get_or_create(nome)
-        session_manager.set_track(Track(id=track_id, name=nome))
+        # O comprimento do catálogo vai junto: é ele que ancora as divisas de
+        # setor num ponto físico fixo da pista. Vinha sendo usado para achar o
+        # nome e descartado em seguida, e sem ele o "setor 2" caía num lugar
+        # diferente a cada volta.
+        escolhida = candidatos[0]
+        nome = escolhida.name
+        track_id = tracks.get_or_create(nome, length_m=escolhida.length_m)
+        session_manager.set_track(
+            Track(id=track_id, name=nome, length_m=escolhida.length_m)
+        )
         _log.info("pista identificada pelo comprimento", extra={"track": nome})
 
     bus.subscribe(LapBoundaryDetected, nomear_pista_pelo_comprimento)
