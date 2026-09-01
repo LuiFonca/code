@@ -30,10 +30,10 @@ from gt7core.analytics.aids import aid_spans, was_recorded
 from gt7core.analytics.corners import detect_corners
 from gt7core.analytics.elevation import slope_series
 from gt7core.analytics.lookup import point_at_distance
+from gt7core.analytics.sectors import NUM_SECTORS, sector_boundaries
 from gt7core.analytics.series import (
     LapSeries,
     compute_delta_series,
-    sector_boundaries_m,
 )
 from gt7core.analytics.timeloss import TimeLossReport, analyse_time_loss
 from gt7core.domain.models import TelemetryPoint
@@ -45,7 +45,6 @@ from ..pages.analysis import (
     BOOST_STEP_BAR,
     BOOST_TOP_MIN_BAR,
     MIN_SLOPE_COVERAGE,
-    NUM_SECTORS,
     SLOPE_STEP_PCT,
     SLOPE_TOP_MIN_PCT,
 )
@@ -616,7 +615,14 @@ class ComparePage(Page):
             if (apex := point_at_distance(pontos, corner.apex_distance_m)) is not None
         ]
         for numero, divisa in enumerate(
-            sector_boundaries_m(pontos[-1].distance_m, NUM_SECTORS)[:-1], start=1
+            sector_boundaries(
+                pontos[-1].distance_m,
+                self.core.laps.sector_anchor(
+                    self._reference_selector.current_track_id()
+                ),
+                NUM_SECTORS,
+            )[:-1],
+            start=1,
         ):
             borda = point_at_distance(pontos, divisa)
             if borda is not None:

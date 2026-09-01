@@ -34,10 +34,7 @@ from .driver import DriverProfile, build_profile
 from .matching import match_by_distance
 from .series import (
     LapSeries,
-    best_combined_sectors,
     compute_delta_series,
-    sector_boundaries_m,
-    sector_times_from_series,
 )
 from .steering import peak_yaw_rate, yaw_rate_series
 from .throttle import (
@@ -79,7 +76,6 @@ __all__ = [
     "aid_spans",
     "analyse_throttle",
     "analyse_time_loss",
-    "best_combined_sectors",
     "braking_consistency",
     "build_profile",
     "compare_braking",
@@ -93,8 +89,6 @@ __all__ = [
     "match_by_distance",
     "peak_yaw_rate",
     "match_corners",
-    "sector_boundaries_m",
-    "sector_times_from_series",
     "slip_ratio",
     "stint_degradation",
     "temperature_balance",

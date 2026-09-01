@@ -32,7 +32,7 @@ from gt7core.analytics.braking import BrakingZone, detect_braking_zones
 from gt7core.analytics.corners import Corner, corner_at, detect_corners
 from gt7core.analytics.elevation import elevation_range_m, slope_series
 from gt7core.analytics.lookup import point_at_distance
-from gt7core.analytics.series import sector_boundaries_m
+from gt7core.analytics.sectors import NUM_SECTORS, sector_boundaries
 from gt7core.analytics.steering import yaw_rate_series
 from gt7core.analytics.tyres import (
     MIN_SPEED_FOR_SLIP_KMH,
@@ -61,9 +61,6 @@ from ..widgets.tyres import TyreTemperatures
 from .base import Page
 
 CORNER_COLUMNS = ("Curva", "Ápice", "Vel. mín.", "Freada")
-
-# Os mesmos setores do histórico — o corte precisa ser o mesmo entre telas.
-NUM_SECTORS = 3
 
 #: Índices em `self._charts`. Nomeados porque `self._charts[3]` num arquivo de
 #: 500 linhas não diz qual gráfico é, e trocar dois por engano é um defeito que
@@ -560,7 +557,11 @@ class AnalysisPage(Page):
         # Limites de setor: os mesmos cortes por distância que o histórico usa,
         # para que "setor 2" signifique o mesmo pedaço de asfalto nas duas telas.
         for number, boundary in enumerate(
-            sector_boundaries_m(points[-1].distance_m, NUM_SECTORS)[:-1], start=1
+            sector_boundaries(
+                points[-1].distance_m,
+                self.core.laps.sector_anchor(self._selector.current_track_id()),
+                NUM_SECTORS,
+            )[:-1], start=1
         ):
             edge = point_at_distance(points, boundary)
             if edge is not None:

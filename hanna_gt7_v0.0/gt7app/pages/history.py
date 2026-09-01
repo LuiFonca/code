@@ -4,10 +4,14 @@ Página de histórico — as voltas gravadas, por pista.
 Substitui a aba de histórico da aplicação anterior. A diferença de fundo é que
 esta lê do núcleo (`core.laps`), não de um ViewModel com SQL próprio.
 
-Os tempos de setor usam **os mesmos limites de distância para todas as voltas**
-(`sector_boundaries_m` sobre a melhor volta da pista), e não os limites vigentes
-quando cada volta foi salva. É o que torna honesto comparar "setor 2 da volta A"
-com "setor 2 da volta B" — a alternativa compara pedaços diferentes de asfalto.
+Os tempos de setor são **lidos do banco**, não recalculados. A tela já os
+recalculava a cada abertura — 797 ms num acervo de 50 voltas — para chegar a
+números que a gravação da volta já tinha produzido e guardado.
+
+Ler só é honesto porque as divisas agora são ancoradas no comprimento oficial da
+pista, do catálogo do jogo: elas caem sempre no mesmo ponto físico do asfalto, e
+um valor guardado não envelhece. Antes disto a âncora era a melhor volta da
+pista, e bater um recorde reescrevia o setor de todas as voltas passadas.
 
 O melhor tempo de cada setor recebe a cor roxa da torre de cronometragem, e a
 linha do recorde fica destacada: um piloto lê a tabela procurando exatamente
@@ -32,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gt7core.analytics.series import LapSeries, sector_boundaries_m, sector_times_from_series
+from gt7core.analytics.sectors import NUM_SECTORS
 from gt7core.domain.models import Lap
 
 from ..application import CoreApplication
@@ -49,7 +53,6 @@ HISTORY_COLUMNS = (
 #: Índice da coluna de carro, para o alinhamento à esquerda junto com "Volta".
 #: Nome de carro é texto e centralizado fica ilegível numa lista.
 CAR_COLUMN = 1
-NUM_SECTORS = 3
 
 # Quantas voltas carregar com amostras para calcular setores. Carregar todas
 # significa ler dezenas de milhares de linhas para preencher uma tabela — a
@@ -429,34 +432,38 @@ class HistoryPage(Page):
                     if cell is not None:
                         cell.setForeground(QColor(palette.purple))
 
+        # O rótulo diz de onde vem a régua, porque as duas respostas têm
+        # confiabilidades diferentes: o catálogo é fixo e comparável para
+        # sempre, a mediana das voltas recentes se move devagar. Esconder a
+        # diferença faria os dois casos parecerem igualmente sólidos.
+        anchor = self.core.laps.sector_anchor(track_id)
+        track = self.core.tracks.get_by_id(track_id)
+        if track is not None and track.length_m:
+            origem = f"comprimento oficial da pista, {track.length_m:.0f} m"
+        elif anchor:
+            origem = f"mediana das voltas recentes, {anchor:.0f} m"
+        else:
+            origem = "distância de cada volta"
         self._note.setText(
-            f"setores calculados sobre os mesmos limites de distância "
-            f"(melhor volta da pista, {NUM_SECTORS} setores)"
+            f"{NUM_SECTORS} setores por distância — divisas ancoradas em {origem}"
         )
 
     def _compute_sectors(self, track_id: int) -> dict[int | None, list[int | None]]:
-        """Tempos de setor com limites comuns a todas as voltas."""
-        best = self.core.laps.get_best(track_id)
-        if best is None or best.id is None:
+        """Tempos de setor das voltas listadas, lidos do banco.
+
+        Antes, esta função carregava as amostras de até 20 voltas e recalculava
+        as três divisas de cada uma — dezenas de milhares de linhas lidas para
+        preencher uma tabela cujos números já estavam gravados.
+
+        O repositório cuida do caso em que a âncora mudou (uma pista que ganhou
+        comprimento de catálogo depois de já ter voltas): ele recalcula e
+        regrava, uma vez, em vez de a tela pagar o custo a cada abertura.
+        """
+        ids = [lap.id for lap in self._laps if lap.id is not None]
+        if not ids:
             return {}
-
-        reference_points = self.core.laps.load_points(best.id)
-        if len(reference_points) < 2:
-            return {}
-
-        boundaries = sector_boundaries_m(
-            reference_points[-1].distance_m, NUM_SECTORS
-        )
-
-        result: dict[int | None, list[int | None]] = {}
-        for lap in self._laps[:SECTOR_COMPUTE_LIMIT]:
-            if lap.id is None:
-                continue
-            points = self.core.laps.load_points(lap.id)
-            if len(points) < 2:
-                continue
-            result[lap.id] = sector_times_from_series(LapSeries(points), boundaries)
-        return result
+        lidos = self.core.laps.sector_times_for_track(track_id, ids)
+        return dict(lidos.items())
 
 
 def _best_per_sector(
