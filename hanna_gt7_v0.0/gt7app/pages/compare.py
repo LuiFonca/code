@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from gt7core.analytics.aids import aid_spans, was_recorded
 from gt7core.analytics.corners import detect_corners
 from gt7core.analytics.elevation import slope_series
+from gt7core.analytics.lookup import point_at_distance
 from gt7core.analytics.series import (
     LapSeries,
     compute_delta_series,
@@ -612,12 +613,12 @@ class ComparePage(Page):
                 hollow=True,
             )
             for corner in detect_corners(pontos)
-            if (apex := _point_at(pontos, corner.apex_distance_m)) is not None
+            if (apex := point_at_distance(pontos, corner.apex_distance_m)) is not None
         ]
         for numero, divisa in enumerate(
             sector_boundaries_m(pontos[-1].distance_m, NUM_SECTORS)[:-1], start=1
         ):
-            borda = _point_at(pontos, divisa)
+            borda = point_at_distance(pontos, divisa)
             if borda is not None:
                 marcas.append(
                     TrackMarker(
@@ -829,8 +830,8 @@ class ComparePage(Page):
         self._map.set_cursor(distance_m)
         self._aid_band.set_cursor(distance_m)
 
-        referencia = _point_at(self._reference, distance_m)
-        comparada = _point_at(self._analysed, distance_m)
+        referencia = point_at_distance(self._reference, distance_m)
+        comparada = point_at_distance(self._analysed, distance_m)
         if referencia is None or comparada is None:
             self._cursor_comparison.clear()
             return
@@ -865,12 +866,3 @@ class ComparePage(Page):
         # Escolher um trecho na tabela é comando explícito: move o cursor mesmo
         # travado, senão a tabela pareceria ter parado de funcionar.
         self._move_cursor(distance)
-
-
-def _point_at(
-    points: list[TelemetryPoint], distance_m: float
-) -> TelemetryPoint | None:
-    """Amostra mais próxima da distância informada."""
-    if not points:
-        return None
-    return min(points, key=lambda p: abs(p.distance_m - distance_m))

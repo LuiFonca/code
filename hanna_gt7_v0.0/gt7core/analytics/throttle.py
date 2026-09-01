@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from ..domain.models import TelemetryPoint
 from .corners import Corner
+from .lookup import index_at_distance
 from .matching import match_by_distance
 from .tyres import SlipConvention, TyreEvent, detect_tyre_events, infer_slip_convention
 
@@ -141,8 +142,8 @@ def _analyse_exit(
     application_pct: float,
     spins: list[TyreEvent],
 ) -> ThrottleApplication | None:
-    apex_index = _index_at_distance(points, corner.apex_distance_m)
-    exit_index = _index_at_distance(points, corner.exit_distance_m)
+    apex_index = index_at_distance(points, corner.apex_distance_m)
+    exit_index = index_at_distance(points, corner.exit_distance_m)
     if apex_index is None or exit_index is None or exit_index <= apex_index:
         return None
 
@@ -260,24 +261,6 @@ def _time_to_reach(
         if point.throttle >= target_pct:
             return point.elapsed_ms - origin.elapsed_ms
     return None
-
-
-def _index_at_distance(points: list[TelemetryPoint], distance_m: float) -> int | None:
-    """Índice da amostra mais próxima da distância informada.
-
-    Busca linear de propósito: roda uma vez por curva na análise pós-volta, não
-    no caminho quente de 60 Hz, e uma busca binária aqui exigiria manter uma
-    lista paralela de distâncias por um ganho que ninguém mediria.
-    """
-    if not points:
-        return None
-    best_index = 0
-    best_gap = abs(points[0].distance_m - distance_m)
-    for index, point in enumerate(points[1:], start=1):
-        gap = abs(point.distance_m - distance_m)
-        if gap < best_gap:
-            best_index, best_gap = index, gap
-    return best_index
 
 
 @dataclass(frozen=True, slots=True)

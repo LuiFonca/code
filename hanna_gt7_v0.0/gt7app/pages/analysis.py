@@ -31,6 +31,7 @@ from gt7core.analytics.aids import AIDS, aid_spans, unknown_bits, was_recorded
 from gt7core.analytics.braking import BrakingZone, detect_braking_zones
 from gt7core.analytics.corners import Corner, corner_at, detect_corners
 from gt7core.analytics.elevation import elevation_range_m, slope_series
+from gt7core.analytics.lookup import point_at_distance
 from gt7core.analytics.series import sector_boundaries_m
 from gt7core.analytics.steering import yaw_rate_series
 from gt7core.analytics.tyres import (
@@ -554,14 +555,14 @@ class AnalysisPage(Page):
                 hollow=True,
             )
             for corner in self._corners
-            if (apex := _point_at(points, corner.apex_distance_m)) is not None
+            if (apex := point_at_distance(points, corner.apex_distance_m)) is not None
         ]
         # Limites de setor: os mesmos cortes por distância que o histórico usa,
         # para que "setor 2" signifique o mesmo pedaço de asfalto nas duas telas.
         for number, boundary in enumerate(
             sector_boundaries_m(points[-1].distance_m, NUM_SECTORS)[:-1], start=1
         ):
-            edge = _point_at(points, boundary)
+            edge = point_at_distance(points, boundary)
             if edge is not None:
                 markers.append(
                     TrackMarker(
@@ -1033,7 +1034,7 @@ class AnalysisPage(Page):
         """Converte uma distância para a unidade do eixo em uso."""
         if self._x_mode != "time":
             return distance_m
-        point = _point_at(self._points, distance_m)
+        point = point_at_distance(self._points, distance_m)
         return point.elapsed_ms / 1000.0 if point else distance_m
 
     def _point_at_x(self, x_value: float) -> TelemetryPoint | None:
@@ -1046,7 +1047,7 @@ class AnalysisPage(Page):
         if not self._points:
             return None
         if self._x_mode != "time":
-            return _point_at(self._points, x_value)
+            return point_at_distance(self._points, x_value)
         alvo_ms = x_value * 1000.0
         return min(self._points, key=lambda p: abs(p.elapsed_ms - alvo_ms))
 
@@ -1124,33 +1125,3 @@ def _gravada_antes_da_correcao(points: list[TelemetryPoint]) -> bool:
     )
 
 
-def _point_at(
-    points: list[TelemetryPoint], distance_m: float
-) -> TelemetryPoint | None:
-    """Amostra mais próxima da distância informada.
-
-    Busca binária, e não `min()` sobre a lista inteira: a distância acumulada é
-    monotônica por construção — o hodômetro só anda para a frente —, e uma volta
-    tem ~6.000 amostras. Varrer todas custava 5 ms por movimento do cursor, o
-    que só ficou visível depois que a pintura deixou de custar 160.
-    """
-    if not points:
-        return None
-
-    baixo, alto = 0, len(points) - 1
-    while baixo < alto:
-        meio = (baixo + alto) // 2
-        if points[meio].distance_m < distance_m:
-            baixo = meio + 1
-        else:
-            alto = meio
-
-    # O vizinho de trás pode estar mais perto que o encontrado: a busca para na
-    # primeira amostra **maior ou igual**, e o alvo costuma cair entre duas.
-    if baixo > 0:
-        anterior = points[baixo - 1]
-        if abs(anterior.distance_m - distance_m) <= abs(
-            points[baixo].distance_m - distance_m
-        ):
-            return anterior
-    return points[baixo]
