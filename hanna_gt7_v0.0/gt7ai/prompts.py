@@ -31,6 +31,7 @@ from typing import Any
 from gt7core.analytics.corners import Corner
 from gt7core.analytics.driver import DriverProfile
 from gt7core.analytics.timeloss import TimeLossReport
+from gt7core.domain.formatting import format_lap_time
 
 from .client import AIRequest
 
@@ -213,13 +214,6 @@ DEBRIEF_SCHEMA: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 
-def format_lap_time(total_ms: int) -> str:
-    """`92345` vira `1:32.345`. O formato que o piloto lê no painel."""
-    if total_ms <= 0:
-        return "—"
-    minutes, remainder = divmod(int(total_ms), 60_000)
-    seconds, millis = divmod(remainder, 1000)
-    return f"{minutes}:{seconds:02d}.{millis:03d}"
 
 
 def format_header(

@@ -25,6 +25,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from ..domain.formatting import format_lap_time
 from ..domain.models import TelemetryPoint
 from .braking import detect_braking_zones
 from .corners import Corner, detect_corners
@@ -149,8 +150,8 @@ class DriverProfile:
         )
         lines = [
             header,
-            f"  Ritmo: melhor {_format_ms(self.best_lap_ms)}, "
-            f"mediana {_format_ms(self.median_lap_ms)} ({self.consistency_label})",
+            f"  Ritmo: melhor {format_lap_time(self.best_lap_ms)}, "
+            f"mediana {format_lap_time(self.median_lap_ms)} ({self.consistency_label})",
             f"  Frenagem: {self.braking_style}",
         ]
         for note in self.strengths():
@@ -305,9 +306,3 @@ def _slope(values: list[float]) -> float:
     numerator = sum((i - mean_x) * (v - mean_y) for i, v in enumerate(values))
     denominator = sum((i - mean_x) ** 2 for i in range(count))
     return numerator / denominator if denominator else 0.0
-
-
-def _format_ms(total_ms: int) -> str:
-    minutes, remainder = divmod(total_ms, 60_000)
-    seconds, millis = divmod(remainder, 1000)
-    return f"{minutes}:{seconds:02d}.{millis:03d}"

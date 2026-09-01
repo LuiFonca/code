@@ -28,16 +28,11 @@ from .analytics.throttle import analyse_throttle
 from .analytics.timeloss import analyse_time_loss
 from .analytics.tyres import detect_tyre_events, temperature_balance
 from .config.settings import Settings
+from .domain.formatting import format_lap_time
 from .events.bus import EventBus
 from .observability.logging import configure_logging
 from .telemetry.engine import LapBoundaryDetected, TelemetryEngine, TelemetryReceived
 from .telemetry.sources.mock import synthetic_session
-
-
-def format_lap_time(total_ms: int) -> str:
-    minutes, remainder = divmod(total_ms, 60_000)
-    seconds, millis = divmod(remainder, 1000)
-    return f"{minutes}:{seconds:02d}.{millis:03d}"
 
 
 class DemoReport:

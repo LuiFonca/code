@@ -14,6 +14,7 @@ escolher o que sobra.
 
 from __future__ import annotations
 
+from gt7core.domain.formatting import format_lap_time
 from gt7core.domain.models import Lap
 
 # Teto da plataforma. Cortar aqui, com reticências, é melhor que a mensagem
@@ -24,13 +25,9 @@ DISCORD_LIMIT = 2000
 SAFE_LIMIT = 1900
 
 
-def lap_time(total_ms: int) -> str:
-    """`92345` vira `1:32.345`."""
-    if total_ms <= 0:
-        return "—"
-    minutes, remainder = divmod(int(total_ms), 60_000)
-    seconds, millis = divmod(remainder, 1000)
-    return f"{minutes}:{seconds:02d}.{millis:03d}"
+#: O nome curto que as mensagens do bot já usam, apontando para a única
+#: implementação. Renomear os chamadores não traria nada.
+lap_time = format_lap_time
 
 
 def delta(ms: float) -> str:

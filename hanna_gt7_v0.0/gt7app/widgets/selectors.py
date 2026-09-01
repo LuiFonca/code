@@ -17,6 +17,7 @@ from collections.abc import Callable
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QComboBox, QLabel, QWidget
 
+from gt7core.domain.formatting import format_lap_time
 from gt7core.domain.models import Lap
 from gt7core.storage.repositories import SqliteLapRepository, SqliteTrackRepository
 
@@ -24,20 +25,23 @@ from ..design.theme import OBJ_SELECTOR_NOTE
 from ..design.tokens import Space
 from .flow import FlowLayout, labelled
 
+#: `format_lap_time` é reexportado daqui: três páginas o importam deste
+#: módulo desde antes de ele virar compartilhado, e trocar os imports não
+#: traria nada. Uma implementação, em `gt7core.domain.formatting`.
+__all__ = [
+    "LAP_COMBO_MIN_W",
+    "TRACK_COMBO_MIN_W",
+    "TrackLapSelector",
+    "describe_lap",
+    "format_delta",
+    "format_lap_time",
+]
+
 #: Larguras mínimas, em pixels. O catálogo tem nomes como "24 Heures du Mans
 #: Racing Circuit No Chicane"; caber todos deixaria o combo maior que a janela,
 #: então a medida é o suficiente para identificar sem ambiguidade.
 TRACK_COMBO_MIN_W = 230
 LAP_COMBO_MIN_W = 170
-
-
-def format_lap_time(total_ms: int) -> str:
-    """`m:ss.mmm` — o formato que o jogo mostra."""
-    if total_ms <= 0:
-        return "—"
-    minutes, remainder = divmod(total_ms, 60_000)
-    seconds, millis = divmod(remainder, 1000)
-    return f"{minutes}:{seconds:02d}.{millis:03d}"
 
 
 def format_delta(delta_ms: int) -> str:
