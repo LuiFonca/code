@@ -22,6 +22,7 @@ from datetime import datetime
 from sqlite3 import Row
 
 from ..domain.models import Car, Lap, Session, TelemetryPoint, Track
+from ..domain.validity import MIN_COMPLETE_RATIO
 from ..observability.logging import get_logger
 from .database import (
     UNKNOWN_CAR_NAME,
@@ -52,7 +53,22 @@ def _same_anchor(a: float | None, b: float | None) -> bool:
     return abs(a - b) < 0.01
 
 
-_LAP_COLUMNS = "id, session_id, track_id, car_id, is_player, lap_time_ms, recorded_at"
+#: A distância da volta e o comprimento da pista viajam **juntos** em toda
+#: leitura: validade é a razão entre os dois, e trazer só um produziria uma
+#: volta que não sabe dizer se deu a volta.
+_LAP_COLUMNS = (
+    "l.id, l.session_id, l.track_id, l.car_id, l.is_player, l.lap_time_ms, "
+    "l.recorded_at, l.distance_m, t.length_m"
+)
+_LAP_FROM = "laps l LEFT JOIN tracks t ON t.id = l.track_id"
+
+#: Volta elegível a recorde. Quando falta a distância ou o comprimento da pista
+#: a volta **passa**: não se pode acusar de incompleta uma volta que ninguém
+#: teve como medir, e o limiar do domínio mora em `domain.validity`.
+_COMPLETE_ENOUGH = (
+    "(t.length_m IS NULL OR l.distance_m IS NULL "
+    f"OR l.distance_m >= t.length_m * {MIN_COMPLETE_RATIO})"
+)
 
 
 class SqliteLapRepository:
@@ -92,7 +108,8 @@ class SqliteLapRepository:
                 cursor = self._conn.cursor()
                 cursor.execute(
                     "INSERT INTO laps (session_id, track_id, car_id, is_player, "
-                    "lap_time_ms, recorded_at, frame_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "lap_time_ms, recorded_at, frame_count, distance_m) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         lap.session_id,
                         lap.track_id,
@@ -101,6 +118,7 @@ class SqliteLapRepository:
                         lap.lap_time_ms,
                         lap.start_time.timestamp() if lap.start_time else time.time(),
                         len(lap.points),
+                        lap.measured_distance_m,
                     ),
                 )
                 lap_id = int(cursor.lastrowid or 0)
@@ -212,7 +230,7 @@ class SqliteLapRepository:
 
     def get_by_id(self, lap_id: int) -> Lap | None:
         row = self._conn.execute(
-            f"SELECT {_LAP_COLUMNS} FROM laps WHERE id = ?", (lap_id,)
+            f"SELECT {_LAP_COLUMNS} FROM {_LAP_FROM} WHERE l.id = ?", (lap_id,)
         ).fetchone()
         if row is None:
             return None
@@ -222,8 +240,8 @@ class SqliteLapRepository:
 
     def get_all(self, limit: int | None = None) -> list[Lap]:
         sql = (
-            f"SELECT {_LAP_COLUMNS} FROM laps WHERE is_player = 1 "
-            "ORDER BY recorded_at DESC"
+            f"SELECT {_LAP_COLUMNS} FROM {_LAP_FROM} WHERE l.is_player = 1 "
+            "ORDER BY l.recorded_at DESC"
         )
         params: tuple[object, ...] = ()
         if limit is not None:
@@ -233,8 +251,8 @@ class SqliteLapRepository:
 
     def get_by_track(self, track_id: int, limit: int | None = None) -> list[Lap]:
         sql = (
-            f"SELECT {_LAP_COLUMNS} FROM laps WHERE track_id = ? AND is_player = 1 "
-            "ORDER BY recorded_at DESC"
+            f"SELECT {_LAP_COLUMNS} FROM {_LAP_FROM} WHERE l.track_id = ? AND l.is_player = 1 "
+            "ORDER BY l.recorded_at DESC"
         )
         params: tuple[object, ...] = (track_id,)
         if limit is not None:
@@ -244,24 +262,37 @@ class SqliteLapRepository:
 
     def get_by_session(self, session_id: int) -> list[Lap]:
         rows = self._conn.execute(
-            f"SELECT {_LAP_COLUMNS} FROM laps WHERE session_id = ? "
-            "ORDER BY recorded_at ASC",
+            f"SELECT {_LAP_COLUMNS} FROM {_LAP_FROM} WHERE l.session_id = ? "
+            "ORDER BY l.recorded_at ASC",
             (session_id,),
         ).fetchall()
         return [self._row_to_lap(r) for r in rows]
 
     def get_best(self, track_id: int) -> Lap | None:
+        """A melhor volta **completa** da pista.
+
+        Uma volta que cortou o traçado produz um tempo mais rápido do que o
+        piloto fez, e recorde é a referência do delta na tela, do alvo da
+        sessão e da comparação — um tempo falso aqui contamina tudo o que
+        depende dele.
+
+        Voltas longas continuam elegíveis: sair da pista acrescenta distância e
+        tempo, então elas são mais lentas e nunca disputariam o recorde de
+        qualquer forma. Excluí-las seria rigor sem efeito.
+        """
         row = self._conn.execute(
-            f"SELECT {_LAP_COLUMNS} FROM laps WHERE track_id = ? AND is_player = 1 "
-            "ORDER BY lap_time_ms ASC LIMIT 1",
+            f"SELECT {_LAP_COLUMNS} FROM {_LAP_FROM} "
+            "WHERE l.track_id = ? AND l.is_player = 1 "
+            f"AND {_COMPLETE_ENOUGH} "
+            "ORDER BY l.lap_time_ms ASC LIMIT 1",
             (track_id,),
         ).fetchone()
         return self._row_to_lap(row) if row else None
 
     def get_top(self, track_id: int, limit: int = 5) -> list[Lap]:
         rows = self._conn.execute(
-            f"SELECT {_LAP_COLUMNS} FROM laps WHERE track_id = ? AND is_player = 1 "
-            "ORDER BY lap_time_ms ASC LIMIT ?",
+            f"SELECT {_LAP_COLUMNS} FROM {_LAP_FROM} WHERE l.track_id = ? AND l.is_player = 1 "
+            "ORDER BY l.lap_time_ms ASC LIMIT ?",
             (track_id, limit),
         ).fetchall()
         return [self._row_to_lap(r) for r in rows]
@@ -385,7 +416,10 @@ class SqliteLapRepository:
     @staticmethod
     def _row_to_lap(row: Row) -> Lap:
         """Linha da tabela `laps` → modelo de domínio, sem as amostras."""
-        lap_id, session_id, track_id, car_id, is_player, lap_time_ms, recorded_at = row
+        (
+            lap_id, session_id, track_id, car_id, is_player, lap_time_ms,
+            recorded_at, distance_m, track_length_m,
+        ) = row
         return Lap(
             id=lap_id,
             session_id=session_id,
@@ -395,6 +429,8 @@ class SqliteLapRepository:
             lap_time_ms=lap_time_ms,
             start_time=datetime.fromtimestamp(recorded_at) if recorded_at else None,
             points=[],
+            distance_m=distance_m,
+            track_length_m=track_length_m,
         )
 
 

@@ -43,12 +43,16 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from ..analytics.sectors import resolve_anchor, sector_boundaries
+from ..analytics.sectors import (
+    MIN_LAP_DISTANCE_M,
+    resolve_anchor,
+    sector_boundaries,
+)
 from ..observability.logging import get_logger
 
 _log = get_logger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _memory_counter = itertools.count()
 _memory_lock = threading.Lock()
@@ -195,7 +199,8 @@ class SqliteDatabase:
                 lap_time_ms INTEGER NOT NULL,
                 recorded_at REAL NOT NULL,
                 frame_count INTEGER NOT NULL,
-                sector_anchor_m REAL
+                sector_anchor_m REAL,
+                distance_m REAL
             );
             CREATE TABLE IF NOT EXISTS lap_frames (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -326,6 +331,29 @@ class SqliteDatabase:
             self._try_alter("tracks", "length_m REAL")
             self._try_alter("laps", "sector_anchor_m REAL")
 
+        if current and current < 10:
+            # 9 -> 10: a distância percorrida passa a viver na linha da volta.
+            #
+            # Ela sempre existiu, mas só varrendo as amostras: descobrir quanto
+            # uma volta andou custava um MAX sobre milhares de linhas de
+            # `lap_frames`, e a âncora de setor pagava isso dez vezes a cada
+            # gravação.
+            #
+            # O que a torna necessária agora é a validade: comparar a distância
+            # com o comprimento oficial da pista responde se a volta deu a volta,
+            # e essa comparação precisa acontecer na consulta que escolhe o
+            # recorde — não depois, em Python, sobre uma volta já eleita.
+            _log.info("migrando banco", extra={"from": current, "to": 10})
+            self._try_alter("laps", "distance_m REAL")
+            # Preenchimento único do acervo existente. Custa uma varredura por
+            # volta, uma vez; sem ele, toda volta antiga ficaria sem validade e
+            # a tela mostraria travessão num dado que está no banco.
+            conn.execute(
+                "UPDATE laps SET distance_m = ("
+                "  SELECT MAX(distance_m) FROM lap_frames WHERE lap_id = laps.id"
+                ") WHERE distance_m IS NULL"
+            )
+
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
 
@@ -349,25 +377,21 @@ def reference_lap_distance(
     if track_id is None:
         return None
 
-    query = "SELECT id FROM laps WHERE track_id = ? AND is_player = 1"
+    query = "SELECT distance_m FROM laps WHERE track_id = ? AND is_player = 1"
     params: list[object] = [track_id]
     if exclude_lap_id is not None:
         query += " AND id != ?"
         params.append(exclude_lap_id)
     query += " ORDER BY recorded_at DESC LIMIT 10"
 
-    lap_ids = [r[0] for r in conn.execute(query, params).fetchall()]
-    if not lap_ids:
-        return None
-
-    totals = []
-    for other_lap_id in lap_ids:
-        row = conn.execute(
-            "SELECT MAX(distance_m) FROM lap_frames WHERE lap_id = ?", (other_lap_id,)
-        ).fetchone()
-        if row and row[0] and row[0] > 50:
-            totals.append(row[0])
-
+    # A distância agora vive na linha da volta; antes era um MAX sobre milhares
+    # de amostras, uma vez por volta da janela — dez varreduras de `lap_frames`
+    # a cada gravação.
+    totals = [
+        r[0]
+        for r in conn.execute(query, params).fetchall()
+        if r[0] and r[0] > MIN_LAP_DISTANCE_M
+    ]
     if not totals:
         return None
     totals.sort()

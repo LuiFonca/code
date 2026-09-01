@@ -12,6 +12,8 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from .validity import LapValidity, classify_lap, lap_coverage
+
 
 @dataclass(slots=True)
 class TelemetryPoint:
@@ -187,9 +189,41 @@ class Lap:
     is_player: bool = True
     points: list[TelemetryPoint] = field(default_factory=list)
 
+    distance_m: float | None = None
+    """Distância percorrida, do hodômetro. `None` em voltas antigas.
+
+    Vive na volta, e não só nas amostras, porque comparar com o comprimento
+    oficial da pista é o que diz se a volta deu a volta — e essa comparação
+    precisa acontecer na consulta que escolhe o recorde.
+    """
+
+    track_length_m: float | None = None
+    """Comprimento oficial da pista, quando conhecido. Preenchido na leitura."""
+
     @property
     def has_points(self) -> bool:
         return len(self.points) > 0
+
+    @property
+    def measured_distance_m(self) -> float | None:
+        """A distância desta volta: a gravada, ou a das amostras.
+
+        A queda para as amostras é o que faz a validade funcionar na volta que
+        acabou de fechar e ainda não foi para o banco.
+        """
+        if self.distance_m is not None:
+            return self.distance_m
+        return self.points[-1].distance_m if self.points else None
+
+    @property
+    def coverage(self) -> float | None:
+        """Fração da pista que esta volta percorreu. `None` sem comparação."""
+        return lap_coverage(self.measured_distance_m, self.track_length_m)
+
+    @property
+    def validity(self) -> LapValidity:
+        """A volta cobriu a pista? `UNKNOWN` quando não há com o que comparar."""
+        return classify_lap(self.measured_distance_m, self.track_length_m)
 
     @property
     def duration_ms(self) -> int:
@@ -198,10 +232,6 @@ class Lap:
         if self.lap_time_ms > 0:
             return self.lap_time_ms
         return self.points[-1].elapsed_ms if self.points else 0
-
-    @property
-    def distance_m(self) -> float:
-        return self.points[-1].distance_m if self.points else 0.0
 
     @property
     def avg_speed(self) -> float:
