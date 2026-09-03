@@ -17,11 +17,12 @@ Foi assim que passaram despercebidos, ao mesmo tempo:
 O último só apareceu quando alguém foi conferir o índice. Nenhuma cobertura de
 linha pega isso — só ler a célula pega.
 
-A forma dos testes é sempre a mesma: montar voltas cuja resposta se calcula à
-mão, abrir a página de verdade e **ler o texto renderizado**. Voltas a
-velocidade constante existem para isso — o tempo de cada trecho é proporcional
-à distância dele, então o valor esperado sai da aritmética, e não de um valor
-capturado de uma execução anterior (que só congelaria o defeito).
+A forma dos testes é sempre a mesma: montar voltas cuja resposta é conhecida,
+abrir a página de verdade e **ler o texto renderizado**. As voltas são
+construídas **por setor**, com uma amostra caindo exatamente sobre cada divisa,
+então o valor esperado é **entrada** do teste — e não uma dedução que poderia
+repetir o mesmo erro do código verificado, nem um valor capturado de uma
+execução anterior, que só congelaria o defeito.
 """
 
 from __future__ import annotations
@@ -137,9 +138,8 @@ class Cenario:
 def cenario(app: QApplication, tmp_path: Path):  # noqa: ANN201, ARG001
     """Suzuka com três voltas limpas e uma cortada.
 
-    As três limpas são a velocidade constante e diferem só no tempo, então o
-    setor 1 de cada uma é exatamente um terço do tempo dela — o que torna cada
-    número da tabela verificável sem rodar o programa.
+    Cada volta é construída com os tempos de setor que se quer testar, então
+    todo número da tabela é verificável sem rodar o programa.
     """
     settings = Settings()
     settings.storage.database_path = tmp_path / "n.db"
@@ -184,7 +184,9 @@ def cenario(app: QApplication, tmp_path: Path):  # noqa: ANN201, ARG001
 
 
 class TestATabelaDoHistorico:
-    def test_o_setor_1_e_um_terco_do_tempo_da_volta(self, cenario: Cenario) -> None:
+    def test_o_tempo_de_setor_e_o_que_a_volta_gastou_ali(
+        self, cenario: Cenario
+    ) -> None:
         """O tempo de setor que a célula mostra é o que a volta gastou ali.
 
         A volta do recorde foi construída com 41,0 s em cada trecho, e uma
