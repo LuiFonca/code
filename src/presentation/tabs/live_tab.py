@@ -219,6 +219,7 @@ class LiveDashboardTab(QWidget):
         self._vm.frame_updated.connect(self._on_frame)
         self._vm.delta_updated.connect(self._on_delta)
         self._vm.stale_entered.connect(self._on_stale)
+        self._vm.connection_changed.connect(self._on_connection)
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
@@ -351,27 +352,44 @@ class LiveDashboardTab(QWidget):
         )
         self.track_map.set_marker(point.position_x, point.position_z, MARKER_COLOR)
 
+    def _on_connection(self, state, _message=""):
+        """Desconectar precisa apagar o painel.
+
+        O `frame_updated` só é emitido quando existe amostra, então ao
+        desconectar simplesmente parava de chegar sinal e a última leitura
+        ficava na tela — velocidade, marcha e combustível de minutos atrás,
+        com cara de ao vivo.
+        """
+        if state == "desconectado":
+            self._clear_panel()
+
     def _on_delta(self, delta_best, delta_previous):
         self.card_delta.set_delta(delta_best)
         self.card_delta_prev.set_delta(delta_previous)
 
-    def _on_stale(self):
-        """Zera a tela quando a transmissão para.
+    def _clear_panel(self):
+        """Apaga os valores do painel, sem afirmar nada sobre o carro.
 
-        Sem isto, o último valor recebido fica congelado e "carro parado" vira
-        indistinguível de "perdi o sinal".
+        Tudo vira travessão. Zero seria uma afirmação — "o carro está parado",
+        "o tanque está vazio" — e a verdade aqui é outra: não há dado. A versão
+        anterior escrevia 0 km/h e marcha N ao perder o sinal, que é justamente
+        o que se queria evitar: sinal perdido virava carro parado na tela.
         """
-        self.card_speed.set_value("0")
+        self.card_speed.set_value("--")
         self.rpm_bar.set_rpm(0)
-        self.card_gear.set_value("N")
+        self.card_gear.set_value("--")
         self.card_lap.set_value("--/--")
         self.card_laptime.set_value(format_ms(None))
-        self.card_fuel.set_value("0")
+        self.card_fuel.set_value("--")
         self.pedal_throttle.set_value(0)
         self.pedal_brake.set_value(0)
         self.card_delta.set_delta(None)
         self.card_delta_prev.set_delta(None)
         self.aids_row.set_states({})
+
+    def _on_stale(self):
+        """A transmissão parou: o painel não pode seguir mostrando o passado."""
+        self._clear_panel()
 
     def _save_ghost(self):
         points = self.track_map.get_trail_points("atual")

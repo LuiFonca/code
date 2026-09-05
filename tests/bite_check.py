@@ -196,6 +196,28 @@ MUTACOES = [
     ("C3 limiar do reconhecimento", "src/domain/services/track_fingerprint.py",
      "    if melhor_desvio > MAX_DESVIO_MEDIO_M:", "    if False:",
      "test_candidata_unica_distante_e_recusada"),
+
+    # ------------------------------------------------------------- UI/UX
+    ("U1 abas vazias ao abrir", "src/presentation/main_window.py",
+     "        if self._on_track_changed:\n            self._on_track_changed(self._session.track_id)",
+     "        pass",
+     "test_app_abre_ja_mostrando_as_voltas_do_banco"),
+
+    ("U2 sem sinal mostra zero", "src/presentation/tabs/live_tab.py",
+     'self.card_speed.set_value("--")', 'self.card_speed.set_value("0")',
+     "test_perder_o_sinal_nao_mostra_carro_parado"),
+
+    ("U3 desconexao nao limpa", "src/presentation/tabs/live_tab.py",
+     "        self._vm.connection_changed.connect(self._on_connection)",
+     "        pass",
+     "test_desconectar_limpa_o_painel_ao_vivo"),
+
+    # As voltas sem pista viviam so no Historico: visiveis e inalcancaveis.
+    ("U4 volta orfa inalcancavel", "src/application/viewmodels/telemetry_viewmodel.py",
+     "        self.laps_available.emit(self._laps.get_by_track(self._track_id))",
+     "        if self._track_id is None:\n            self.laps_available.emit([])\n            return",
+     "test_volta_sem_pista_pode_ser_aberta_e_comparada"),
+
 ]
 
 

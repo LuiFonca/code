@@ -134,9 +134,10 @@ class ComparisonViewModel(QObject):
         self.refresh_lap_list()
 
     def refresh_lap_list(self) -> None:
-        if self._track_id is None:
-            self.laps_available.emit([])
-            return
+        # `track_id=None` não é "nenhuma volta": é o grupo das voltas gravadas
+        # sem pista, que o repositório sabe buscar. Cortar aqui deixava essas
+        # voltas visíveis no Histórico e inalcançáveis nas outras abas — dava
+        # para ver que existiam e não dava para abrir nem comparar.
         self.laps_available.emit(self._laps.get_by_track(self._track_id))
 
     def compare(self, lap_id_a: int, lap_id_b: int) -> None:

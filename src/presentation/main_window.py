@@ -101,6 +101,13 @@ class MainWindow(QMainWindow):
         self._reload_track_list()
         self._reload_car_list()
         self._update_info_bar()
+        # As abas nascem vazias: cada uma só busca voltas quando recebe uma
+        # pista. Sem este empurrão inicial, abrir o app com o banco cheio
+        # mostrava Histórico, Telemetria e Comparação em branco até o usuário
+        # mexer em alguma coisa — e as voltas sem pista, que vivem no grupo
+        # `None`, ficavam invisíveis.
+        if self._on_track_changed:
+            self._on_track_changed(self._session.track_id)
 
     # ---------- construção ----------
 
@@ -327,7 +334,8 @@ class MainWindow(QMainWindow):
         used_names = set()
         if hasattr(self._tracks, "list_with_lap_count"):
             for track_id, name, lap_count in self._tracks.list_with_lap_count():
-                label = f"{name} ({lap_count} voltas)" if lap_count else name
+                plural = "volta" if lap_count == 1 else "voltas"
+                label = f"{name} ({lap_count} {plural})" if lap_count else name
                 self.track_input.addItem(label, (track_id, name))
                 used_names.add(name)
         else:
