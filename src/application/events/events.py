@@ -117,6 +117,17 @@ class TrackCandidatesDetected:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplaySuspected:
+    """A telemetria tem cara de replay: o tempo da volta andou para trás.
+
+    É sugestão, não veredito — o pacote não informa quem controla o carro.
+    Publicado uma vez por conexão, ao acumular indícios suficientes.
+    """
+
+    evidence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class TrackRecognized:
     """A pista foi reconhecida pelo desenho do traçado.
 

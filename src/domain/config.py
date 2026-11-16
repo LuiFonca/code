@@ -16,10 +16,26 @@ abrir — o pior caso aceitável é o app abrir com o comportamento de fábrica.
 """
 
 import json
+import os
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-DEFAULT_CONFIG_PATH = Path.home() / ".hanna_gt7_ai" / "config.json"
+
+def data_dir() -> Path:
+    """Pasta onde o app guarda banco e preferências.
+
+    `HANNA_GT7_HOME` permite apontar para outro lugar. Existe sobretudo para
+    os testes: sem isso, qualquer teste que monta o app inteiro leria e
+    escreveria nas preferências reais de quem o roda. Resolvida a cada
+    chamada, e não na importação, para a variável valer mesmo se definida
+    depois.
+    """
+    personalizada = os.environ.get("HANNA_GT7_HOME")
+    return Path(personalizada) if personalizada else Path.home() / ".hanna_gt7_ai"
+
+
+def config_path() -> Path:
+    return data_dir() / "config.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +73,12 @@ class AppConfig:
     auto_reconnect: bool = True
     reconnect_initial_delay_s: float = 2.0
     reconnect_max_delay_s: float = 60.0
+    # Última pista e último carro usados, para o app abrir onde parou.
+    last_track: str = ""
+    last_car: str = ""
+    # Avisa quando a telemetria tem cara de replay (tempo andando para trás).
+    # É só aviso: quem decide não gravar continua sendo o piloto.
+    replay_detection: bool = True
 
 
 # Faixas aceitáveis por campo. Fora delas, o valor do arquivo é ignorado.
@@ -111,9 +133,9 @@ def _coerce(name: str, raw, default):
     return valor
 
 
-def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
+def load_config(path: Path | str | None = None) -> AppConfig:
     """Lê a configuração do disco. Sempre devolve algo utilizável."""
-    caminho = Path(path)
+    caminho = Path(path) if path is not None else config_path()
     if not caminho.exists():
         return AppConfig()
 
@@ -137,13 +159,13 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
     return AppConfig(**valores)
 
 
-def save_config(config: AppConfig, path: Path | str = DEFAULT_CONFIG_PATH) -> None:
+def save_config(config: AppConfig, path: Path | str | None = None) -> None:
     """Grava a configuração, criando o diretório se necessário.
 
     Escreve num arquivo temporário e renomeia: interromper a gravação no meio
     deixaria um JSON truncado, e o app abriria com o padrão sem explicar por quê.
     """
-    caminho = Path(path)
+    caminho = Path(path) if path is not None else config_path()
     caminho.parent.mkdir(parents=True, exist_ok=True)
     temporario = caminho.with_suffix(".json.tmp")
     temporario.write_text(

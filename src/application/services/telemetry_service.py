@@ -25,6 +25,7 @@ from ...domain.interfaces.track_repository import TrackRepository
 from ...domain.models.lap import Lap
 from ...domain.models.telemetry_point import TelemetryPoint
 from ...domain.services.lap_comparator import LapComparator
+from ...domain.services.replay_detector import ReplayDetector
 from ...domain.services.slip_angle import slip_angle_deg
 from ..events.event_bus import EventBus
 from ..events.events import (
@@ -36,6 +37,7 @@ from ..events.events import (
     LapDiscarded,
     LapSaveFailed,
     LapsPurged,
+    ReplaySuspected,
     TelemetryReceived,
     TrackCandidatesDetected,
     TrackRecognized,
@@ -118,6 +120,9 @@ class TelemetryService:
         self._prev_velocity_x: float | None = None
         self._prev_velocity_z: float | None = None
         self._prev_velocity_ms: int | None = None
+
+        # Só sugere; quem decide não gravar é o piloto (ver ReplayDetector).
+        self._replay = ReplayDetector()
 
         self._detected_car_id: int | None = None
         self._car_reemit_counter = 0
@@ -237,6 +242,7 @@ class TelemetryService:
         # app conectou, então a volta em curso não conta como completa.
         self._reset_lap_state(observed_from_start=False)
         self._load_best_reference()
+        self._replay.reset()
         self._session.start_session()
         self._writer.start()
         self._source.start()
@@ -334,6 +340,11 @@ class TelemetryService:
 
         # Virada de volta: o contador mudou, então a volta anterior fechou.
         # A partir daqui a próxima volta é observada desde o início.
+        if self._config.replay_detection and self._replay.feed(
+            frame.lap_count, frame.current_lap_ms
+        ):
+            self._bus.publish(ReplaySuspected(evidence=self._replay.evidence))
+
         if self._last_lap_count is not None and frame.lap_count != self._last_lap_count:
             self._finalize_lap(frame.last_lap_ms)
             self._lap_observed_from_start = True
@@ -480,6 +491,9 @@ class TelemetryService:
                 getattr(frame, "rotation_k", 0.0),
                 getattr(frame, "rotation_w", 0.0),
             ),
+            # Eixo Y é o vertical: a velocidade angular em torno dele é a
+            # guinada. Vinha no pacote desde sempre e era descartada.
+            yaw_rate=getattr(frame, "angular_velocity_y", None),
         )
 
     def _detect_car(self, frame) -> None:

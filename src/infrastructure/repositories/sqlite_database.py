@@ -23,7 +23,8 @@ import threading
 import time
 from pathlib import Path
 
-DEFAULT_DB_PATH = Path.home() / ".hanna_gt7_ai" / "laps.db"
+from ...domain.config import data_dir
+
 
 # Incrementar sempre que uma coluna/tabela nova for necessária, adicionando a
 # migração correspondente em `_run_migrations`. Sem isso, o app quebra em
@@ -45,7 +46,9 @@ UNKNOWN_TRACK_NAME = "Pista não identificada"
 class SqliteDatabase:
     """Dona da conexão e do schema. Os repositórios recebem esta instância."""
 
-    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH):
+    def __init__(self, db_path: str | Path | None = None):
+        if db_path is None:
+            db_path = data_dir() / "laps.db"
         self._lock = threading.Lock()
 
         if db_path != ":memory:":

@@ -20,6 +20,12 @@ import pytest
 # Qt sem tela — precisa vir antes de qualquer import do PySide6.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+# Pasta de dados descartável. Os testes que montam o app inteiro leem e gravam
+# preferências; sem isto mexeriam nas preferências reais de quem roda a suíte.
+import tempfile  # noqa: E402
+
+os.environ["HANNA_GT7_HOME"] = tempfile.mkdtemp(prefix="hanna-testes-")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
