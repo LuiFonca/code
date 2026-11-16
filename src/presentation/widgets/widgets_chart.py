@@ -146,10 +146,14 @@ class SyncedMiniChart(QChartView):
             pen.setWidth(2)
             series.setPen(pen)
             for x, y in points:
-                series.append(x, y)
                 max_distance = max(max_distance, x)
                 y_min = y if y_min is None else min(y_min, y)
                 y_max = y if y_max is None else max(y_max, y)
+            # Em lote, numa chamada só. `append(x, y)` ponto a ponto dispara um
+            # sinal de atualização por ponto e, no PySide6 6.12, perde uma
+            # referência de None a cada chamada — no Python 3.11 isso derruba
+            # o processo com "deallocating None" depois de alguns milhares.
+            series.append([QPointF(x, y) for x, y in points])
 
             self.chart().addSeries(series)
             series.attachAxis(self._axis_x)
@@ -371,9 +375,9 @@ class LiveStripChart(QChartView):
         if len(self._values) > self._max_points:
             self._values.pop(0)
 
-        self._series.clear()
-        for i, v in enumerate(self._values):
-            self._series.append(i, v)
+        # `replace` troca a série inteira de uma vez: uma atualização de tela
+        # em vez de 150, e sem o `append` ponto a ponto (ver `set_series`).
+        self._series.replace([QPointF(i, v) for i, v in enumerate(self._values)])
         self._axis_x.setRange(0, max(self._max_points - 1, 1))
 
 
@@ -437,12 +441,8 @@ class LiveDualStripChart(QChartView):
         if len(self._values_b) > self._max_points:
             self._values_b.pop(0)
 
-        self._series_a.clear()
-        self._series_b.clear()
-        for i, v in enumerate(self._values_a):
-            self._series_a.append(i, v)
-        for i, v in enumerate(self._values_b):
-            self._series_b.append(i, v)
+        self._series_a.replace([QPointF(i, v) for i, v in enumerate(self._values_a)])
+        self._series_b.replace([QPointF(i, v) for i, v in enumerate(self._values_b)])
         self._axis_x.setRange(0, max(self._max_points - 1, 1))
 
 
