@@ -14,7 +14,6 @@ gravadas e, abaixo, o catálogo completo como alternativa.
 
 from .csv_car_repository import CsvCarRepository
 from .csv_catalog import CsvCatalog
-from .csv_maker_repository import CsvMakerRepository
 from .csv_track_repository import CsvTrackRepository
 from .sqlite_car_repository import SqliteCarRepository
 from .sqlite_database import SqliteDatabase
@@ -24,7 +23,6 @@ from .sqlite_track_repository import SqliteTrackRepository
 __all__ = [
     "CsvCarRepository",
     "CsvCatalog",
-    "CsvMakerRepository",
     "CsvTrackRepository",
     "SqliteCarRepository",
     "SqliteDatabase",

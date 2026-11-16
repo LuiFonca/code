@@ -23,10 +23,6 @@ class CarRepository(ABC):
         ...
 
     @abstractmethod
-    def find_by_name(self, name: str) -> list[Car]:
-        """Busca case-insensitive por trecho do nome."""
-
-    @abstractmethod
     def get_or_create(self, name: str) -> int:
         """Id do carro com este nome, criando-o se necessário.
 

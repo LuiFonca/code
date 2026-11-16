@@ -90,31 +90,12 @@ class LapDeleted:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionStarted:
-    session_id: int | None = None
-    track_name: str | None = None
-    car_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class SessionEnded:
-    session_id: int | None = None
+    """A captura foi encerrada. Leva a sessão inteira (voltas sem amostras),
+    que é o que o resumo de fim de sessão precisa."""
+
+    session: object = None
     lap_count: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class TrackChanged:
-    """Pista trocada. `track_id` nulo = nenhuma pista válida definida, e nesse
-    estado nada é persistido."""
-
-    track_id: int | None
-    track_name: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CarChanged:
-    car_id: int | None
-    car_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

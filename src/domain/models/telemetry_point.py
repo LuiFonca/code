@@ -55,18 +55,10 @@ class TelemetryPoint:
     # deslizamento, que é razão de velocidade de roda e não tem unidade física.
     # None em voltas gravadas antes desta medida existir.
     slip_angle_deg: float | None = None
-
-    @property
-    def elapsed_s(self) -> float:
-        """Tempo decorrido em segundos — usado no eixo temporal dos gráficos."""
-        return self.elapsed_ms / 1000.0
-
-    @property
-    def tire_temp_avg(self) -> float:
-        return (
-            self.tire_temp_fl + self.tire_temp_fr
-            + self.tire_temp_rl + self.tire_temp_rr
-        ) / 4.0
+    # Taxa de guinada em rad/s (velocidade angular em torno do eixo vertical).
+    # Comparada com a que a curva exigiria, diz se o carro sai de frente ou de
+    # traseira. None em voltas anteriores ao schema v10.
+    yaw_rate: float | None = None
 
     @property
     def tire_slip_avg(self) -> float:

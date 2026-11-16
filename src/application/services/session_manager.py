@@ -10,10 +10,7 @@ from ...domain.models.session import Session
 from ...domain.models.track import Track
 from ..events.event_bus import EventBus
 from ..events.events import (
-    CarChanged,
     SessionEnded,
-    SessionStarted,
-    TrackChanged,
 )
 
 
@@ -105,10 +102,6 @@ class SessionManager:
             return False
         self._track = track
         self._session.track = track
-        self._bus.publish(
-            TrackChanged(track_id=track.id if track else None,
-                         track_name=track.name if track else None)
-        )
         return True
 
     def set_car(self, car: Car | None) -> bool:
@@ -116,10 +109,6 @@ class SessionManager:
             return False
         self._car = car
         self._session.car = car
-        self._bus.publish(
-            CarChanged(car_id=car.id if car else None,
-                       car_name=car.name if car else None)
-        )
         return True
 
     def set_player_mode(self, is_player: bool) -> None:
@@ -132,19 +121,13 @@ class SessionManager:
         self._session = Session(
             car=self._car, track=self._track, start=datetime.now(), laps=[]
         )
-        self._bus.publish(
-            SessionStarted(
-                track_name=self._track.name if self._track else None,
-                car_name=self._car.name if self._car else None,
-            )
-        )
 
     def end_session(self) -> None:
         if self._session.start is None:
             return
         self._session.end = datetime.now()
         self._bus.publish(
-            SessionEnded(session_id=self._session.id, lap_count=self._session.lap_count)
+            SessionEnded(session=self._session, lap_count=self._session.lap_count)
         )
 
     def register_lap(self, lap: Lap) -> Lap:

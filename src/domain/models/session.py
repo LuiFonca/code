@@ -28,10 +28,6 @@ class Session:
     laps: list[Lap] = field(default_factory=list)
 
     @property
-    def is_active(self) -> bool:
-        return self.end is None
-
-    @property
     def lap_count(self) -> int:
         return len(self.laps)
 
@@ -44,13 +40,6 @@ class Session:
     @property
     def last_lap(self) -> Lap | None:
         return self.laps[-1] if self.laps else None
-
-    @property
-    def duration_s(self) -> float | None:
-        """Duração da sessão em segundos; None enquanto não terminou."""
-        if self.start is None or self.end is None:
-            return None
-        return (self.end - self.start).total_seconds()
 
     def add_lap(self, lap: Lap) -> Lap:
         """Registra a volta na sessão e devolve o registro guardado.

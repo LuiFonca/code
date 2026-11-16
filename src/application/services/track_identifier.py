@@ -34,8 +34,6 @@ class TrackIdentifier:
         """
         if track_id is None:
             return False
-        if not hasattr(self._tracks, "set_fingerprint"):
-            return False
         if self._tracks.get_fingerprint(track_id):
             return False
 
@@ -54,9 +52,6 @@ class TrackIdentifier:
         parcial, ou dois traçados parecidos demais para decidir. A volta é
         gravada de qualquer forma — só fica sem pista até alguém dizer qual é.
         """
-        if not hasattr(self._tracks, "all_fingerprints"):
-            return None
-
         assinatura = build_fingerprint(points)
         if assinatura is None:
             return None

@@ -563,7 +563,7 @@ class TrackMapWidget(QWidget):
         """Modo 'ao vivo': acrescenta um ponto à trilha `name` (cria se
         ainda não existir). Descarta pontos antigos além de max_points
         para uma sessão longa não crescer sem limite."""
-        for i, (existing_name, existing_color, points) in enumerate(self._paths):
+        for i, (existing_name, _color, points) in enumerate(self._paths):
             if existing_name == name:
                 points.append((x, z))
                 if len(points) > max_points:
@@ -685,7 +685,6 @@ class TrackMapWidget(QWidget):
             painter.setBrush(QBrush(QColor("#2a2e3a")))
             painter.drawRoundedRect(rect, 4, 4)
             painter.setPen(QColor("#c8cad0"))
-            from PySide6.QtGui import QFont
             font = QFont()
             font.setPixelSize(13)
             font.setBold(True)

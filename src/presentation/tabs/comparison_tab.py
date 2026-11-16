@@ -23,7 +23,7 @@ from ...application.viewmodels.comparison_viewmodel import (
     ComparisonViewModel,
 )
 from ..widgets.widgets import format_ms
-from ..widgets.widgets_chart import SyncedMiniChart, TrackMapWidget
+from ..widgets.widgets_chart import TrackMapWidget
 from .chart_tab_base import ChartTabBase
 
 COLOR_A = "#4f7cff"

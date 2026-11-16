@@ -109,10 +109,6 @@ class CsvCatalog:
                     id=tid,
                     name=row["Name"],
                     length_m=float(row["Length"]),
-                    location=row.get("Country") or None,
-                    corners=int(row.get("NumCorners", 0) or 0),
-                    is_oval=row.get("IsOval", "0") == "1",
-                    is_reverse=row.get("IsReverse", "0") == "1",
                 )
             except (KeyError, ValueError):
                 continue

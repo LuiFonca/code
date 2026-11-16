@@ -28,7 +28,7 @@ DEFAULT_DB_PATH = Path.home() / ".hanna_gt7_ai" / "laps.db"
 # Incrementar sempre que uma coluna/tabela nova for necessária, adicionando a
 # migração correspondente em `_run_migrations`. Sem isso, o app quebra em
 # silêncio no banco de quem já usava a versão anterior.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Retenção por pista: as N mais rápidas (recordes) + as N mais recentes
 # (histórico cronológico). O resto é descartado ao salvar, para o banco não
@@ -46,7 +46,6 @@ class SqliteDatabase:
     """Dona da conexão e do schema. Os repositórios recebem esta instância."""
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH):
-        self._db_path = db_path
         self._lock = threading.Lock()
 
         if db_path != ":memory:":
@@ -88,6 +87,7 @@ class SqliteDatabase:
             "tire_slip_fl": "REAL", "tire_slip_fr": "REAL",
             "tire_slip_rl": "REAL", "tire_slip_rr": "REAL",
             "turbo_boost": "REAL", "oil_temp": "REAL", "water_temp": "REAL",
+            "slip_angle_deg": "REAL", "yaw_rate": "REAL",
         }
         existing = {
             r[1] for r in self._conn.execute("PRAGMA table_info(lap_frames)").fetchall()
@@ -101,6 +101,8 @@ class SqliteDatabase:
             "is_player": "INTEGER NOT NULL DEFAULT 1",
             "is_complete": "INTEGER NOT NULL DEFAULT 1",
             "is_valid": "INTEGER NOT NULL DEFAULT 1",
+            "notes": "TEXT NOT NULL DEFAULT ''",
+            "setup": "TEXT NOT NULL DEFAULT ''",
         }
         existing = {
             r[1] for r in self._conn.execute("PRAGMA table_info(laps)").fetchall()
@@ -372,6 +374,14 @@ class SqliteDatabase:
             # porque é característica do circuito; é preenchida na primeira
             # volta completa gravada com aquela pista escolhida à mão.
             self._try_alter("tracks", "map_fingerprint TEXT")
+
+        if current_version < 10:
+            # 9 → 10: anotações e acerto por volta, e taxa de guinada por
+            # amostra (a velocidade angular já vinha no pacote e era
+            # descartada).
+            self._try_alter("laps", "notes TEXT NOT NULL DEFAULT ''")
+            self._try_alter("laps", "setup TEXT NOT NULL DEFAULT ''")
+            self._try_alter("lap_frames", "yaw_rate REAL")
 
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()

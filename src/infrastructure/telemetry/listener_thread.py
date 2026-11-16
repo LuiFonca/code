@@ -202,6 +202,10 @@ class Gt7TelemetrySource(TelemetrySource):
     def ps_ip(self) -> str:
         return self._ps_ip
 
+    def apply_config(self, config: AppConfig) -> None:
+        """Adota preferências novas. Rede só muda na próxima conexão."""
+        self._config = config
+
     def set_ps_ip(self, ps_ip: str) -> None:
         """Troca o IP alvo. Só vale a partir do próximo `start()` — trocar o
         destino de uma captura em andamento misturaria dados de dois consoles."""

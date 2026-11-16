@@ -18,15 +18,6 @@ class CsvTrackRepository(TrackRepository):
     def get_by_id(self, track_id: int) -> Track | None:
         return self._catalog.tracks.get(track_id)
 
-    def find_by_name(self, name: str) -> list[Track]:
-        needle = name.strip().lower()
-        if not needle:
-            return []
-        return sorted(
-            (t for t in self._catalog.tracks.values() if needle in t.name.lower()),
-            key=lambda t: t.name,
-        )
-
     def guess_by_length(
         self, lap_distance_m: float, tolerance_pct: float = 5.0
     ) -> list[Track]:

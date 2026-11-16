@@ -66,8 +66,8 @@ class SqliteLapRepository(LapRepository):
                 cur = self._conn.cursor()
                 cur.execute(
                     "INSERT INTO laps (track_id, car_id, is_player, is_complete, "
-                    "is_valid, lap_time_ms, recorded_at, frame_count) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "is_valid, lap_time_ms, recorded_at, frame_count, notes, setup) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         lap.track_id,
                         lap.car_id,
@@ -77,6 +77,8 @@ class SqliteLapRepository(LapRepository):
                         lap.lap_time_ms,
                         lap.start_time.timestamp() if lap.start_time else time.time(),
                         len(lap.points),
+                        lap.notes,
+                        lap.setup,
                     ),
                 )
                 lap_id = cur.lastrowid
@@ -116,28 +118,33 @@ class SqliteLapRepository(LapRepository):
         Só considera voltas de jogador nos dois critérios — voltas de replay/IA
         nunca contam como recorde nem como recente, e são as primeiras a sair.
         """
+        # `track_id = ?` nunca casa com NULL; o grupo sem pista precisa do seu
+        # próprio predicado. Antes ele simplesmente saía sem podar, e as voltas
+        # sem pista cresciam sem teto.
         if track_id is None:
-            return
+            onde, args = "track_id IS NULL", ()
+        else:
+            onde, args = "track_id = ?", (track_id,)
 
         best_ids = [
             r[0] for r in self._conn.execute(
-                "SELECT id FROM laps WHERE track_id = ? AND is_player = 1 "
+                f"SELECT id FROM laps WHERE {onde} AND is_player = 1 "
                 "AND is_complete = 1 AND is_valid = 1 ORDER BY lap_time_ms ASC LIMIT ?",
-                (track_id, self._keep_best),
+                (*args, self._keep_best),
             ).fetchall()
         ]
         recent_ids = [
             r[0] for r in self._conn.execute(
-                "SELECT id FROM laps WHERE track_id = ? AND is_player = 1 "
+                f"SELECT id FROM laps WHERE {onde} AND is_player = 1 "
                 "ORDER BY recorded_at DESC LIMIT ?",
-                (track_id, self._keep_recent),
+                (*args, self._keep_recent),
             ).fetchall()
         ]
 
         keep_ids = set(best_ids) | set(recent_ids)
         if not keep_ids:
-            # Nada a preservar significa que não há volta de jogador nesta
-            # pista; apagar "tudo que não está na lista vazia" removeria voltas
+            # Nada a preservar significa que não há volta de jogador neste
+            # grupo; apagar "tudo que não está na lista vazia" removeria voltas
             # legítimas de replay. Melhor não mexer.
             return
 
@@ -145,12 +152,12 @@ class SqliteLapRepository(LapRepository):
         # Conta antes de apagar: é este número que a interface mostra ao
         # usuário, para que a poda deixe de ser invisível.
         self.last_purged_count = self._conn.execute(
-            f"SELECT COUNT(*) FROM laps WHERE track_id = ? AND id NOT IN ({placeholders})",
-            (track_id, *keep_ids),
+            f"SELECT COUNT(*) FROM laps WHERE {onde} AND id NOT IN ({placeholders})",
+            (*args, *keep_ids),
         ).fetchone()[0]
         self._conn.execute(
-            f"DELETE FROM laps WHERE track_id = ? AND id NOT IN ({placeholders})",
-            (track_id, *keep_ids),
+            f"DELETE FROM laps WHERE {onde} AND id NOT IN ({placeholders})",
+            (*args, *keep_ids),
         )
 
     def set_valid(self, lap_id: int, is_valid: bool) -> None:
@@ -182,7 +189,7 @@ class SqliteLapRepository(LapRepository):
     def get_by_id(self, lap_id: int) -> Lap | None:
         row = self._conn.execute(
             "SELECT id, track_id, car_id, is_player, is_complete, is_valid, "
-            "lap_time_ms, recorded_at "
+            "lap_time_ms, recorded_at, notes, setup "
             "FROM laps WHERE id = ?",
             (lap_id,),
         ).fetchone()
@@ -195,7 +202,7 @@ class SqliteLapRepository(LapRepository):
     def get_all(self, limit: int | None = None) -> list[Lap]:
         sql = (
             "SELECT id, track_id, car_id, is_player, is_complete, is_valid, "
-            "lap_time_ms, recorded_at "  # noqa: E501
+            "lap_time_ms, recorded_at, notes, setup "  # noqa: E501
             "FROM laps WHERE is_player = 1 ORDER BY recorded_at DESC"
         )
         params: tuple = ()
@@ -217,7 +224,7 @@ class SqliteLapRepository(LapRepository):
         """
         colunas = (
             "SELECT id, track_id, car_id, is_player, is_complete, is_valid, "
-            "lap_time_ms, recorded_at FROM laps WHERE "
+            "lap_time_ms, recorded_at, notes, setup FROM laps WHERE "
         )
         if track_id is None:
             sql = colunas + "track_id IS NULL AND is_player = 1 ORDER BY recorded_at DESC"
@@ -243,6 +250,14 @@ class SqliteLapRepository(LapRepository):
             )
             self._conn.commit()
 
+    def set_notes(self, lap_id: int, notes: str, setup: str) -> None:
+        with self._db.lock:
+            self._conn.execute(
+                "UPDATE laps SET notes = ?, setup = ? WHERE id = ?",
+                (notes or "", setup or "", lap_id),
+            )
+            self._conn.commit()
+
     def get_best(self, track_id: int) -> Lap | None:
         """Volta mais rápida **completa** da pista.
 
@@ -257,22 +272,12 @@ class SqliteLapRepository(LapRepository):
         """
         row = self._conn.execute(
             "SELECT id, track_id, car_id, is_player, is_complete, is_valid, "
-            "lap_time_ms, recorded_at "
+            "lap_time_ms, recorded_at, notes, setup "
             "FROM laps WHERE track_id = ? AND is_player = 1 AND is_complete = 1 "
             "AND is_valid = 1 ORDER BY lap_time_ms ASC, id ASC LIMIT 1",
             (track_id,),
         ).fetchone()
         return self._row_to_lap(row) if row else None
-
-    def get_top(self, track_id: int, limit: int = KEEP_BEST_PER_TRACK) -> list[Lap]:
-        rows = self._conn.execute(
-            "SELECT id, track_id, car_id, is_player, is_complete, is_valid, "
-            "lap_time_ms, recorded_at "
-            "FROM laps WHERE track_id = ? AND is_player = 1 AND is_complete = 1 "
-            "AND is_valid = 1 ORDER BY lap_time_ms ASC, id ASC LIMIT ?",
-            (track_id, limit),
-        ).fetchall()
-        return [self._row_to_lap(r) for r in rows]
 
     def load_points(self, lap_id: int) -> list[TelemetryPoint]:
         """Amostras da volta, em ordem.
@@ -314,16 +319,6 @@ class SqliteLapRepository(LapRepository):
             result[lap_id].append(time_ms)
         return result
 
-    def car_name_for(self, lap_id: int) -> str | None:
-        """Nome do carro da volta — atalho para o histórico, que exibe a coluna
-        sem precisar montar o objeto `Car` inteiro."""
-        row = self._conn.execute(
-            "SELECT cars.name FROM laps LEFT JOIN cars ON cars.id = laps.car_id "
-            "WHERE laps.id = ?",
-            (lap_id,),
-        ).fetchone()
-        return row[0] if row else None
-
     def car_names_batch(self, lap_ids: list[int]) -> dict[int, str | None]:
         """Nomes de carro de várias voltas numa consulta — mesmo motivo do
         `get_sector_times_batch`."""
@@ -346,7 +341,7 @@ class SqliteLapRepository(LapRepository):
 
         (
             lap_id, track_id, car_id, is_player, is_complete, is_valid,
-            lap_time_ms, recorded_at,
+            lap_time_ms, recorded_at, notes, setup,
         ) = row
         return Lap(
             id=lap_id,
@@ -357,5 +352,7 @@ class SqliteLapRepository(LapRepository):
             is_valid=bool(is_valid),
             lap_time_ms=lap_time_ms,
             start_time=datetime.fromtimestamp(recorded_at) if recorded_at else None,
+            notes=notes or "",
+            setup=setup or "",
             points=[],
         )

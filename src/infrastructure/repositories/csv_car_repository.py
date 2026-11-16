@@ -21,15 +21,6 @@ class CsvCarRepository(CarRepository):
     def get_by_id(self, car_id: int) -> Car | None:
         return self._catalog.cars.get(car_id)
 
-    def find_by_name(self, name: str) -> list[Car]:
-        needle = name.strip().lower()
-        if not needle:
-            return []
-        return sorted(
-            (c for c in self._catalog.cars.values() if needle in c.name.lower()),
-            key=lambda c: c.name,
-        )
-
     def get_full_name(self, car_id: int) -> str | None:
         """"Montadora Modelo" — usado pela auto-detecção, que só recebe o id
         numérico dentro do pacote de telemetria."""

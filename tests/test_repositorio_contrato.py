@@ -149,15 +149,6 @@ def test_get_best_sem_voltas_devolve_none(repo):
     assert repositorio.get_best(12345) is None
 
 
-def test_get_top_respeita_o_limite(repo):
-    repositorio, track_id = repo
-    for ms in (92000, 88000, 90000, 89000):
-        repositorio.save(_lap(track_id, lap_time_ms=ms))
-
-    topo = repositorio.get_top(track_id, limit=2)
-    assert [lap.lap_time_ms for lap in topo] == [88000, 89000]
-
-
 # ------------------------------------------------------------------ setores
 def test_setores_sao_calculados_na_gravacao(repo):
     repositorio, track_id = repo

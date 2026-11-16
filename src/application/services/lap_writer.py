@@ -79,10 +79,6 @@ class LapWriter:
             self.start()
         self._queue.put((lap, context))
 
-    @property
-    def pending(self) -> int:
-        return self._queue.qsize()
-
     def _run(self) -> None:
         while True:
             item = self._queue.get()
@@ -91,7 +87,7 @@ class LapWriter:
             lap, context = item
             try:
                 lap_id = self._laps.save(lap)
-                purged = getattr(self._laps, "last_purged_count", 0)
+                purged = self._laps.last_purged_count
                 if self._on_saved is not None:
                     self._on_saved(lap, lap_id, purged, context)
             except Exception as exc:  # noqa: BLE001

@@ -15,7 +15,7 @@ não para substituir o banco.
 """
 
 import json
-from dataclasses import asdict, fields
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
 
@@ -77,6 +77,8 @@ class FileLapStorage(LapRepository):
             "is_player": lap.is_player,
             "is_complete": lap.is_complete,
             "is_valid": lap.is_valid,
+            "notes": lap.notes,
+            "setup": lap.setup,
             # Lista de listas em vez de lista de objetos: com milhares de
             # amostras, repetir 27 nomes de campo por ponto multiplicaria o
             # tamanho do arquivo por seis sem ganhar legibilidade real.
@@ -123,6 +125,8 @@ class FileLapStorage(LapRepository):
             is_player=bool(dados.get("is_player", True)),
             is_complete=bool(dados.get("is_complete", True)),
             is_valid=bool(dados.get("is_valid", True)),
+            notes=dados.get("notes") or "",
+            setup=dados.get("setup") or "",
             points=pontos,
         )
 
@@ -164,7 +168,8 @@ class FileLapStorage(LapRepository):
             lap_time_ms=lap.lap_time_ms,
             start_time=lap.start_time or datetime.now(),
             end_time=lap.end_time, is_player=lap.is_player,
-            is_complete=lap.is_complete, is_valid=lap.is_valid, points=lap.points,
+            is_complete=lap.is_complete, is_valid=lap.is_valid,
+            notes=lap.notes, setup=lap.setup, points=lap.points,
         )
         caminho = self._path(lap_id)
         # Grava em temporário e renomeia: interromper no meio deixaria um JSON
@@ -215,6 +220,24 @@ class FileLapStorage(LapRepository):
         lap.is_valid = is_valid
         self.save(lap)
 
+    def assign_track(self, lap_id: int, track_id: int) -> None:
+        lap = self._read(lap_id)
+        if lap is None:
+            return
+        lap.track_id = track_id
+        self.save(lap)
+
+    def set_notes(self, lap_id: int, notes: str, setup: str) -> None:
+        lap = self._read(lap_id)
+        if lap is None:
+            return
+        lap.notes, lap.setup = notes or "", setup or ""
+        self.save(lap)
+
+    def car_names_batch(self, lap_ids: list[int]) -> dict[int, str | None]:
+        # Este armazenamento guarda só o id do carro; o nome mora no catálogo.
+        return {lap_id: None for lap_id in lap_ids}
+
     def delete(self, lap_id: int) -> None:
         self._path(lap_id).unlink(missing_ok=True)
         (self._dir / f"sectors-{lap_id}.json").unlink(missing_ok=True)
@@ -264,11 +287,6 @@ class FileLapStorage(LapRepository):
         # ser o mesmo nas duas implementações para o troféu do histórico não
         # discordar da referência do delta.
         return min(elegiveis, key=lambda lap: (lap.lap_time_ms, lap.id or 0))
-
-    def get_top(self, track_id: int, limit: int = 5) -> list[Lap]:
-        elegiveis = self._elegiveis(track_id)
-        elegiveis.sort(key=lambda lap: (lap.lap_time_ms, lap.id or 0))
-        return elegiveis[:limit]
 
     def load_points(self, lap_id: int) -> list[TelemetryPoint]:
         lap = self.get_by_id(lap_id)

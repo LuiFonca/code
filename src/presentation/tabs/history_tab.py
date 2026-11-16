@@ -6,7 +6,6 @@ não formata tempo de setor — na versão antiga esta aba chamava `lap_storage`
 diretamente, com SQL dentro do widget.
 """
 
-from datetime import datetime
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (

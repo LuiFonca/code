@@ -45,11 +45,14 @@ class HistoryViewModel(QObject):
         lap_repository: LapRepository,
         event_bus: EventBus,
         track_repository=None,
+        track_identifier=None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
         self._laps = lap_repository
         self._bus = event_bus
+        # Opcional: aprende o traçado quando o usuário atribui a pista à mão.
+        self._identifier = track_identifier
         # Opcional: só é usado para atribuir pista a uma volta que ficou sem.
         self._tracks = track_repository
         self._track_id: int | None = None
@@ -102,11 +105,7 @@ class HistoryViewModel(QObject):
         # Duas consultas em lote no lugar de duas por volta. Com 50 voltas, a
         # versão antiga fazia 101 consultas para desenhar a tabela.
         sectors = self._laps.get_sector_times_batch(lap_ids)
-        car_names = (
-            self._laps.car_names_batch(lap_ids)
-            if hasattr(self._laps, "car_names_batch")
-            else {}
-        )
+        car_names = self._laps.car_names_batch(lap_ids)
 
         # O troféu vem do mesmo critério que o repositório usa para escolher a
         # referência do delta: volta completa, menor tempo, desempate pelo id
@@ -177,19 +176,35 @@ class HistoryViewModel(QObject):
         if track_id is None:
             self.error.emit("Escolha uma pista antes de atribuir.")
             return False
-        if not hasattr(self._laps, "assign_track"):
-            self.error.emit("Este armazenamento não permite mudar a pista da volta.")
-            return False
         try:
             self._laps.assign_track(lap_id, track_id)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(f"Não foi possível atribuir a pista: {exc}")
             return False
+        self._learn_from(lap_id, track_id)
         # A volta saiu deste grupo; a lista precisa refletir isso na hora.
         self.refresh()
         self._bus.publish(LapCompleted(lap=Lap(id=lap_id, track_id=track_id),
                                        lap_id=lap_id, is_best=False))
         return True
+
+    def _learn_from(self, lap_id: int, track_id: int) -> None:
+        """Usa a volta recém-atribuída para ensinar o traçado da pista.
+
+        É o caso mais valioso para aprender: o reconhecimento não soube
+        decidir e uma pessoa respondeu. Sem isto, a próxima volta naquele
+        circuito cairia de novo no grupo sem pista, e a de depois também.
+        Só volta completa serve — meia volta descreveria meio circuito.
+        """
+        if self._identifier is None:
+            return
+        try:
+            lap = self._laps.get_by_id(lap_id)
+            if lap is not None and lap.is_complete:
+                self._identifier.learn(track_id, lap.points)
+        except Exception:  # noqa: BLE001
+            # Aprender é conveniência; a atribuição já foi feita.
+            pass
 
     def set_lap_valid(self, lap_id: int, is_valid: bool) -> None:
         """Marca a volta como válida ou inválida.
@@ -198,9 +213,6 @@ class HistoryViewModel(QObject):
         recorde, e a referência do delta precisa ser recarregada. O nome do
         evento fala de "sumiu da disputa", não de "sumiu do banco".
         """
-        if not hasattr(self._laps, "set_valid"):
-            self.error.emit("Este repositório não suporta marcar validade.")
-            return
         try:
             self._laps.set_valid(lap_id, is_valid)
             self._bus.publish(LapDeleted(lap_id=lap_id, track_id=self._track_id))

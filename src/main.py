@@ -47,7 +47,7 @@ from .infrastructure.repositories.sqlite_database import SqliteDatabase
 from .infrastructure.repositories.sqlite_lap_repository import SqliteLapRepository
 from .infrastructure.repositories.sqlite_track_repository import SqliteTrackRepository
 from .infrastructure.telemetry.listener_thread import Gt7TelemetrySource
-from .presentation.main_window import DEFAULT_PS_IP, MainWindow
+from .presentation.main_window import MainWindow
 from .presentation.tabs.comparison_tab import ComparisonTab
 from .presentation.tabs.history_tab import HistoryTab
 from .presentation.tabs.live_tab import LiveDashboardTab
@@ -84,6 +84,7 @@ def build_application() -> MainWindow:
 
     # --- aplicação ---
     session_manager = SessionManager(event_bus)
+    track_identifier = TrackIdentifier(track_repository)
     telemetry_service = TelemetryService(
         telemetry_source=telemetry_source,
         lap_repository=lap_repository,
@@ -97,7 +98,7 @@ def build_application() -> MainWindow:
         # Reconhece a pista pelo desenho do traçado quando o piloto não
         # escolheu nenhuma — a volta é gravada de qualquer jeito, e o
         # reconhecimento só decide quando há folga sobre o segundo candidato.
-        track_identifier=TrackIdentifier(track_repository),
+        track_identifier=track_identifier,
     )
     # Observa o fluxo que o app já recebe. Vive aqui, e não numa ferramenta
     # separada, porque UDP unicast entrega cada pacote a um socket só: uma
@@ -105,13 +106,26 @@ def build_application() -> MainWindow:
     session_health = SessionHealth(event_bus)
 
     live_vm = LiveViewModel(event_bus, config)
-    history_vm = HistoryViewModel(lap_repository, event_bus, track_repository)
-    comparison_vm = ComparisonViewModel(lap_repository, event_bus)
+    history_vm = HistoryViewModel(
+        lap_repository, event_bus, track_repository, track_identifier
+    )
+    comparison_vm = ComparisonViewModel(
+        lap_repository, event_bus, track_repository, config
+    )
     # O repositório de pistas entra aqui para a aba respeitar os limites de
     # setor configurados por pista, em vez de sempre dividir em partes iguais.
     telemetry_vm = TelemetryViewModel(
         lap_repository, event_bus, track_repository, config
     )
+
+    # A capacidade do tanque só chega pela telemetria ao vivo; a aba de
+    # detalhe precisa dela para mostrar combustível em % em vez de valor bruto.
+    live_vm.tank_capacity_changed.connect(telemetry_vm.set_tank_capacity)
+
+    def on_close() -> None:
+        """Solta as inscrições no barramento ao fechar a janela."""
+        for alvo in (live_vm, history_vm, comparison_vm, telemetry_vm, session_health):
+            alvo.dispose()
 
     # --- apresentação ---
     # Fábricas, não instâncias: a janela decide quando construir cada aba e não
@@ -130,11 +144,9 @@ def build_application() -> MainWindow:
         repositório e a thread de captura leem na construção, então esses
         valores só valem na próxima sessão.
         """
-        telemetry_source._config = nova
-        telemetry_service._config = nova
-        live_vm._config = nova
-        telemetry_vm._config = nova
-        telemetry_vm._series_cache.clear()
+        for alvo in (telemetry_source, telemetry_service, live_vm,
+                     telemetry_vm, comparison_vm):
+            alvo.apply_config(nova)
 
     def on_track_changed(track_id: int | None) -> None:
         """Propaga a troca de pista para os ViewModels que filtram por ela."""
@@ -155,6 +167,7 @@ def build_application() -> MainWindow:
         config=config,
         on_config_changed=on_config_changed,
         session_health=session_health,
+        on_close=on_close,
     )
 
 

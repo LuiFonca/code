@@ -14,7 +14,6 @@ existem nem quais ViewModels elas usam — quem decide isso é o composition roo
 
 from typing import Callable
 
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -45,14 +44,13 @@ from ..application.events.events import (
 from ..application.services.session_manager import SessionManager
 from ..application.services.telemetry_service import TelemetryService
 from ..domain.interfaces.car_repository import CarRepository
-from ..domain.interfaces.track_repository import TrackRepository
+from ..domain.interfaces.track_repository import TrackRepository, TrackStore
 from ..domain.models.car import Car
 from ..domain.models.track import Track
 from .preferences_dialog import PreferencesDialog
 from .styles import DARK_STYLE, DANGER, STATUS_COLORS, STATUS_LABELS, TEXT_MUTED
 from .widgets.widgets import format_ms
 
-DEFAULT_PS_IP = "192.168.15.156"
 
 NO_TRACK_TEXT = "Nenhuma pista definida"
 
@@ -63,7 +61,7 @@ class MainWindow(QMainWindow):
         telemetry_service: TelemetryService,
         session_manager: SessionManager,
         event_bus: EventBus,
-        track_repository: TrackRepository,
+        track_repository: TrackStore,
         car_repository: CarRepository,
         track_catalog: TrackRepository,
         tab_factories: dict[str, Callable[[], QWidget]],
@@ -72,6 +70,7 @@ class MainWindow(QMainWindow):
         config: AppConfig | None = None,
         on_config_changed: Callable[[AppConfig], None] | None = None,
         session_health=None,
+        on_close: Callable[[], None] | None = None,
     ):
         super().__init__()
         self.setWindowTitle("HANNA GT7 AI")
@@ -92,6 +91,7 @@ class MainWindow(QMainWindow):
         # Opcional: sem ele o botão de relatório avisa que a medição não está
         # ativa, em vez de a janela quebrar.
         self._health = session_health
+        self._on_close = on_close
         # Enquanto True, mensagens genéricas de estado não sobrescrevem o erro
         # mostrado ao usuário. Ver `_on_connection_changed`.
         self._error_sticky = False
@@ -332,16 +332,11 @@ class MainWindow(QMainWindow):
         self.track_input.clear()
 
         used_names = set()
-        if hasattr(self._tracks, "list_with_lap_count"):
-            for track_id, name, lap_count in self._tracks.list_with_lap_count():
-                plural = "volta" if lap_count == 1 else "voltas"
-                label = f"{name} ({lap_count} {plural})" if lap_count else name
-                self.track_input.addItem(label, (track_id, name))
-                used_names.add(name)
-        else:
-            for track in self._tracks.get_all():
-                self.track_input.addItem(track.name, (track.id, track.name))
-                used_names.add(track.name)
+        for track_id, name, lap_count in self._tracks.list_with_lap_count():
+            plural = "volta" if lap_count == 1 else "voltas"
+            label = f"{name} ({lap_count} {plural})" if lap_count else name
+            self.track_input.addItem(label, (track_id, name))
+            used_names.add(name)
 
         catalog = self._track_catalog.get_all()
         if catalog and used_names:
@@ -677,4 +672,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._service.stop()
+        if self._on_close is not None:
+            self._on_close()
+            self._on_close = None
         event.accept()

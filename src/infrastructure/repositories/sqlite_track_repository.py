@@ -10,12 +10,12 @@ Complementa o catálogo estático (`CsvTrackRepository`). A interface pede
 import json
 import time
 
-from ...domain.interfaces.track_repository import TrackRepository
+from ...domain.interfaces.track_repository import TrackStore
 from ...domain.models.track import Track
 from .sqlite_database import UNKNOWN_TRACK_NAME, SqliteDatabase
 
 
-class SqliteTrackRepository(TrackRepository):
+class SqliteTrackRepository(TrackStore):
     def __init__(self, database: SqliteDatabase):
         self._db = database
 
@@ -45,14 +45,6 @@ class SqliteTrackRepository(TrackRepository):
             "SELECT id, name, sector_fractions FROM tracks WHERE id = ?", (track_id,)
         ).fetchone()
         return self._row_to_track(row) if row else None
-
-    def find_by_name(self, name: str) -> list[Track]:
-        rows = self._conn.execute(
-            "SELECT id, name, sector_fractions FROM tracks WHERE name LIKE ? "
-            "ORDER BY name ASC",
-            (f"%{name}%",),
-        ).fetchall()
-        return [self._row_to_track(r) for r in rows]
 
     def set_sector_fractions(
         self, track_id: int, fractions: list[float] | None

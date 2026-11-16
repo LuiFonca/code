@@ -13,6 +13,8 @@ import errno
 
 import pytest
 
+from src.domain.config import AppConfig
+
 from src.application.events.events import (
     LapCompleted,
     LapDeleted,
@@ -210,7 +212,7 @@ def test_06_gravacao_fora_da_thread_da_interface(
 # ------------------------------------------------------------------ 07
 def test_07_forca_g_saturada(service, source, on_track, flush):
     """Um salto de velocidade não pode virar força G absurda no banco."""
-    from src.application.services.telemetry_service import MAX_G
+    MAX_G = AppConfig().max_g
     from tests.conftest import FakeFrame
 
     service.start()

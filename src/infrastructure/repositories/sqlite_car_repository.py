@@ -31,13 +31,6 @@ class SqliteCarRepository(CarRepository):
         ).fetchone()
         return Car(id=row[0], name=row[1]) if row else None
 
-    def find_by_name(self, name: str) -> list[Car]:
-        rows = self._conn.execute(
-            "SELECT id, name FROM cars WHERE name LIKE ? ORDER BY name ASC",
-            (f"%{name}%",),
-        ).fetchall()
-        return [Car(id=r[0], name=r[1]) for r in rows]
-
     def get_or_create(self, name: str) -> int:
         """Id do carro, criando o registro se for a primeira vez.
 

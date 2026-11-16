@@ -52,7 +52,6 @@ def forward_vector_xz(rot_i: float, rot_j: float, rot_k: float, rot_w: float):
 
     # q × (q × v)
     ccx = rot_j * cz - rot_k * cy
-    ccy = rot_k * cx - rot_i * cz
     ccz = rot_i * cy - rot_j * cx
 
     fx = vx + 2.0 * (rot_w * cx + ccx)

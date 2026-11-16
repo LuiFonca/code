@@ -17,6 +17,10 @@ class LapRepository(ABC):
     histórico rápida mesmo com dezenas de voltas de milhares de amostras.
     """
 
+    # Quantas voltas a última gravação descartou por retenção. Atributo, e não
+    # retorno de `save`, para não mudar a assinatura que todo mundo já usa.
+    last_purged_count: int = 0
+
     @abstractmethod
     def save(self, lap: Lap) -> int:
         """Persiste a volta e devolve o id atribuído. Deve ser atômico: uma
@@ -40,10 +44,6 @@ class LapRepository(ABC):
         nenhuma volta válida registrada."""
 
     @abstractmethod
-    def get_top(self, track_id: int, limit: int = 5) -> list[Lap]:
-        """As `limit` voltas mais rápidas da pista, sem `points`."""
-
-    @abstractmethod
     def load_points(self, lap_id: int) -> list:
         """Só as amostras de uma volta — para quando já se tem o `Lap` da
         listagem e falta apenas o detalhe."""
@@ -65,6 +65,19 @@ class LapRepository(ABC):
 
         A volta permanece no repositório em qualquer caso — o tempo aconteceu.
         O que muda é a participação na disputa de recorde."""
+
+    @abstractmethod
+    def assign_track(self, lap_id: int, track_id: int) -> None:
+        """Move a volta para a pista informada (voltas gravadas sem pista)."""
+
+    @abstractmethod
+    def set_notes(self, lap_id: int, notes: str, setup: str) -> None:
+        """Grava as anotações e o acerto do carro associados à volta."""
+
+    @abstractmethod
+    def car_names_batch(self, lap_ids: list[int]) -> dict[int, str | None]:
+        """Nome do carro de várias voltas numa consulta só. Repositórios que
+        não conhecem carros devolvem None para cada id."""
 
     @abstractmethod
     def delete(self, lap_id: int) -> None:

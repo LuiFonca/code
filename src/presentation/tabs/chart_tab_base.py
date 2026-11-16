@@ -50,7 +50,6 @@ class ChartTabBase(QWidget):
     def add_wheel_mosaic(
         self,
         labels: dict[str, str],
-        colors: dict[str, str],
         unit: str = "",
         height: int = 110,
         central_widget: QWidget | None = None,

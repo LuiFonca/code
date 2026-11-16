@@ -9,7 +9,6 @@ Mudanças de rede e de retenção só valem na próxima conexão ou gravação; 
 tela diz isso em vez de fingir que tudo é imediato.
 """
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,

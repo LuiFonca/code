@@ -63,12 +63,6 @@ MIN_DISTANCE_FOR_TRACK_GUESS_M = 100
 # `None` já significa "nenhuma pista definida", que é um estado legítimo.
 _NAO_CARREGADO = object()
 
-# Teto de sanidade para as forças G derivadas. Carro de corrida real não passa
-# de ~2 g; 5 g dá folga para qualquer caso legítimo e ainda barra o lixo. Sem
-# isto, um pacote perdido ou um reset de posição no jogo produz um valor
-# absurdo que é gravado no banco e estica a escala do gráfico, achatando a
-# volta inteira numa linha reta.
-MAX_G = 5.0
 
 # Intervalo aceitável entre amostras para derivar aceleração. A telemetria vem
 # a ~60 Hz (16,7 ms); fora desta faixa houve perda de pacote ou salto de tempo,
@@ -177,6 +171,10 @@ class TelemetryService:
         self._load_best_reference()
 
     # ---------- ciclo de vida ----------
+
+    def apply_config(self, config: AppConfig) -> None:
+        """Adota preferências novas. Vale para as próximas amostras."""
+        self._config = config
 
     @property
     def is_reconnecting(self) -> bool:

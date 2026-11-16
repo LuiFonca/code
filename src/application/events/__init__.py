@@ -2,7 +2,6 @@
 
 from .event_bus import EventBus, Handler
 from .events import (
-    CarChanged,
     CarDetected,
     ConnectionStateChanged,
     DeltaUpdated,
@@ -12,16 +11,13 @@ from .events import (
     LapSaveFailed,
     LapsPurged,
     SessionEnded,
-    SessionStarted,
     TelemetryReceived,
     TrackCandidatesDetected,
-    TrackChanged,
 )
 
 __all__ = [
     "EventBus",
     "Handler",
-    "CarChanged",
     "CarDetected",
     "ConnectionStateChanged",
     "DeltaUpdated",
@@ -31,8 +27,6 @@ __all__ = [
     "LapSaveFailed",
     "LapsPurged",
     "SessionEnded",
-    "SessionStarted",
     "TelemetryReceived",
     "TrackCandidatesDetected",
-    "TrackChanged",
 ]

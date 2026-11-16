@@ -38,20 +38,16 @@ class Lap:
     # manual. Volta inválida continua no histórico (o tempo aconteceu) mas sai
     # da disputa de recorde, exatamente como a incompleta.
     is_valid: bool = True
+    # Texto livre do piloto: o que aconteceu na volta e com que acerto o carro
+    # estava. Sem estrutura de propósito — cada um anota o que lhe serve.
+    notes: str = ""
+    setup: str = ""
     points: list[TelemetryPoint] = field(default_factory=list)
 
     @property
     def has_points(self) -> bool:
         """False quando a volta veio de uma listagem (sem amostras carregadas)."""
         return len(self.points) > 0
-
-    @property
-    def duration_ms(self) -> int:
-        """Tempo da volta. Prefere o valor oficial do jogo; cai para o tempo
-        decorrido da última amostra quando a volta ainda está em andamento."""
-        if self.lap_time_ms > 0:
-            return self.lap_time_ms
-        return self.points[-1].elapsed_ms if self.points else 0
 
     @property
     def distance_m(self) -> float:

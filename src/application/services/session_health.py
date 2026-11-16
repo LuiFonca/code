@@ -33,7 +33,6 @@ from ..events.event_bus import EventBus
 from ..events.events import ConnectionStateChanged, LapCompleted, TelemetryReceived
 
 # O GT7 transmite a ~60 Hz. Abaixo disto há perda de pacote no caminho.
-TAXA_ESPERADA_HZ = 60.0
 TAXA_MINIMA_ACEITAVEL_HZ = 50.0
 
 # Silêncio acima disto conta como interrupção: muito além do intervalo normal

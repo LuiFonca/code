@@ -199,6 +199,23 @@ def sector_boundaries_m(
     ]
 
 
+def resolve_sector_boundaries(
+    reference_distance_m: float,
+    fractions: list[float] | None,
+    num_sectors: int = 3,
+) -> list[float]:
+    """Limites de setor para uma distância de referência.
+
+    Com frações configuradas para a pista, os cortes seguem o traçado real;
+    sem elas, a volta é dividida em partes iguais. Vive aqui para que todas as
+    telas usem a mesma regra — a Comparação tinha a sua própria, fixa em três
+    partes iguais, e mostrava setores diferentes dos do Histórico.
+    """
+    if fractions:
+        return [reference_distance_m * f for f in fractions]
+    return sector_boundaries_m(reference_distance_m, num_sectors)
+
+
 def sector_times_from_series(
     series: LapSeries, boundaries_m: list[float]
 ) -> list[int | None]:

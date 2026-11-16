@@ -6,20 +6,20 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QObject, Signal
 
+from ...domain.config import AppConfig
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.models.lap import Lap
 from ...domain.services.lap_analysis import (
     LapSeries,
     best_combined_sectors,
     compute_delta_series,
-    sector_boundaries_m,
+    resolve_sector_boundaries,
     sector_times_from_series,
 )
 from ..events.event_bus import EventBus
 from ..events.events import LapCompleted, LapDeleted, LapsPurged
 from .telemetry_viewmodel import resample
 
-NUM_SECTORS = 3
 
 
 @dataclass(slots=True)
@@ -73,11 +73,15 @@ class ComparisonViewModel(QObject):
         self,
         lap_repository: LapRepository,
         event_bus: EventBus,
+        track_repository=None,
+        config: AppConfig | None = None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
         self._laps = lap_repository
         self._bus = event_bus
+        self._tracks = track_repository
+        self._config = config or AppConfig()
         self._track_id: int | None = None
         self._result = ComparisonResult()
         self._series_cache: dict[tuple[str, str], list] = {}
@@ -100,6 +104,9 @@ class ComparisonViewModel(QObject):
         if gone:
             self._result = ComparisonResult()
             self._series_cache.clear()
+
+    def apply_config(self, config: AppConfig) -> None:
+        self._config = config
 
     def dispose(self) -> None:
         """Cancela as inscrições e libera as séries em cache."""
@@ -164,7 +171,14 @@ class ComparisonViewModel(QObject):
         # distância de cada uma separadamente faria "setor 2" cair em pontos
         # físicos diferentes, e a comparação perderia o sentido.
         reference_distance = min(series_a.max_distance, series_b.max_distance)
-        boundaries = sector_boundaries_m(reference_distance, NUM_SECTORS)
+        track = None
+        if self._tracks is not None and self._track_id is not None:
+            track = self._tracks.get_by_id(self._track_id)
+        boundaries = resolve_sector_boundaries(
+            reference_distance,
+            track.sector_fractions if track is not None else None,
+            self._config.num_sectors,
+        )
 
         times_a = sector_times_from_series(series_a, boundaries)
         times_b = sector_times_from_series(series_b, boundaries)
@@ -184,17 +198,3 @@ class ComparisonViewModel(QObject):
             sector_boundaries=boundaries,
         )
         self.comparison_ready.emit(self._result)
-
-    def values_at(self, distance_m: float) -> dict:
-        """Valores dos dois lados numa distância — alimenta o painel que segue
-        o cursor sobre os gráficos."""
-        if not self._result.is_valid:
-            return {}
-        channels = ("speed_kmh", "throttle", "brake", "gear", "rpm", "fuel_level")
-        return {
-            ch: (
-                self._result.series_a.value_at(distance_m, ch),
-                self._result.series_b.value_at(distance_m, ch),
-            )
-            for ch in channels
-        }

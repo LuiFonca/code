@@ -9,11 +9,10 @@ from PySide6.QtCore import QObject, Signal
 from ...domain.config import AppConfig
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.models.lap import Lap
-from ...domain.services.lap_analysis import LapSeries, sector_boundaries_m
+from ...domain.services.lap_analysis import LapSeries, resolve_sector_boundaries
 from ..events.event_bus import EventBus
 from ..events.events import LapCompleted, LapDeleted, LapsPurged
 
-NUM_SECTORS = 3
 
 # Valor bruto de slip a partir do qual o índice satura em 100 %.
 #
@@ -212,9 +211,16 @@ class TelemetryViewModel(QObject):
         track = None
         if self._tracks is not None and self._track_id is not None:
             track = self._tracks.get_by_id(self._track_id)
-        if track is not None and track.sector_fractions:
-            return [series.max_distance * f for f in track.sector_fractions]
-        return sector_boundaries_m(series.max_distance, self._config.num_sectors)
+        return resolve_sector_boundaries(
+            series.max_distance,
+            track.sector_fractions if track is not None else None,
+            self._config.num_sectors,
+        )
+
+    def apply_config(self, config: AppConfig) -> None:
+        """Adota preferências novas. As séries em cache dependem delas."""
+        self._config = config
+        self._series_cache.clear()
 
     # ---------- séries para os gráficos ----------
 
@@ -299,14 +305,6 @@ class TelemetryViewModel(QObject):
             if p.slip_angle_deg is not None
         ]
 
-    @property
-    def axis_max(self) -> float:
-        """Fim do eixo ativo — distância total ou duração da volta."""
-        if not self._detail.is_valid:
-            return 0.0
-        series = self._detail.series
-        return series.max_time if self._axis_mode == AXIS_TIME else series.max_distance
-
     def average_slip_pct(self) -> float:
         """Índice de deslizamento médio da volta, 0-100 %."""
         if not self._detail.is_valid:
@@ -337,15 +335,3 @@ class TelemetryViewModel(QObject):
     def set_tank_capacity(self, capacity: float | None) -> None:
         """Capacidade do tanque, vinda da telemetria ao vivo."""
         self._tank_capacity = capacity if capacity and capacity > 0 else None
-
-    def values_at(self, distance_m: float) -> dict[str, float | None]:
-        """Valores de todos os canais exibidos numa distância — painel do cursor."""
-        if not self._detail.is_valid:
-            return {}
-        channels = (
-            "speed_kmh", "rpm", "gear", "throttle", "brake", "fuel_level",
-            "g_lateral", "g_longitudinal",
-            "tire_temp_fl", "tire_temp_fr", "tire_temp_rl", "tire_temp_rr",
-            "tire_slip_fl", "tire_slip_fr", "tire_slip_rl", "tire_slip_rr",
-        )
-        return {ch: self._detail.series.value_at(distance_m, ch) for ch in channels}

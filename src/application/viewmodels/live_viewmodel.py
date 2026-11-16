@@ -21,11 +21,6 @@ from ..events.events import (
 UI_REFRESH_HZ = 60
 UI_REFRESH_INTERVAL_MS = int(1000 / UI_REFRESH_HZ)
 
-# Sem frame novo por mais que isto, a tela vai para o estado neutro. Existe para
-# não confundir "carro parado" (velocidade 0 real) com "transmissão perdida"
-# (ausência de dado) — a versão antiga deixava o último valor congelado na tela
-# indefinidamente, e os dois casos ficavam idênticos.
-STALE_TIMEOUT_S = 1.0
 WATCHDOG_INTERVAL_MS = 250
 
 
@@ -43,6 +38,7 @@ class LiveViewModel(QObject):
     """
 
     frame_updated = Signal(object)          # TelemetryPoint + frame cru
+    tank_capacity_changed = Signal(float)   # só quando o valor muda
     delta_updated = Signal(object, object)  # (delta_melhor, delta_anterior)
     connection_changed = Signal(str, str)   # (estado, mensagem)
     stale_entered = Signal()
@@ -94,6 +90,9 @@ class LiveViewModel(QObject):
         self._bus.unsubscribe(ConnectionStateChanged, self._on_connection)
         self._bus.unsubscribe(LapCompleted, self._on_lap_completed)
 
+    def apply_config(self, config: AppConfig) -> None:
+        self._config = config
+
     @property
     def is_stale(self) -> bool:
         return self._is_stale
@@ -128,8 +127,12 @@ class LiveViewModel(QObject):
         self._latest = event
         self._last_frame_at = time.monotonic()
         capacity = getattr(event.frame, "fuel_capacity", None)
-        if capacity and capacity > 0:
+        if capacity and capacity > 0 and capacity != self._tank_capacity:
             self._tank_capacity = capacity
+            # As outras telas mostram combustível em % do tanque e só a
+            # telemetria ao vivo conhece a capacidade. Sem este aviso o
+            # percentual nunca aparecia fora do painel ao vivo.
+            self.tank_capacity_changed.emit(capacity)
         if self._is_stale:
             self._is_stale = False
             self.stale_exited.emit()

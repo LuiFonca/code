@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -31,7 +30,7 @@ from ...application.viewmodels.telemetry_viewmodel import (
     slip_level_label,
 )
 from ..widgets.widgets import format_ms
-from ..widgets.widgets_chart import SyncedMiniChart, TrackMapWidget
+from ..widgets.widgets_chart import TrackMapWidget
 from .chart_tab_base import ChartTabBase
 
 COLOR_SPEED = "#4f7cff"
@@ -138,12 +137,12 @@ class TelemetryTab(ChartTabBase):
 
         self._root.addWidget(self.section_header("TEMPERATURA DOS PNEUS"))
         frame_pneus, self.tire_charts = self.add_wheel_mosaic(
-            WHEEL_LABELS, WHEEL_COLORS, unit="°C"
+            WHEEL_LABELS, unit="°C"
         )
         self._root.addWidget(frame_pneus)
 
         self._root.addWidget(self.section_header("SUSPENSÃO"))
-        frame_susp, self.susp_charts = self.add_wheel_mosaic(WHEEL_LABELS, WHEEL_COLORS)
+        frame_susp, self.susp_charts = self.add_wheel_mosaic(WHEEL_LABELS)
         self._root.addWidget(frame_susp)
 
         self._root.addWidget(
@@ -159,7 +158,7 @@ class TelemetryTab(ChartTabBase):
         self._root.addWidget(slip_note)
         self.slip_indicator = _SlipIndicator()
         frame_slip, self.slip_charts = self.add_wheel_mosaic(
-            WHEEL_LABELS, WHEEL_COLORS, unit="%", central_widget=self.slip_indicator
+            WHEEL_LABELS, unit="%", central_widget=self.slip_indicator
         )
         self._root.addWidget(frame_slip)
 

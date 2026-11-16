@@ -80,9 +80,9 @@ def test_atribuir_cria_a_pista_quando_ela_nao_existe(laps, tracks, make_lap, qap
     vm = HistoryViewModel(laps, bus, tracks)
     try:
         lap_id = laps.save(make_lap(track_id=None, samples=30))
-        assert tracks.find_by_name("Suzuka") == []
+        assert "Suzuka" not in [t.name for t in tracks.get_all()]
         assert vm.assign_track_by_name(lap_id, "Suzuka") is True
-        assert [t.name for t in tracks.find_by_name("Suzuka")] == ["Suzuka"]
+        assert "Suzuka" in [t.name for t in tracks.get_all()]
     finally:
         vm.dispose()
         bus.clear()

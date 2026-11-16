@@ -36,7 +36,6 @@ class EventBus(QObject):
 
     event_published = Signal(object)
 
-    _instance: "EventBus | None" = None
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
@@ -44,13 +43,6 @@ class EventBus(QObject):
         # Conexão interna: tudo que é publicado passa pelo sinal antes de
         # chegar nos handlers. É esse desvio que dá a troca de thread.
         self.event_published.connect(self._dispatch)
-
-    @classmethod
-    def instance(cls) -> "EventBus":
-        """Instância compartilhada, para uso do composition root."""
-        if cls._instance is None:
-            cls._instance = EventBus()
-        return cls._instance
 
     def subscribe(self, event_type: type, handler: Handler) -> None:
         """Registra `handler` para eventos de `event_type`.
