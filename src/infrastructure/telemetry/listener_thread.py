@@ -54,6 +54,7 @@ class _ListenerThread(QThread):
     """
 
     frame_received = Signal(object)
+    packet_received = Signal(bytes)
     status_changed = Signal(str)
     error_occurred = Signal(str)
 
@@ -142,6 +143,10 @@ class _ListenerThread(QThread):
                     continue
 
                 self.frame_received.emit(frame)
+                # O pacote decifrado, antes de qualquer interpretação. É o que
+                # um gravador de sessão guarda: reprocessável mesmo que o
+                # parser mude depois.
+                self.packet_received.emit(decoded)
         finally:
             # `finally` garante que o socket feche mesmo se a decodificação
             # levantar algo inesperado — senão a porta ficaria presa até o
@@ -191,6 +196,10 @@ class _ListenerThread(QThread):
 class Gt7TelemetrySource(TelemetrySource):
     """Implementação de `TelemetrySource` para o GT7 via UDP."""
 
+    # Pacotes decifrados, um a um. Ninguém escuta no uso normal; existe para
+    # a gravação de sessão bruta (ver `src/labs/session_recording.py`).
+    raw_packet_stream = Signal(bytes)
+
     def __init__(self, ps_ip: str | None = None, config: AppConfig | None = None,
                  parent=None):
         super().__init__(parent)
@@ -226,6 +235,7 @@ class Gt7TelemetrySource(TelemetrySource):
         # intermediário, preservando a thread de origem para que a conexão
         # enfileirada aconteça no assinante final.
         self._thread.frame_received.connect(self.telemetry_stream)
+        self._thread.packet_received.connect(self.raw_packet_stream)
         self._thread.status_changed.connect(self.status_changed)
         self._thread.error_occurred.connect(self.error_occurred)
         self._thread.start()
