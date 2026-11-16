@@ -3,10 +3,12 @@ Estado da tela "Ao Vivo".
 """
 
 import time
+from collections import deque
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from ...domain.config import AppConfig
+from ...domain.services.session_stats import FuelEstimate, fuel_estimate
 from ..events.event_bus import EventBus
 from ..events.events import (
     ConnectionStateChanged,
@@ -63,6 +65,9 @@ class LiveViewModel(QObject):
         self._connected = False
 
         self._tank_capacity: float | None = None
+        # Consumo das últimas voltas. Poucas de propósito: o consumo muda com
+        # o ritmo e com o mapa de motor, e uma média longa demoraria a notar.
+        self._fuel_usage: deque[float] = deque(maxlen=5)
 
         self._bus.subscribe(TelemetryReceived, self._on_telemetry)
         self._bus.subscribe(DeltaUpdated, self._on_delta)
@@ -144,13 +149,23 @@ class LiveViewModel(QObject):
     def _on_connection(self, event: ConnectionStateChanged) -> None:
         self._connected = event.state in ("conectando", "recebendo", "sem_sinal")
         if event.state == "desconectado":
+            self._fuel_usage.clear()
             self._latest = None
             self._last_frame_at = None
             self._is_stale = False
         self.connection_changed.emit(event.state, event.message)
 
     def _on_lap_completed(self, event: LapCompleted) -> None:
+        lap = event.lap
+        # Só volta completa: numa parcial, o consumo medido é de um pedaço.
+        if lap is not None and lap.is_complete and lap.fuel_used is not None:
+            self._fuel_usage.append(lap.fuel_used)
         self.lap_completed.emit(event)
+
+    def fuel_estimate(self) -> FuelEstimate:
+        """Consumo médio por volta e quantas voltas o tanque ainda dá."""
+        nivel = self._latest.point.fuel_level if self._latest else None
+        return fuel_estimate(list(self._fuel_usage), nivel)
 
     # ---------- temporizadores ----------
 

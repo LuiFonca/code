@@ -50,6 +50,19 @@ from src.infrastructure.repositories.sqlite_track_repository import (  # noqa: E
 )
 
 
+@pytest.fixture(autouse=True)
+def _preferencias_limpas():
+    """Cada teste começa sem preferências gravadas.
+
+    O app lembra a última pista usada; sem limpar, um teste que escolhe pista
+    faria o seguinte abrir com ela já selecionada.
+    """
+    from src.domain.config import config_path
+
+    config_path().unlink(missing_ok=True)
+    yield
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """QApplication única para toda a sessão de testes."""

@@ -32,6 +32,7 @@ from PySide6.QtWidgets import QApplication
 from .application.events.event_bus import EventBus
 from .application.services.session_health import SessionHealth
 from .application.services.session_manager import SessionManager
+from .application.services.session_summary import build_session_summary
 from .application.services.track_identifier import TrackIdentifier
 from .application.services.telemetry_service import TelemetryService
 from .application.viewmodels.comparison_viewmodel import ComparisonViewModel
@@ -39,6 +40,7 @@ from .application.viewmodels.history_viewmodel import HistoryViewModel
 from .application.viewmodels.live_viewmodel import LiveViewModel
 from .application.viewmodels.telemetry_viewmodel import TelemetryViewModel
 from .domain.config import load_config
+from .domain.services.session_stats import ideal_lap
 from .infrastructure.repositories.csv_car_repository import CsvCarRepository
 from .infrastructure.repositories.csv_catalog import CsvCatalog
 from .infrastructure.repositories.csv_track_repository import CsvTrackRepository
@@ -122,6 +124,15 @@ def build_application() -> MainWindow:
     # detalhe precisa dela para mostrar combustível em % em vez de valor bruto.
     live_vm.tank_capacity_changed.connect(telemetry_vm.set_tank_capacity)
 
+    def session_summary(session) -> str:
+        """Resumo de fim de sessão, com a volta ideal das voltas rodadas."""
+        contam = [
+            lap.id for lap in session.laps
+            if lap.id is not None and lap.is_complete and lap.is_valid
+        ]
+        setores = lap_repository.get_sector_times_batch(contam) if contam else {}
+        return build_session_summary(session, ideal_lap(setores).total_ms)
+
     def on_close() -> None:
         """Solta as inscrições no barramento ao fechar a janela."""
         for alvo in (live_vm, history_vm, comparison_vm, telemetry_vm, session_health):
@@ -168,6 +179,7 @@ def build_application() -> MainWindow:
         on_config_changed=on_config_changed,
         session_health=session_health,
         on_close=on_close,
+        session_summary=session_summary,
     )
 
 

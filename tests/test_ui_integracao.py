@@ -604,3 +604,100 @@ def test_rotulo_de_pista_com_uma_volta_esta_no_singular(app):
     rotulos = [app.track_input.itemText(i) for i in range(app.track_input.count())]
     assert any("(1 volta)" in r for r in rotulos), rotulos
     assert not any("(1 voltas)" in r for r in rotulos)
+
+
+# =================================================== melhorias de uso
+def _abre_app(tmp_path):
+    import src.main as M
+    from src.infrastructure.repositories.sqlite_database import SqliteDatabase
+
+    original = M.SqliteDatabase
+    M.SqliteDatabase = lambda *a, **k: SqliteDatabase(tmp_path / "app.db")
+    try:
+        return M.build_application()
+    finally:
+        M.SqliteDatabase = original
+
+
+def test_app_reabre_na_ultima_pista_e_carro(qapp, tmp_path):
+    primeira = _abre_app(tmp_path)
+    primeira.track_input.setCurrentText("Interlagos")
+    primeira._on_track_selected()
+    primeira.car_input.setCurrentText("Porsche 911")
+    primeira._on_car_selected()
+    primeira._service.stop()
+
+    segunda = _abre_app(tmp_path)
+    try:
+        assert segunda.track_input.currentText().startswith("Interlagos")
+        assert segunda._session.track_id is not None
+        assert "Porsche 911" in segunda.car_input.currentText()
+    finally:
+        segunda._service.stop()
+
+
+def test_salvar_preferencias_nao_apaga_a_ultima_pista(qapp):
+    """A tela de preferências reconstruía a config do zero e zerava o resto."""
+    from src.domain.config import AppConfig
+    from src.presentation.preferences_dialog import PreferencesDialog
+
+    dialogo = PreferencesDialog(AppConfig(last_track="Suzuka", last_car="NSX"))
+    resultado = dialogo.result_config()
+    assert resultado.last_track == "Suzuka"
+    assert resultado.last_car == "NSX"
+
+
+def test_suspeita_de_replay_sugere_sem_marcar(app):
+    from src.application.events.events import ReplaySuspected
+
+    app._bus.publish(ReplaySuspected(evidence=2))
+    assert "replay" in app.log_label.text().lower()
+    assert not app.player_mode_checkbox.isChecked(), "o app não pode decidir sozinho"
+    assert app._session.can_persist
+
+
+def test_resumo_aparece_ao_encerrar_sessao_com_voltas(app, monkeypatch):
+    from datetime import datetime
+
+    from src.application.events.events import SessionEnded
+    from src.domain.models.session import Session
+
+    mostrados = []
+    monkeypatch.setattr(
+        app, "_show_text_dialog", lambda titulo, texto, modal=False: mostrados.append(texto)
+    )
+    sessao = Session(start=datetime.now(), end=datetime.now(),
+                     laps=[Lap(id=1, lap_time_ms=90000), Lap(id=2, lap_time_ms=91000)])
+    app._bus.publish(SessionEnded(session=sessao, lap_count=2))
+    assert mostrados and "1:30.000" in mostrados[0]
+
+
+def test_sessao_sem_voltas_nao_abre_resumo(app, monkeypatch):
+    from src.application.events.events import SessionEnded
+    from src.domain.models.session import Session
+
+    mostrados = []
+    monkeypatch.setattr(
+        app, "_show_text_dialog", lambda *a, **k: mostrados.append(a)
+    )
+    app._bus.publish(SessionEnded(session=Session(), lap_count=0))
+    assert not mostrados
+
+
+def test_autonomia_aparece_depois_de_uma_volta_completa(app, qapp):
+    from src.application.events.events import TelemetryReceived
+    from tests.conftest import FakeFrame, make_point
+
+    vivo = _aba(app, "Ao Vivo")
+    pontos = [make_point(i, 100, 90000, 3600.0) for i in range(101)]
+    pontos[0].fuel_level, pontos[-1].fuel_level = 50.0, 48.0
+    app._bus.publish(
+        LapCompleted(lap=Lap(id=1, lap_time_ms=90000, points=pontos), lap_id=1, is_best=True)
+    )
+    ponto = make_point(1, 10, 90000, 3600.0)
+    ponto.fuel_level = 20.0
+    app._bus.publish(TelemetryReceived(point=ponto, frame=FakeFrame()))
+
+    estimativa = vivo._vm.fuel_estimate()
+    assert estimativa.per_lap == pytest.approx(2.0)
+    assert estimativa.laps_remaining == pytest.approx(10.0)

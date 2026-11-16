@@ -256,7 +256,12 @@ class LiveDashboardTab(QWidget):
         self.card_lap = MetricCard("Volta")
         self.card_laptime = MetricCard("Tempo de volta")
         self.card_fuel = MetricCard("Combustível", "%")
-        for c in (self.card_lap, self.card_laptime, self.card_fuel):
+        self.card_range = MetricCard("Autonomia", " voltas")
+        self.card_range.setToolTip(
+            "Voltas que o combustível atual ainda rende, pela média de consumo "
+            "das últimas voltas completas. Aparece depois da primeira."
+        )
+        for c in (self.card_lap, self.card_laptime, self.card_fuel, self.card_range):
             info_row.addWidget(c)
         root.addLayout(info_row)
 
@@ -329,6 +334,9 @@ class LiveDashboardTab(QWidget):
             else:
                 self.card_fuel.set_value(f"{point.fuel_level:.1f}")
 
+            autonomia = self._vm.fuel_estimate().laps_remaining
+            self.card_range.set_value("--" if autonomia is None else f"{autonomia:.1f}")
+
             self.aids_row.set_states({
                 "tcs": getattr(frame, "tcs_active", False),
                 "asm": getattr(frame, "asm_active", False),
@@ -381,6 +389,7 @@ class LiveDashboardTab(QWidget):
         self.card_lap.set_value("--/--")
         self.card_laptime.set_value(format_ms(None))
         self.card_fuel.set_value("--")
+        self.card_range.set_value("--")
         self.pedal_throttle.set_value(0)
         self.pedal_brake.set_value(0)
         self.card_delta.set_delta(None)

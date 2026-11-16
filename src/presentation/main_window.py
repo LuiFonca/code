@@ -38,6 +38,8 @@ from ..application.events.events import (
     LapDiscarded,
     LapSaveFailed,
     LapsPurged,
+    ReplaySuspected,
+    SessionEnded,
     TrackCandidatesDetected,
     TrackRecognized,
 )
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
         on_config_changed: Callable[[AppConfig], None] | None = None,
         session_health=None,
         on_close: Callable[[], None] | None = None,
+        session_summary: Callable[[object], str] | None = None,
     ):
         super().__init__()
         self.setWindowTitle("HANNA GT7 AI")
@@ -92,6 +95,10 @@ class MainWindow(QMainWindow):
         # ativa, em vez de a janela quebrar.
         self._health = session_health
         self._on_close = on_close
+        # Monta o texto do resumo de fim de sessão; quem sabe consultar os
+        # setores é o composition root, não a janela.
+        self._session_summary = session_summary
+        self._text_dialog = None
         # Enquanto True, mensagens genéricas de estado não sobrescrevem o erro
         # mostrado ao usuário. Ver `_on_connection_changed`.
         self._error_sticky = False
@@ -100,6 +107,7 @@ class MainWindow(QMainWindow):
         self._subscribe()
         self._reload_track_list()
         self._reload_car_list()
+        self._restore_last_selection()
         self._update_info_bar()
         # As abas nascem vazias: cada uma só busca voltas quando recebe uma
         # pista. Sem este empurrão inicial, abrir o app com o banco cheio
@@ -217,6 +225,20 @@ class MainWindow(QMainWindow):
 
         Texto selecionável de propósito: o uso previsto é copiar e mandar.
         """
+        if self._health is None:
+            texto = "A medição de sessão não está ativa nesta instalação."
+        else:
+            texto = self._health.relatorio()
+
+        self._show_text_dialog("Relatório da sessão", texto, modal=True)
+
+    def _show_text_dialog(self, titulo: str, texto: str, modal: bool = False):
+        """Janela de texto selecionável, com botão de copiar.
+
+        Sem `modal`, a janela abre e devolve o controle na hora: é o que o
+        resumo de fim de sessão precisa, porque aparece sozinho ao desconectar
+        e não pode travar o app esperando um clique.
+        """
         from PySide6.QtWidgets import (
             QDialog,
             QDialogButtonBox,
@@ -224,19 +246,14 @@ class MainWindow(QMainWindow):
             QVBoxLayout as _QVBoxLayout,
         )
 
-        if self._health is None:
-            texto = "A medição de sessão não está ativa nesta instalação."
-        else:
-            texto = self._health.relatorio()
-
         dialog = QDialog(self)
-        dialog.setWindowTitle("Relatório da sessão")
+        dialog.setWindowTitle(titulo)
         dialog.resize(620, 480)
         layout = _QVBoxLayout(dialog)
 
         campo = QPlainTextEdit(texto)
         campo.setReadOnly(True)
-        # Fonte monoespaçada: o relatório é alinhado em colunas.
+        # Fonte monoespaçada: os relatórios são alinhados em colunas.
         fonte = QFont("Menlo")
         fonte.setStyleHint(QFont.Monospace)
         fonte.setPointSize(11)
@@ -249,7 +266,14 @@ class MainWindow(QMainWindow):
         botoes.rejected.connect(dialog.reject)
         layout.addWidget(botoes)
 
-        dialog.exec()
+        if modal:
+            dialog.exec()
+        else:
+            # Guardada no objeto: uma janela não modal sem dono some assim
+            # que a variável local sai de escopo.
+            self._text_dialog = dialog
+            dialog.show()
+        return dialog
 
     @staticmethod
     def _copy_to_clipboard(texto: str) -> None:
@@ -317,6 +341,8 @@ class MainWindow(QMainWindow):
         self._bus.subscribe(CarDetected, self._on_car_detected)
         self._bus.subscribe(TrackCandidatesDetected, self._on_track_candidates)
         self._bus.subscribe(LapsPurged, self._on_laps_purged)
+        self._bus.subscribe(ReplaySuspected, self._on_replay_suspected)
+        self._bus.subscribe(SessionEnded, self._on_session_ended)
 
     # ---------- seletores ----------
 
@@ -417,6 +443,40 @@ class MainWindow(QMainWindow):
         mudou = self._session.set_car(car or Car(id=car_id, name=name))
         return car_id, mudou
 
+    def _restore_last_selection(self):
+        """Reabre na pista e no carro da última vez.
+
+        O campo abria vazio a cada execução, e quem roda sempre no mesmo
+        circuito redigitava o nome toda vez — ou esquecia, e as voltas iam
+        para o grupo sem pista.
+        """
+        if self._config.last_track:
+            self.track_input.setCurrentText(self._config.last_track)
+            self._apply_track()
+        if self._config.last_car:
+            self.car_input.setCurrentText(self._config.last_car)
+            self._apply_car()
+
+    def _remember_selection(self):
+        """Guarda pista e carro atuais nas preferências."""
+        from dataclasses import replace
+
+        from ..domain.config import save_config
+
+        nova = replace(
+            self._config,
+            last_track=self._resolve_track_name() or "",
+            last_car=self._resolve_car_name(),
+        )
+        if nova == self._config:
+            return
+        self._config = nova
+        try:
+            save_config(nova)
+        except OSError:
+            # Não conseguir lembrar a pista não justifica interromper ninguém.
+            pass
+
     def _on_track_selected(self):
         """Reage à escolha de pista — e só quando ela muda de fato.
 
@@ -434,6 +494,7 @@ class MainWindow(QMainWindow):
         self._service.reload_reference()
         self._reload_track_list()
         self._update_info_bar()
+        self._remember_selection()
         if self._on_track_changed:
             self._on_track_changed(track_id)
 
@@ -453,8 +514,35 @@ class MainWindow(QMainWindow):
             return
         self._reload_car_list()
         self._update_info_bar()
+        self._remember_selection()
+
+    def _on_replay_suspected(self, _event: ReplaySuspected):
+        """Sugere marcar replay — e só sugere.
+
+        O pacote não diz quem controla o carro; o que se detecta é o tempo
+        andando para trás, que pilotagem ao vivo não produz. Marcar a caixa
+        sozinho descartaria voltas reais num falso positivo, então o app
+        destaca a opção e deixa a decisão com o piloto.
+        """
+        if self.player_mode_checkbox.isChecked():
+            return
+        self.player_mode_checkbox.setStyleSheet("color: #f2c94c; font-weight: 700;")
+        self._reset_log_style()
+        self.log_label.setText(
+            "⚠ Isto parece um replay: o tempo da volta andou para trás. Se for, "
+            "marque \"Replay / IA\" para as voltas não entrarem no histórico."
+        )
+
+    def _on_session_ended(self, event: SessionEnded):
+        """Mostra o resumo ao desconectar, se houve volta gravada."""
+        if self._session_summary is None or event.session is None:
+            return
+        texto = self._session_summary(event.session)
+        if texto:
+            self._show_text_dialog("Resumo da sessão", texto)
 
     def _on_player_mode_toggled(self, is_replay: bool):
+        self.player_mode_checkbox.setStyleSheet("")
         self._session.set_player_mode(not is_replay)
         self.log_label.setText(
             "Modo replay/IA ativo: telemetria visível Ao Vivo, mas nenhuma volta será salva."

@@ -9,6 +9,8 @@ Mudanças de rede e de retenção só valem na próxima conexão ou gravação; 
 tela diz isso em vez de fingir que tudo é imediato.
 """
 
+from dataclasses import replace
+
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -86,6 +88,15 @@ class PreferencesDialog(QDialog):
         self._auto_reconnect = QCheckBox("Reconectar automaticamente ao perder o sinal")
         self._auto_reconnect.setChecked(config.auto_reconnect)
         form.addRow("", self._auto_reconnect)
+
+        self._replay_detection = QCheckBox("Avisar quando a telemetria parecer replay")
+        self._replay_detection.setToolTip(
+            "O jogo não informa se o carro é pilotado ou reproduzido. O app "
+            "percebe quando o tempo da volta anda para trás — o que só acontece "
+            "em replay — e sugere marcar \"Replay / IA\". Nunca marca sozinho."
+        )
+        self._replay_detection.setChecked(config.replay_detection)
+        form.addRow("", self._replay_detection)
 
         self._stale = QDoubleSpinBox()
         self._stale.setRange(0.1, 60.0)
@@ -172,6 +183,7 @@ class PreferencesDialog(QDialog):
         self._ip.setText(padrao.ps_ip)
         self._heartbeat.setValue(padrao.heartbeat_interval_s)
         self._auto_reconnect.setChecked(padrao.auto_reconnect)
+        self._replay_detection.setChecked(padrao.replay_detection)
         self._stale.setValue(padrao.stale_timeout_s)
         self._keep_best.setValue(padrao.keep_best_per_track)
         self._keep_recent.setValue(padrao.keep_recent_per_track)
@@ -187,7 +199,11 @@ class PreferencesDialog(QDialog):
         entrada. O IP vazio cai no valor anterior em vez de virar string vazia,
         que produziria uma tentativa de conexão sem destino.
         """
-        return AppConfig(
+        # `replace` sobre o original, e não um AppConfig novo: os campos que
+        # esta tela não edita (última pista, último carro) precisam sobreviver
+        # ao salvar. Construir do zero os devolveria ao padrão em silêncio.
+        return replace(
+            self._original,
             ps_ip=self._ip.text().strip() or self._original.ps_ip,
             heartbeat_interval_s=self._heartbeat.value(),
             keep_best_per_track=self._keep_best.value(),
@@ -198,6 +214,5 @@ class PreferencesDialog(QDialog):
             slip_saturation=self._slip.value(),
             max_plot_points=self._points.value(),
             auto_reconnect=self._auto_reconnect.isChecked(),
-            reconnect_initial_delay_s=self._original.reconnect_initial_delay_s,
-            reconnect_max_delay_s=self._original.reconnect_max_delay_s,
+            replay_detection=self._replay_detection.isChecked(),
         )
