@@ -14,8 +14,10 @@ Requer **Python 3.11 ou superior**.
 pip3 install -r requirements.txt
 ```
 
-O `requirements.txt` limita o PySide6 a versões abaixo da 6.12: a 6.12.0 tem
-erros de contagem de referência que derrubam o processo no Python 3.11.
+No Python 3.11 o `requirements.txt` limita o PySide6 a versões abaixo da 6.12:
+a 6.12.0 tem erros de contagem de referência que derrubam o processo nessa
+versão do Python. Do 3.12 em diante o mesmo erro é inofensivo, e a 6.12 é a
+única disponível para Python 3.15.
 
 ## Como rodar
 
