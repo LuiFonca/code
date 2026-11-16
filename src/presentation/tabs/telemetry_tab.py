@@ -7,7 +7,12 @@ e consultava o banco por conta própria.
 """
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QTableWidget,
+    QTableWidgetItem,
     QButtonGroup,
     QComboBox,
     QFrame,
@@ -42,6 +47,17 @@ COLOR_FUEL = "#f2994a"
 COLOR_G_LAT = "#ff9f4f"
 COLOR_G_LONG = "#3ddc84"
 COLOR_SLIP_ANGLE = "#00d5c8"
+COLOR_YAW = "#b48cff"
+
+CORNER_COLUMNS = [
+    "Curva", "Lado", "Início", "Entrada (km/h)", "Mínima (km/h)",
+    "Saída (km/h)", "Frenagem", "G pico", "Equilíbrio",
+]
+BALANCE_COLORS = {
+    "neutro": "#3ddc84",
+    "sobresterço": "#ff5c5c",
+    "subesterço": "#f2c94c",
+}
 
 # Uma cor por roda, reaproveitada nos três mosaicos (pneu, suspensão, slip) —
 # assim a mesma roda tem sempre a mesma cor, em qualquer painel.
@@ -163,6 +179,7 @@ class TelemetryTab(ChartTabBase):
         self._root.addWidget(frame_slip)
 
         self._build_slip_angle_section()
+        self._build_corners_section()
 
         self._root.addWidget(self.section_header("TRAÇADO"))
         self.track_map = TrackMapWidget("Traçado da volta", height=260)
@@ -214,6 +231,67 @@ class TelemetryTab(ChartTabBase):
         self._slip_angle_absent.setWordWrap(True)
         self._slip_angle_absent.setStyleSheet("color: #6b6f7a; font-size: 11px;")
         self._root.addWidget(self._slip_angle_absent)
+
+    def _build_corners_section(self):
+        """Curvas da volta e comportamento do carro em cada uma.
+
+        O gráfico de velocidade mostra a volta inteira; a tabela responde a
+        pergunta mais específica — em que curva, a que velocidade, freando
+        onde, e com o carro saindo de frente ou de traseira.
+        """
+        self._root.addWidget(self.section_header("CURVAS E EQUILÍBRIO DO CARRO"))
+        nota = QLabel(
+            "Curvas detectadas pela força lateral, na ordem em que aparecem na "
+            "volta (a numeração pode não bater com a oficial da pista). O "
+            "equilíbrio compara o quanto o carro girou com o quanto a curva "
+            "exigia: girou mais é sobresterço (traseira saindo), menos é "
+            "subesterço (frente saindo)."
+        )
+        nota.setWordWrap(True)
+        nota.setStyleSheet("color: #8b93a7; font-size: 11px;")
+        self._root.addWidget(nota)
+
+        self.chart_yaw = self.add_chart("Taxa de guinada (°/s)")
+        self._root.addWidget(self.chart_yaw)
+
+        self.corners_table = QTableWidget(0, len(CORNER_COLUMNS))
+        self.corners_table.setHorizontalHeaderLabels(CORNER_COLUMNS)
+        self.corners_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.corners_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.corners_table.verticalHeader().setVisible(False)
+        self.corners_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.corners_table.setMinimumHeight(180)
+        self._root.addWidget(self.corners_table)
+
+    def _render_corners(self):
+        self.chart_yaw.set_series(
+            [("Guinada", COLOR_YAW, self._vm.yaw_points())]
+            if self._vm.has_channel("yaw_rate") else []
+        )
+        self.chart_yaw.setVisible(self._vm.has_channel("yaw_rate"))
+
+        curvas = self._vm.corners()
+        self.corners_table.setRowCount(len(curvas))
+        for linha, c in enumerate(curvas):
+            celulas = [
+                str(c.index),
+                c.direction,
+                f"{c.start_m:.0f} m",
+                f"{c.entry_speed_kmh:.0f}",
+                f"{c.min_speed_kmh:.0f}",
+                f"{c.exit_speed_kmh:.0f}",
+                f"{c.brake_point_m:.0f} m" if c.brake_point_m is not None else "sem freio",
+                f"{c.peak_g:.2f}",
+                # Travessão quando a volta não tem guinada gravada: "neutro"
+                # seria uma medida, e ali não há medida nenhuma.
+                c.balance or "—",
+            ]
+            for coluna, texto in enumerate(celulas):
+                item = QTableWidgetItem(texto)
+                item.setTextAlignment(Qt.AlignCenter)
+                if coluna == len(celulas) - 1 and c.balance in BALANCE_COLORS:
+                    item.setForeground(QColor(BALANCE_COLORS[c.balance]))
+                self.corners_table.setItem(linha, coluna, item)
 
     def _render_slip_angle(self):
         """Preenche (ou esconde) a seção de ângulo conforme o dado disponível."""
@@ -352,6 +430,7 @@ class TelemetryTab(ChartTabBase):
             )
         self.slip_indicator.set_pct(self._vm.average_slip_pct())
         self._render_slip_angle()
+        self._render_corners()
 
         self.apply_sector_lines(sectors)
 

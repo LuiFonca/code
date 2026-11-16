@@ -2,6 +2,7 @@
 Estado da tela de telemetria detalhada de uma volta.
 """
 
+import math
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QObject, Signal
@@ -9,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 from ...domain.config import AppConfig
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.models.lap import Lap
+from ...domain.services.corner_analysis import Corner, detect_corners
 from ...domain.services.lap_analysis import LapSeries, resolve_sector_boundaries
 from ..events.event_bus import EventBus
 from ..events.events import LapCompleted, LapDeleted, LapsPurged
@@ -116,6 +118,7 @@ class TelemetryViewModel(QObject):
         self._detail = LapDetail()
         self._axis_mode = AXIS_DISTANCE
         self._series_cache: dict[tuple[str, str], list] = {}
+        self._corners_cache: list[Corner] | None = None
         self._tank_capacity: float | None = None
 
         # A lista precisa reagir aos três eventos que mudam o conjunto de
@@ -133,6 +136,7 @@ class TelemetryViewModel(QObject):
             if self._laps.get_by_id(lap.id) is None:
                 self._detail = LapDetail()
                 self._series_cache.clear()
+        self._corners_cache = None
 
     def dispose(self) -> None:
         """Cancela as inscrições no barramento.
@@ -144,6 +148,7 @@ class TelemetryViewModel(QObject):
         for event_type in (LapCompleted, LapDeleted, LapsPurged):
             self._bus.unsubscribe(event_type, self._on_laps_changed)
         self._series_cache.clear()
+        self._corners_cache = None
 
     @property
     def detail(self) -> LapDetail:
@@ -194,6 +199,7 @@ class TelemetryViewModel(QObject):
             return
 
         self._series_cache.clear()
+        self._corners_cache = None
         self._detail = LapDetail(
             lap=lap,
             series=series,
@@ -221,6 +227,7 @@ class TelemetryViewModel(QObject):
         """Adota preferências novas. As séries em cache dependem delas."""
         self._config = config
         self._series_cache.clear()
+        self._corners_cache = None
 
     # ---------- séries para os gráficos ----------
 
@@ -270,6 +277,24 @@ class TelemetryViewModel(QObject):
     # próprios: o índice diz quanto as rodas escorregam em relação ao solo, o
     # ângulo diz quanto o carro está atravessado em relação a para onde aponta.
     # As duas convivem — voltas gravadas antes do schema v8 têm só a primeira.
+
+    # ---------- curvas e guinada ----------
+
+    def corners(self) -> list[Corner]:
+        """Curvas da volta aberta, com velocidade mínima, frenagem e equilíbrio."""
+        if not self._detail.is_valid:
+            return []
+        if self._corners_cache is None:
+            self._corners_cache = detect_corners(self._detail.series.points_raw)
+        return self._corners_cache
+
+    def yaw_points(self) -> list[tuple[float, float]]:
+        """Taxa de guinada em graus por segundo, no eixo ativo.
+
+        Em graus e não em radianos (como vem do jogo): ninguém lê 0,35 rad/s
+        e enxerga o carro girando 20° por segundo.
+        """
+        return [(x, math.degrees(v)) for x, v in self.points_for("yaw_rate")]
 
     def has_slip_angle(self) -> bool:
         """True quando a volta carregada tem o ângulo gravado."""

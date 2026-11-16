@@ -9,6 +9,11 @@ from PySide6.QtCore import QObject, Signal
 from ...domain.config import AppConfig
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.models.lap import Lap
+from ...domain.services.corner_analysis import (
+    CornerDelta,
+    compare_corners,
+    delta_trace,
+)
 from ...domain.services.lap_analysis import (
     LapSeries,
     best_combined_sectors,
@@ -20,6 +25,10 @@ from ..events.event_bus import EventBus
 from ..events.events import LapCompleted, LapDeleted, LapsPurged
 from .telemetry_viewmodel import resample
 
+
+
+# Lados além de A e B. A ordem aqui é a ordem dos seletores opcionais.
+EXTRA_SIDES = ("C", "D")
 
 
 @dataclass(slots=True)
@@ -56,6 +65,15 @@ class ComparisonResult:
     sectors: list[SectorComparison] = field(default_factory=list)
     theoretical_best_ms: int | None = None
     sector_boundaries: list[float] = field(default_factory=list)
+    # Voltas além das duas principais (C, D...). Entram nos gráficos e no
+    # delta, sempre medidas contra a A; setores e curvas ficam só entre A e B,
+    # para a tabela não virar uma matriz ilegível.
+    extra_laps: list[Lap] = field(default_factory=list)
+    extra_series: list[LapSeries] = field(default_factory=list)
+    extra_deltas: list[list[tuple[float, float]]] = field(default_factory=list)
+    # B contra A, curva a curva, e o mesmo desenhado sobre o traçado.
+    corner_deltas: list[CornerDelta] = field(default_factory=list)
+    delta_map: list = field(default_factory=list)
 
     @property
     def is_valid(self) -> bool:
@@ -126,7 +144,15 @@ class ComparisonViewModel(QObject):
         cached = self._series_cache.get(key)
         if cached is not None:
             return cached
-        series = self._result.series_a if side == "A" else self._result.series_b
+        if side == "A":
+            series = self._result.series_a
+        elif side == "B":
+            series = self._result.series_b
+        else:
+            indice = EXTRA_SIDES.index(side) if side in EXTRA_SIDES else -1
+            if indice < 0 or indice >= len(self._result.extra_series):
+                return []
+            series = self._result.extra_series[indice]
         out = resample(series.points(channel)) if series.has_channel(channel) else []
         self._series_cache[key] = out
         return out
@@ -147,8 +173,13 @@ class ComparisonViewModel(QObject):
         # para ver que existiam e não dava para abrir nem comparar.
         self.laps_available.emit(self._laps.get_by_track(self._track_id))
 
-    def compare(self, lap_id_a: int, lap_id_b: int) -> None:
-        """Monta a comparação entre duas voltas."""
+    def compare(self, lap_id_a: int, lap_id_b: int, extras=()) -> None:
+        """Monta a comparação. A é a referência; `extras` são voltas a mais.
+
+        Extras repetidas ou iguais a A e B são ignoradas em silêncio: escolher
+        a mesma volta duas vezes nos seletores opcionais não é erro que mereça
+        interromper a comparação principal.
+        """
         if lap_id_a == lap_id_b:
             self.error.emit("Selecione duas voltas diferentes para comparar.")
             return
@@ -184,7 +215,33 @@ class ComparisonViewModel(QObject):
         times_b = sector_times_from_series(series_b, boundaries)
         theoretical, _choices = best_combined_sectors(times_a, times_b)
 
+        extra_laps, extra_series, extra_deltas = [], [], []
+        vistos = {lap_id_a, lap_id_b}
+        for lap_id in extras:
+            # O limite vale para as voltas aceitas, não para as pedidas:
+            # cortar antes de descartar as repetidas perderia uma extra
+            # legítima que viesse depois delas.
+            if len(extra_laps) >= len(EXTRA_SIDES):
+                break
+            if lap_id is None or lap_id in vistos:
+                continue
+            vistos.add(lap_id)
+            lap = self._laps.get_by_id(lap_id)
+            if lap is None:
+                continue
+            serie = LapSeries(lap.points)
+            if serie.is_empty:
+                continue
+            extra_laps.append(lap)
+            extra_series.append(serie)
+            extra_deltas.append(compute_delta_series(series_a, serie))
+
         self._result = ComparisonResult(
+            extra_laps=extra_laps,
+            extra_series=extra_series,
+            extra_deltas=extra_deltas,
+            corner_deltas=compare_corners(lap_a.points, lap_b.points),
+            delta_map=delta_trace(lap_a.points, lap_b.points),
             lap_a=lap_a,
             lap_b=lap_b,
             series_a=series_a,
