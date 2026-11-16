@@ -3,11 +3,14 @@ Estado da tela "Histórico".
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from ...domain.interfaces.lap_repository import LapRepository
 from ...domain.models.lap import Lap
+from ...domain.services.lap_export import lap_to_csv
+from ...domain.services.session_stats import IdealLap, ideal_lap
 from ..events.event_bus import EventBus
 from ..events.events import LapCompleted, LapDeleted, LapsPurged
 
@@ -32,6 +35,8 @@ class LapRow:
     is_complete: bool = True
     # False quando o piloto marcou a volta como inválida (corte, contato).
     is_valid: bool = True
+    # A volta tem anotação ou acerto registrado — a tabela marca com um ícone.
+    has_notes: bool = False
 
 
 class HistoryViewModel(QObject):
@@ -56,6 +61,7 @@ class HistoryViewModel(QObject):
         # Opcional: só é usado para atribuir pista a uma volta que ficou sem.
         self._tracks = track_repository
         self._track_id: int | None = None
+        self.ideal = IdealLap(total_ms=None)
         self._filter = ""
         self._rows: list[LapRow] = []
 
@@ -97,6 +103,7 @@ class HistoryViewModel(QObject):
         laps = self._laps.get_by_track(self._track_id)
         if not laps:
             self._rows = []
+            self.ideal = IdealLap(total_ms=None)
             self.laps_changed.emit([])
             return
 
@@ -123,9 +130,18 @@ class HistoryViewModel(QObject):
                 is_best=(lap.id == best_id),
                 is_complete=lap.is_complete,
                 is_valid=lap.is_valid,
+                has_notes=bool(lap.notes or lap.setup),
             )
             for lap in laps
         ]
+        # Volta ideal da pista: o melhor de cada setor entre as voltas que
+        # disputam recorde. Parciais e inválidas ficam de fora pelo mesmo
+        # motivo que não viram recorde.
+        self.ideal = ideal_lap({
+            lap.id: sectors.get(lap.id, [])
+            for lap in laps
+            if lap.is_complete and lap.is_valid and lap.id is not None
+        })
         self.laps_changed.emit(self._apply_filter(self._rows))
 
     def delete_lap(self, lap_id: int) -> None:
@@ -234,6 +250,83 @@ class HistoryViewModel(QObject):
         except OSError as exc:
             self.error.emit(f"Não foi possível exportar: {exc}")
             return False
+
+    def export_lap_csv(self, lap_id: int, destino) -> bool:
+        """Grava as amostras da volta em CSV, para abrir em planilha."""
+        lap = self._laps.get_by_id(lap_id)
+        if lap is None or not lap.points:
+            self.error.emit("Esta volta não tem amostras para exportar.")
+            return False
+        try:
+            Path(destino).write_text(lap_to_csv(lap.points), encoding="utf-8")
+            return True
+        except OSError as exc:
+            self.error.emit(f"Não foi possível exportar: {exc}")
+            return False
+
+    # ---------- notas e acerto ----------
+
+    def notes_for(self, lap_id: int) -> tuple[str, str]:
+        """(anotações, acerto) da volta. Vazios se não houver."""
+        linha = next((r for r in self._rows if r.lap.id == lap_id), None)
+        if linha is None:
+            return "", ""
+        return linha.lap.notes, linha.lap.setup
+
+    def set_notes(self, lap_id: int, notes: str, setup: str) -> bool:
+        try:
+            self._laps.set_notes(lap_id, notes.strip(), setup.strip())
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(f"Não foi possível salvar as anotações: {exc}")
+            return False
+        self.refresh()
+        return True
+
+    # ---------- setores da pista ----------
+
+    def sector_fractions_text(self) -> str:
+        """Limites de setor da pista aberta, em % da volta ("31, 68")."""
+        if self._tracks is None or self._track_id is None:
+            return ""
+        track = self._tracks.get_by_id(self._track_id)
+        if track is None or not track.sector_fractions:
+            return ""
+        # O último limite é sempre 100 % e não precisa ser digitado.
+        return ", ".join(f"{f * 100:g}" for f in track.sector_fractions[:-1])
+
+    def set_sector_fractions_from_text(self, texto: str) -> bool:
+        """Define os setores a partir de percentuais separados por vírgula.
+
+        Vazio volta à divisão em partes iguais. Os valores precisam ser
+        crescentes e estar entre 0 e 100 — um limite fora de ordem produziria
+        setor de tempo negativo.
+        """
+        if self._tracks is None or self._track_id is None:
+            self.error.emit("Escolha uma pista antes de ajustar os setores.")
+            return False
+
+        bruto = (texto or "").replace(";", ",").strip()
+        if not bruto:
+            self._tracks.set_sector_fractions(self._track_id, None)
+            return True
+        try:
+            valores = [float(v.strip().rstrip("%")) for v in bruto.split(",") if v.strip()]
+        except ValueError:
+            self.error.emit("Use números separados por vírgula, por exemplo: 31, 68")
+            return False
+        if (
+            not valores
+            or any(not 0 < v < 100 for v in valores)
+            or any(b <= a for a, b in zip(valores, valores[1:]))
+        ):
+            self.error.emit(
+                "Os limites precisam ser crescentes e ficar entre 0 e 100 (ex.: 31, 68)."
+            )
+            return False
+        self._tracks.set_sector_fractions(
+            self._track_id, [v / 100.0 for v in valores] + [1.0]
+        )
+        return True
 
     def import_lap(self, origem) -> bool:
         """Lê uma volta de arquivo e grava no repositório atual.

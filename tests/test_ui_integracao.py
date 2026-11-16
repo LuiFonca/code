@@ -701,3 +701,74 @@ def test_autonomia_aparece_depois_de_uma_volta_completa(app, qapp):
     estimativa = vivo._vm.fuel_estimate()
     assert estimativa.per_lap == pytest.approx(2.0)
     assert estimativa.laps_remaining == pytest.approx(10.0)
+
+
+# =================================================== histórico: recursos novos
+def test_notas_e_acerto_ficam_gravados_e_marcam_a_linha(app_com_voltas):
+    janela, tid = app_com_voltas
+    hist = _aba(janela, "Histórico")
+    lap_id = int(hist._table.item(0, 1).text())
+
+    assert hist._vm.set_notes(lap_id, "saí largo na 4", "asa traseira 12")
+    assert hist._vm.notes_for(lap_id) == ("saí largo na 4", "asa traseira 12")
+    marcas = [hist._table.item(i, 0).text() for i in range(hist._table.rowCount())]
+    assert any("📝" in m for m in marcas)
+
+    relida = janela._service._laps.get_by_id(lap_id)
+    assert relida.notes == "saí largo na 4" and relida.setup == "asa traseira 12"
+
+
+def test_exportar_csv_pelo_historico(app_com_voltas, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    janela, _tid = app_com_voltas
+    hist = _aba(janela, "Histórico")
+    destino = tmp_path / "volta.csv"
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: QMessageBox.Ok)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(destino), ""))
+
+    hist._table.selectRow(0)
+    hist._on_export_csv_clicked()
+
+    linhas = destino.read_text(encoding="utf-8").splitlines()
+    assert linhas[0].startswith("elapsed_ms,distance_m,speed_kmh")
+    assert len(linhas) == 302, "cabeçalho mais uma linha por amostra"
+    # Canal ausente sai vazio, não zero.
+    assert linhas[1].endswith(",,")
+
+
+def test_volta_ideal_aparece_no_historico(app_com_voltas):
+    janela, _tid = app_com_voltas
+    hist = _aba(janela, "Histórico")
+    assert hist._vm.ideal.total_ms is not None
+    assert "Volta ideal" in hist._ideal_label.text()
+
+
+@pytest.mark.parametrize("texto, esperado", [
+    ("31, 68", [0.31, 0.68, 1.0]),
+    ("25; 50; 75", [0.25, 0.5, 0.75, 1.0]),
+    ("", None),
+])
+def test_editor_de_setores_aceita_percentuais(app_com_voltas, texto, esperado):
+    janela, tid = app_com_voltas
+    hist = _aba(janela, "Histórico")
+    assert hist._vm.set_sector_fractions_from_text(texto) is True
+    assert janela._tracks.get_by_id(tid).sector_fractions == pytest.approx(esperado)
+
+
+@pytest.mark.parametrize("texto", ["68, 31", "0, 50", "50, 120", "abc", "50, 50"])
+def test_editor_de_setores_recusa_entrada_invalida(app_com_voltas, sem_dialogos, texto):
+    """Limite fora de ordem produziria setor de tempo negativo."""
+    janela, tid = app_com_voltas
+    hist = _aba(janela, "Histórico")
+    assert hist._vm.set_sector_fractions_from_text(texto) is False
+    assert ("erro", "Erro") in sem_dialogos, "a recusa precisa ser explicada ao usuário"
+    assert janela._tracks.get_by_id(tid).sector_fractions is None
+
+
+def test_botoes_novos_do_historico_sem_selecao_avisam(app, sem_dialogos):
+    hist = _aba(app, "Histórico")
+    hist._on_notes_clicked()
+    hist._on_export_csv_clicked()
+    hist._on_sectors_clicked()
+    assert len(sem_dialogos) == 3

@@ -124,6 +124,46 @@ class HistoryTab(QWidget):
         controls.addWidget(self._clear_button)
         root.addLayout(controls)
 
+        # Segunda linha: o que se faz com a volta além de gerenciá-la.
+        extras = QHBoxLayout()
+        extras.setSpacing(8)
+
+        self._ideal_label = QLabel("")
+        self._ideal_label.setObjectName("sectionHeader")
+        self._ideal_label.setToolTip(
+            "Soma do melhor tempo de cada setor entre as voltas válidas desta "
+            "pista — o tempo que sairia juntando o melhor de cada trecho."
+        )
+
+        self._notes_button = QPushButton("Notas e acerto")
+        self._notes_button.setObjectName("stopButton")
+        self._notes_button.setToolTip(
+            "Anotações da volta e o acerto do carro com que ela foi feita."
+        )
+        self._notes_button.clicked.connect(self._on_notes_clicked)
+
+        self._csv_button = QPushButton("Exportar CSV")
+        self._csv_button.setObjectName("stopButton")
+        self._csv_button.setToolTip(
+            "Salva as amostras da volta em CSV, para abrir em planilha."
+        )
+        self._csv_button.clicked.connect(self._on_export_csv_clicked)
+
+        self._sectors_button = QPushButton("Setores da pista")
+        self._sectors_button.setObjectName("stopButton")
+        self._sectors_button.setToolTip(
+            "Define onde termina cada setor desta pista. Sem ajuste, a volta é "
+            "dividida em partes iguais."
+        )
+        self._sectors_button.clicked.connect(self._on_sectors_clicked)
+
+        extras.addWidget(self._ideal_label)
+        extras.addStretch()
+        extras.addWidget(self._notes_button)
+        extras.addWidget(self._csv_button)
+        extras.addWidget(self._sectors_button)
+        root.addLayout(extras)
+
         self._table = QTableWidget(0, len(COLUMNS))
         self._table.setHorizontalHeaderLabels(COLUMNS)
         self._table.setAlternatingRowColors(True)
@@ -153,6 +193,10 @@ class HistoryTab(QWidget):
         self._empty_label.setVisible(not rows)
         self._table.setVisible(bool(rows))
         self._count_label.setText(f"{len(rows)} volta(s)" if rows else "")
+        ideal = self._vm.ideal.total_ms
+        self._ideal_label.setText(
+            f"Volta ideal: {format_ms(ideal)}" if ideal is not None else ""
+        )
 
         # Ordenação desligada durante o preenchimento: com ela ativa, o Qt
         # reordena a cada linha inserida e as células saem trocadas.
@@ -172,6 +216,8 @@ class HistoryTab(QWidget):
                 mark, mark_sort = "⚠", 2
             else:
                 mark, mark_sort = "", 1
+            if row.has_notes:
+                mark += "📝"
             cells = [
                 _SortableItem(mark, mark_sort),
                 _SortableItem(str(lap.id or "--"), lap.id or 0),
@@ -275,6 +321,79 @@ class HistoryTab(QWidget):
         )
         if ok and nome.strip():
             self._vm.assign_track_by_name(lap_id, nome)
+
+    def _on_notes_clicked(self):
+        """Edita as anotações e o acerto da volta selecionada."""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit
+
+        lap_id = self._selected_lap_id()
+        if lap_id is None:
+            QMessageBox.information(
+                self, "Nenhuma volta selecionada",
+                "Selecione uma volta na tabela para anotar.",
+            )
+            return
+
+        notas, acerto = self._vm.notes_for(lap_id)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Volta {lap_id} — notas e acerto")
+        dialog.resize(520, 420)
+        layout = QVBoxLayout(dialog)
+
+        layout.addWidget(QLabel("Anotações (o que aconteceu na volta)"))
+        campo_notas = QPlainTextEdit(notas)
+        layout.addWidget(campo_notas)
+        layout.addWidget(QLabel("Acerto do carro (pneus, asas, câmbio, freios...)"))
+        campo_acerto = QPlainTextEdit(acerto)
+        layout.addWidget(campo_acerto)
+
+        botoes = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        botoes.accepted.connect(dialog.accept)
+        botoes.rejected.connect(dialog.reject)
+        layout.addWidget(botoes)
+
+        if dialog.exec() == QDialog.Accepted:
+            self._vm.set_notes(
+                lap_id, campo_notas.toPlainText(), campo_acerto.toPlainText()
+            )
+
+    def _on_export_csv_clicked(self):
+        lap_id = self._selected_lap_id()
+        if lap_id is None:
+            QMessageBox.information(
+                self, "Nenhuma volta selecionada",
+                "Selecione uma volta na tabela para exportar.",
+            )
+            return
+        destino, _ = QFileDialog.getSaveFileName(
+            self, "Exportar volta em CSV", f"volta-{lap_id}.csv", "Planilha CSV (*.csv)"
+        )
+        if not destino:
+            return
+        if self._vm.export_lap_csv(lap_id, destino):
+            self._show_info(f"Volta {lap_id} exportada em CSV.")
+
+    def _on_sectors_clicked(self):
+        """Ajusta os limites de setor da pista aberta."""
+        from PySide6.QtWidgets import QInputDialog
+
+        if self._vm.track_id is None:
+            QMessageBox.information(
+                self, "Nenhuma pista escolhida",
+                "Escolha uma pista na barra superior para ajustar os setores dela.",
+            )
+            return
+        texto, ok = QInputDialog.getText(
+            self,
+            "Setores da pista",
+            "Fim de cada setor, em % da volta, separados por vírgula.\n"
+            "Ex.: 31, 68 cria três setores. Vazio volta à divisão em partes iguais.\n\n"
+            "Vale para Telemetria e Comparação na hora, e para os tempos de setor\n"
+            "das voltas gravadas daqui em diante.",
+            text=self._vm.sector_fractions_text(),
+        )
+        if ok and self._vm.set_sector_fractions_from_text(texto):
+            self._show_info("Setores da pista atualizados.")
 
     def _on_toggle_valid_clicked(self):
         lap_id = self._selected_lap_id()
