@@ -53,14 +53,6 @@ class LapSeries:
     def max_distance(self) -> float:
         return self._distances[-1] if self._distances else 0.0
 
-    @property
-    def max_time(self) -> float:
-        """Duração da volta em segundos, pelo eixo temporal."""
-        if not self._points:
-            return 0.0
-        last = self._points[-1].elapsed_ms
-        return (last / 1000.0) if last is not None else 0.0
-
     def has_channel(self, channel: str) -> bool:
         """True se o canal tiver ao menos dois valores não-nulos nesta volta."""
         return len(self._valid_points(channel)) >= 2

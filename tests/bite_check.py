@@ -218,6 +218,54 @@ MUTACOES = [
      "        if self._track_id is None:\n            self.laps_available.emit([])\n            return",
      "test_volta_sem_pista_pode_ser_aberta_e_comparada"),
 
+
+    # ------------------------------------------------ revisão e melhorias
+    ("N1 extras cortadas cedo", "src/application/viewmodels/comparison_viewmodel.py",
+     "        for lap_id in extras:", "        for lap_id in list(extras)[:2]:",
+     "test_extra_repetida_e_ignorada"),
+
+    ("N2 retencao sem pista", "src/infrastructure/repositories/sqlite_lap_repository.py",
+     '            onde, args = "track_id IS NULL", ()', "            return",
+     "test_voltas_sem_pista_tambem_sao_podadas"),
+
+    ("N3 capacidade do tanque", "src/application/viewmodels/live_viewmodel.py",
+     "            self.tank_capacity_changed.emit(capacity)", "            pass",
+     "test_capacidade_do_tanque_chega_a_aba_de_telemetria"),
+
+    ("N4 atribuir ensina", "src/application/viewmodels/history_viewmodel.py",
+     "        self._learn_from(lap_id, track_id)", "        pass",
+     "test_atribuir_pista_ensina_o_tracado"),
+
+    ("N5 reinicio nao e replay", "src/domain/services/replay_detector.py",
+     "recuo > RECUO_MINIMO_MS and current_lap_ms > LIMIAR_REINICIO_MS",
+     "recuo > RECUO_MINIMO_MS",
+     "test_reiniciar_a_sessao_nao_e_replay"),
+
+    ("N6 sinal do tempo na curva", "src/domain/services/corner_analysis.py",
+     "            delta_tempo = (marcas[3] - marcas[2]) - (marcas[1] - marcas[0])",
+     "            delta_tempo = (marcas[1] - marcas[0]) - (marcas[3] - marcas[2])",
+     "test_curva_mais_lenta_aparece_como_tempo_perdido_nela"),
+
+    ("N7 reabastecimento na media", "src/domain/services/session_stats.py",
+     "validos = [u for u in recent_usage if u is not None and u > 0]",
+     "validos = [u for u in recent_usage if u is not None]",
+     "test_reabastecimento_nao_entra_na_media"),
+
+    ("N8 setores na comparacao", "src/domain/services/lap_analysis.py",
+     "    if fractions:\n        return [reference_distance_m * f for f in fractions]",
+     "    if False:\n        return []",
+     "test_comparacao_respeita_setores_da_pista"),
+
+    ("N9 equilibrio invertido", "src/domain/services/corner_analysis.py",
+     "    if mediana > FAIXA_NEUTRA[1]:\n        return EQUILIBRIO_SOBRESTERCO",
+     "    if mediana > FAIXA_NEUTRA[1]:\n        return EQUILIBRIO_SUBESTERCO",
+     "test_equilibrio_pela_guinada"),
+
+    ("N10 preferencias apagam pista", "src/presentation/preferences_dialog.py",
+     "        return replace(\n            self._original,",
+     "        return replace(\n            AppConfig(),",
+     "test_salvar_preferencias_nao_apaga_a_ultima_pista"),
+
 ]
 
 

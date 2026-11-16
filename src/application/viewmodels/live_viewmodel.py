@@ -103,20 +103,6 @@ class LiveViewModel(QObject):
         return self._is_stale
 
     @property
-    def tank_capacity(self) -> float | None:
-        """Capacidade do tanque, aprendida do pacote ao vivo.
-
-        Fica aqui porque só a telemetria em tempo real traz esse campo — as
-        voltas gravadas guardam o nível, não a capacidade. É o que permite às
-        outras telas mostrarem combustível em % em vez de valor bruto.
-        """
-        return self._tank_capacity
-
-    @property
-    def latest_point(self):
-        return self._latest.point if self._latest else None
-
-    @property
     def delta_best(self) -> float | None:
         return self._latest_delta_best
 

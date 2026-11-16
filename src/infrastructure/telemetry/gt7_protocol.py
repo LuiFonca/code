@@ -131,10 +131,6 @@ class TelemetryFrame:
         return bool(self.flags & FLAG_LOADING)
 
     @property
-    def has_turbo(self) -> bool:
-        return bool(self.flags & FLAG_HAS_TURBO)
-
-    @property
     def rev_limiter_active(self) -> bool:
         return bool(self.flags & FLAG_REV_LIMITER)
 

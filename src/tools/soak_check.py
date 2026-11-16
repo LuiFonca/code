@@ -37,7 +37,6 @@ DEFAULT_IP = "192.168.15.156"
 
 # O GT7 transmite a ~60 Hz. Abaixo disto há perda de pacote em algum ponto do
 # caminho — Wi-Fi congestionado é a causa mais comum.
-TAXA_ESPERADA_HZ = 60.0
 TAXA_MINIMA_ACEITAVEL_HZ = 50.0
 
 # Silêncio acima disto conta como buraco. Meio segundo é muito mais que o

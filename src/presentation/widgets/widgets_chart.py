@@ -581,17 +581,6 @@ class TrackMapWidget(QWidget):
             self._markers = [(x, z, color)]
         self.update()
 
-    def set_markers(self, markers):
-        """markers: lista de (x, z, cor_hex) — usado quando mais de um
-        ponto precisa aparecer ao mesmo tempo (ex: posição da Volta A e da
-        Volta B no mesmo instante de distância, na aba de Comparação)."""
-        self._markers = [m for m in markers if m[0] is not None and m[1] is not None]
-        self.update()
-
-    def clear_markers(self):
-        self._markers = []
-        self.update()
-
     def _grow_bounds(self, x: float, z: float):
         self._min_x = x if self._min_x is None else min(self._min_x, x)
         self._max_x = x if self._max_x is None else max(self._max_x, x)
